@@ -1,0 +1,284 @@
+{
+  "objects": [
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "occurrence-1"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-001"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "occurrence-2"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-001"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "B"
+        },
+        "native_key": "occurrence-1"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "B"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-001"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "forbidden-class"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C2",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-C2"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "forbidden-student"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "002"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-S2"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "partial"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 200,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "partial",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-partial"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "native_key": "stale"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://s07",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "head": "v1",
+      "observations": [
+        {
+          "revision": "v1",
+          "source_revision": "recorded-s07-v1",
+          "observed_at": 90,
+          "fresh_until": 99,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "physical_record": {
+              "kind": "value",
+              "value": "R-stale"
+            },
+            "recommendation": {
+              "kind": "value",
+              "value": "practice fractions"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

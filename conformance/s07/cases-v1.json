@@ -1,0 +1,3782 @@
+{
+  "version": 1,
+  "clock": 100,
+  "scenarios": [
+    {
+      "id": "happy-restart-repeat",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": null
+        }
+      ]
+    },
+    {
+      "id": "crash-before_review_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": "before_review_commit",
+          "status": 81,
+          "output": null,
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "unavailable"
+          },
+          "sql": null
+        }
+      ]
+    },
+    {
+      "id": "crash-after_review_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": "after_review_commit",
+          "status": 82,
+          "output": null,
+          "sql": {
+            "states": [
+              "reviewed"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-before_fence_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "before_fence_commit",
+          "status": 83,
+          "output": null,
+          "sql": {
+            "states": [
+              "reviewed"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-after_fence_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_fence_commit",
+          "status": 84,
+          "output": null,
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "value_only"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "retry_forbidden"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-03",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "no_effect",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": {
+            "states": [
+              "no_effect"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "no_effect",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": {
+            "states": [
+              "no_effect"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-before_target_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "before_target_commit",
+          "status": 85,
+          "output": null,
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "value_only"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "retry_forbidden"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-03",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 0,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "no_effect",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": {
+            "states": [
+              "no_effect"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "no_effect",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": {
+            "states": [
+              "no_effect"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-after_target_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_target_commit",
+          "status": 86,
+          "output": null,
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "value_only"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "retry_forbidden"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-03",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-before_readback",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "before_readback",
+          "status": 89,
+          "output": null,
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "value_only"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "retry_forbidden"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-03",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-before_receipt_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "before_receipt_commit",
+          "status": 87,
+          "output": null,
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "value_only"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "possible_dispatch",
+            "desired": "practice fractions",
+            "observed": null
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "retry_forbidden"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-03",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "crash-after_receipt_commit",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_receipt_commit",
+          "status": 88,
+          "output": null,
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        },
+        {
+          "command": {
+            "op": "inspect",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "refuse-forbidden-class-A",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "forbidden-class"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "unavailable"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "refuse-forbidden-student-A",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "forbidden-student"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "unavailable"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "refuse-occurrence-1-B",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "B"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "unavailable"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "refuse-partial-A",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "partial"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "review_required"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "refuse-stale-A",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "stale"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "review_required"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "authority-read_only",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "read_only",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "action_forbidden"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "authority-no_derive",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "no_derive",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "derive_forbidden"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "authority-host",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "host",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "principal_unknown"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "authority-revoked",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "revoked",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "principal_unknown"
+          },
+          "sql": {
+            "states": [],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "review-generation-change",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "renewed",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "review_stale"
+          },
+          "sql": {
+            "states": [
+              "reviewed"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "narrow-recovery-new-generation",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_target_commit",
+          "status": 86,
+          "output": null,
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "renewed",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 2,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted"
+            ],
+            "effects": 1,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "target-stale-before-dispatch",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "perturb",
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "value": "external"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "perturbed"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "target_conflict"
+          },
+          "sql": {
+            "states": [
+              "reviewed"
+            ],
+            "effects": 0,
+            "fences": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "applied-then-conflicting-readback",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_target_commit",
+          "status": 86,
+          "output": null,
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "perturb",
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "value": "external"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "perturbed"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "reconcile",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            },
+            "evidence": "durable"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "manual_reconciliation",
+            "desired": "practice fractions",
+            "observed": "external"
+          },
+          "sql": {
+            "states": [
+              "manual_reconciliation"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r2",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-2"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 2,
+          "output": {
+            "status": "refused",
+            "code": "field_fenced"
+          },
+          "sql": {
+            "states": [
+              "manual_reconciliation"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "cross-account-same-request-is-distinct",
+      "steps": [
+        {
+          "command": {
+            "op": "init"
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "initialized"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "A"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "normal",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "A"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "normal",
+          "fault": "after_fence_commit",
+          "status": 84,
+          "output": null,
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "review",
+            "input": {
+              "request_id": "r1",
+              "lesson_date": "2026-11-02",
+              "object": {
+                "object_type": "progress",
+                "namespace": {
+                  "instance": "synthetic://s07",
+                  "account": "B"
+                },
+                "native_key": "occurrence-1"
+              }
+            }
+          },
+          "profile": "account_b",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "reviewed",
+            "desired": "practice fractions",
+            "observed": "old"
+          },
+          "sql": null
+        },
+        {
+          "command": {
+            "op": "dispatch",
+            "key": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "request_id": "r1"
+            }
+          },
+          "profile": "account_b",
+          "fault": null,
+          "status": 0,
+          "output": {
+            "status": "ok",
+            "authorization_revision": 1,
+            "request_id": "r1",
+            "object": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "native_key": "occurrence-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "physical": {
+              "namespace": {
+                "instance": "synthetic://s07",
+                "account": "B"
+              },
+              "record": "R-001",
+              "field": "note"
+            },
+            "state": "persisted",
+            "desired": "practice fractions",
+            "observed": "practice fractions"
+          },
+          "sql": {
+            "states": [
+              "persisted",
+              "possible_dispatch"
+            ],
+            "effects": 1,
+            "fences": 1
+          }
+        }
+      ]
+    }
+  ]
+}
