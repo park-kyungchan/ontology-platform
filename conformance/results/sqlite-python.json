@@ -1,0 +1,17 @@
+{
+  "kind": "python_stdlib_not_rusqlite",
+  "sqlite_version": "3.45.1",
+  "checks": {
+    "composite_identity": "5 distinct exact identities",
+    "explicit_rollback": "old heads preserved",
+    "snapshot": "coherent old heads; bounded writer commit lock; new heads after reader commit",
+    "writer_serialization": "second writer refused within 50ms timeout",
+    "uncommitted_child_exit": {
+      "actual_exit": 23,
+      "reopen": "pre-crash committed values only",
+      "integrity_check": "ok"
+    }
+  },
+  "live_paths_opened": 0,
+  "rust_compilation": false
+}

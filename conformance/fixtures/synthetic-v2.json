@@ -1,0 +1,565 @@
+{
+  "objects": [
+    {
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "s1",
+          "source_revision": "s1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/0/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "textbook",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "book:01|x"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "b1",
+          "source_revision": "b1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "title": {
+              "kind": "value",
+              "value": "Synthetic Book"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/1/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "0007|x"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "p1",
+          "source_revision": "p1",
+          "observed_at": 1793577000,
+          "fresh_until": 1793577100,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "partial",
+          "fields": {
+            "score": {
+              "kind": "value",
+              "value": 0
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/2/observations/0"
+          }
+        },
+        {
+          "revision": "p2",
+          "source_revision": "p2",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "correction",
+          "supersedes": "p1",
+          "coverage": "partial",
+          "fields": {
+            "score": {
+              "kind": "unknown"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/2/observations/1"
+          }
+        },
+        {
+          "revision": "p3",
+          "source_revision": "p3",
+          "observed_at": 1793576000,
+          "fresh_until": 1793576100,
+          "change": "backfill",
+          "supersedes": "p2",
+          "coverage": "partial",
+          "fields": {
+            "score": {
+              "kind": "missing"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/2/observations/2"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "B"
+        },
+        "native_key": "001"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "B"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/3/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "1"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/4/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001 "
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/5/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "secret"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "002"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/6/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "class-secret"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C2",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/7/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "a|b"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/8/observations/0"
+          }
+        }
+      ]
+    },
+    {
+      "id": {
+        "object_type": "student|a",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "b"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "class_key": "C1",
+        "student_key": "001"
+      },
+      "observations": [
+        {
+          "revision": "x1",
+          "source_revision": "x1",
+          "observed_at": 1793577500,
+          "fresh_until": 1793577800,
+          "change": "initial",
+          "supersedes": null,
+          "coverage": "complete",
+          "fields": {
+            "label": {
+              "kind": "value",
+              "value": "Synthetic Student"
+            }
+          },
+          "lineage": {
+            "artifact_sha256": "b37ec66c90ad9903071c6f3648831c5776a1d8df0a3db9b6c73f8bebd026ef79",
+            "pointer": "/objects/9/observations/0"
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "textbook",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "book:01|x"
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "0007|x"
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "B"
+        },
+        "native_key": "001"
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "1"
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001 "
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning",
+      "target": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "class-secret"
+      }
+    },
+    {
+      "source": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "books",
+      "target": {
+        "object_type": "textbook",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "book:01|x"
+      }
+    }
+  ]
+}

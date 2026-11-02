@@ -1,0 +1,46 @@
+[
+  {
+    "id": "ONT-03-revoked-session",
+    "expected": "stale_authorization"
+  },
+  {
+    "id": "ONT-03-narrowed-derive",
+    "expected": "derive_forbidden"
+  },
+  {
+    "id": "ONT-03-foreign-authority",
+    "expected": "stale_authorization"
+  },
+  {
+    "id": "ONT-03-no-domain-principal",
+    "expected": "principal_unknown"
+  },
+  {
+    "id": "ONT-03-hidden-evidence-invariance",
+    "expected": "identical full derived bytes"
+  },
+  {
+    "id": "ONT-03-revocation-linearization",
+    "expected": "replacement waits until publication guard released; old session then stale"
+  },
+  {
+    "id": "ONT-04-head-conflict",
+    "expected": "revision_conflict"
+  },
+  {
+    "id": "ONT-04-immutable-scope",
+    "expected": "scope_conflict"
+  },
+  {
+    "id": "store-duplicate-rollback",
+    "expected": "no partial revision or head after rejected batch"
+  },
+  {
+    "id": "store-reopen",
+    "expected": "same full views after close/reopen"
+  },
+  {
+    "id": "store-snapshot",
+    "expected": "old head/history during bounded writer commit refusal; new head/history after reader exit and writer rollback/retry"
+  }
+]
