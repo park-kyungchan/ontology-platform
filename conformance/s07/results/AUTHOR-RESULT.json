@@ -1,0 +1,64 @@
+{
+  "scope": "S07 source author handoff; not acceptance",
+  "base": "224864887d19f2c52e5026568f5e9b169314d3be",
+  "contract_commit": "430d1869eecfa3929f163ad5a99a1aa300495f4b",
+  "judge_correction_commit": "83c25ae3995e4977980d4e31db77366d147b88ff",
+  "source_snapshot": "static-final-01/report.json",
+  "source_snapshot_matches_current": true,
+  "static_parent_status": 0,
+  "static_raw_statuses": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "s06_selfcheck": {
+    "pins_verified": 10,
+    "literal_cases": 26,
+    "negative_controls_rejected": 14,
+    "real_child_exit": 7,
+    "candidate_executed": false
+  },
+  "s07_selfcheck": {
+    "positive_controls": 2,
+    "negative_controls": 18,
+    "actual_child_statuses": [
+      7,
+      85
+    ],
+    "rust_candidate_executed": false
+  },
+  "python_sqlite_parent_status": 0,
+  "python_sqlite_child_statuses": [
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    89,
+    87,
+    88
+  ],
+  "python_sqlite_kind": "python_sqlite_design_only",
+  "rust_compiled": false,
+  "rust_candidate_executed": false,
+  "rust_tests_executed": false,
+  "independent_review": "pending, including v2 judge correction",
+  "actual_s06_binary_roundtrip": "pending Lead build",
+  "source_integration_tests_authored": 8,
+  "target_primitive_tests_authored": 3,
+  "new_literal_scenarios": 24,
+  "new_literal_process_steps": 106,
+  "background_task_children": [],
+  "builds_launched": 0,
+  "model_children_launched": 0,
+  "real_business_effects": false,
+  "task_note_writes": false,
+  "lead_commands": "docs/s07/HANDOFF.md"
+}

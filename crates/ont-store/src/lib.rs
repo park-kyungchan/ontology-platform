@@ -6,6 +6,9 @@ use rusqlite::{
 use std::path::Path;
 use std::time::Duration;
 
+pub mod actions;
+pub mod fake;
+
 pub const SCHEMA: &str = include_str!("../schema.sql");
 const APPLICATION_ID: i64 = 1_330_533_430;
 fn db<T>(result: rusqlite::Result<T>) -> Result<T, Error> {

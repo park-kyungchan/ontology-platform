@@ -70,6 +70,7 @@ pub fn policy() -> Policy {
         object_types: types,
         read: true,
         derive: true,
+        actions: Default::default(),
     };
     let mut recorded_grant = grant.clone();
     recorded_grant.scope = Scope {

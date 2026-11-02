@@ -1,4 +1,4 @@
-# Ontology platform — bounded S06 source candidate
+# Ontology platform — S06 baseline and bounded S07 local fake candidate
 
 Three packages implement a source-qualified restricted read vertical:
 
@@ -12,9 +12,19 @@ before Rust implementation. See [contract](docs/S06-CONTRACT.md),
 [snapshot clarification](docs/S06-SNAPSHOT-CLARIFICATION.md),
 [lineage hardening](docs/S06-LINEAGE-CLARIFICATION.md) and
 [validation/effect limits](docs/S06-VALIDATION.md). Source-only delivery is not an
-operational/compiler result. Lead owns the serialized build slot and independent
-review. No S07 action, production authentication, network listener, live source
-connection, Academy write or S12 user verdict is implemented or claimed.
+operational/compiler result. S06 baseline `224864887d19f2c52e5026568f5e9b169314d3be`
+was accepted with Lead-owned native evidence; original author-time S06 records
+remain historical. Lead owns the serialized build slot and independent review.
+
+S07 adds the named, authorized `copy_recommendation` function/action against a
+persistent local fake target. It commits a physical-field fence before possible
+dispatch, requires authoritative target-supported reconciliation after ambiguity,
+and never automatically replays. See [S07 contract](docs/s07/CONTRACT-v1.md),
+[implementation and compatibility](docs/s07/IMPLEMENTATION.md) and
+[source handoff / Lead commands](docs/s07/HANDOFF.md). S07 compilation, native
+fault/restart execution and independent review remain Lead-owned and pending.
+No production authentication, network listener, live source connection, Academy
+write or S12/P8 user verdict is implemented or claimed.
 
 The synthetic principal is fixed in `ontd::synthetic`; stdin cannot select a
 principal or policy. A real embedding application must authenticate independently

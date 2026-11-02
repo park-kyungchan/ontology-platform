@@ -2,6 +2,7 @@
 use ont_core::{Authority, Error, Query, Session};
 use ont_store::Store;
 
+pub mod local_fake;
 pub mod synthetic;
 
 /// Public restricted read entrypoint. The embedding owner authenticates and binds

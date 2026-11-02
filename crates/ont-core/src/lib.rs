@@ -1,9 +1,11 @@
 //! Generic identity, evidence, local authority and deterministic restricted reads.
-//! No host identity, Academy parser, transport or action implementation.
+//! No host identity, Academy parser or transport.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard, Weak};
+
+pub mod action;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -17,6 +19,13 @@ pub enum Error {
     ScopeConflict,
     StoreFailure,
     AuthorityFailure,
+    ActionForbidden,
+    ReviewRequired,
+    ReviewStale,
+    TargetConflict,
+    TargetIdentity,
+    FieldFenced,
+    RetryForbidden,
 }
 impl Error {
     pub fn code(self) -> &'static str {
@@ -31,6 +40,13 @@ impl Error {
             Self::ScopeConflict => "scope_conflict",
             Self::StoreFailure => "store_failure",
             Self::AuthorityFailure => "authority_failure",
+            Self::ActionForbidden => "action_forbidden",
+            Self::ReviewRequired => "review_required",
+            Self::ReviewStale => "review_stale",
+            Self::TargetConflict => "target_conflict",
+            Self::TargetIdentity => "target_identity",
+            Self::FieldFenced => "field_fenced",
+            Self::RetryForbidden => "retry_forbidden",
         }
     }
 }
@@ -235,6 +251,8 @@ pub struct Grant {
     pub object_types: BTreeSet<String>,
     pub read: bool,
     pub derive: bool,
+    /// Explicit named actions; read/derive alone never authorizes an effect.
+    pub actions: BTreeSet<String>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Policy {

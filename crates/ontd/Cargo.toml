@@ -1,5 +1,6 @@
 [package]
 name = "ontd"
+default-run = "ontd"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
