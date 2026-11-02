@@ -1,0 +1,1420 @@
+{
+  "books-first": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/books/0"
+          },
+          "value": {
+            "sourceBookEditionId": "edition-a",
+            "displayName": "Synthetic Book A"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 2,
+        "returned": 1,
+        "exhausted": false,
+        "nextCursor": "eyJ2ZXJzaW9uIjoxLCJzbmFwc2hvdCI6IjliNWEzYzU2NWY0YWE5Mjk2YmE5OGNkZDc0NjAxMzhhYTA2NDJmMzhkZWQzMTQ3MGU5YzgzMjdjZGExMmVlOWMiLCJzZWxlY3Rpb24iOiJlZWRmOGJhMmRmMzAyMGNkNjhmOWMwYmRjMTYwNGY1ZDUxMDQwYTg4OTQ1M2RmMDZkZTNlNTExYzZhYTY0MTUyIiwib2Zmc2V0IjoxfQ"
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "books-next": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/books/1"
+          },
+          "value": {
+            "sourceBookEditionId": "edition-b",
+            "displayName": "Synthetic Book B"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 2,
+        "returned": 1,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "sections-order": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/0"
+          },
+          "value": {
+            "id": "section-a",
+            "bookEditionId": "edition-a",
+            "rowKind": "section"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/1"
+          },
+          "value": {
+            "id": "placeholder",
+            "bookEditionId": "edition-a",
+            "rowKind": "placeholder"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/2"
+          },
+          "value": {
+            "id": "section-b",
+            "bookEditionId": "edition-b",
+            "rowKind": "section"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 3,
+        "returned": 3,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "sections-edition-a": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/0"
+          },
+          "value": {
+            "id": "section-a",
+            "bookEditionId": "edition-a",
+            "rowKind": "section"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/1"
+          },
+          "value": {
+            "id": "placeholder",
+            "bookEditionId": "edition-a",
+            "rowKind": "placeholder"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 2,
+        "returned": 2,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "sections-edition-b": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/sections/2"
+          },
+          "value": {
+            "id": "section-b",
+            "bookEditionId": "edition-b",
+            "rowKind": "section"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 1,
+        "returned": 1,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "attempt-knowledge-states": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/0"
+          },
+          "value": {
+            "id": "old-attempt",
+            "score": 75,
+            "displayedAt": "2020-01-01 10:00",
+            "teacherReview": "unknown"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/1"
+          },
+          "value": {
+            "id": "missing-score"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/2"
+          },
+          "value": {
+            "id": "null-score",
+            "score": null
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/3"
+          },
+          "value": {
+            "id": "blank-score",
+            "score": ""
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/4"
+          },
+          "value": {
+            "id": "zero-score",
+            "score": 0
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/5"
+          },
+          "value": {
+            "id": "unknown-score",
+            "score": "unknown"
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/attempts/6"
+          },
+          "value": {
+            "id": "not-performed",
+            "assessmentState": "not_performed"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 7,
+        "returned": 7,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "empty-assignments": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset.",
+        "No matching preserved records; activity, historical existence and server deletion remain unknown."
+      ],
+      "status": "partial",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": 0,
+        "returned": 0,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "videos-null": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset.",
+        "No matching preserved records; activity, historical existence and server deletion remain unknown."
+      ],
+      "status": "partial",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": 0,
+        "returned": 0,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "videos-missing": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset.",
+        "No matching preserved records; activity, historical existence and server deletion remain unknown."
+      ],
+      "status": "partial",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": 0,
+        "returned": 0,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "current-prior-records": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "source_observation_snapshot",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/liveDailyRecords/0"
+          },
+          "value": {
+            "date": "2026-10-14",
+            "progress": "",
+            "homework": null,
+            "recordKey": "synthetic-current"
+          }
+        },
+        {
+          "classification": "source_observation_snapshot",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/liveDailyRecords/1"
+          },
+          "value": {
+            "date": "2026-10-12",
+            "progress": null,
+            "recordKey": "synthetic-prior"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 2,
+        "returned": 2,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "escaped-source-pointer": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0/DTZT/current~1DT~01"
+          },
+          "value": {
+            "score": 0,
+            "teacherFinal": "unknown"
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 1,
+        "returned": 1,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "dated-lesson": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "teacher_report",
+          "source": {
+            "path": "private/lesson-20261014/overlay.json",
+            "sha256": "453ccba341027f52cd24cd145fc9984079070c5aa24d802878a9e3addd3a12ec",
+            "jsonPointer": "/students/0/teacherEvents/0"
+          },
+          "value": {
+            "id": "teacher-event",
+            "studentId": "synthetic-student-1",
+            "sourceKind": "teacher_report",
+            "recordedAt": "2026-10-14T12:00:00Z",
+            "facts": [
+              {
+                "kind": "homework_performance",
+                "status": "explicitly_not_done",
+                "activityLabel": "Synthetic scoped homework"
+              }
+            ]
+          }
+        },
+        {
+          "classification": "user_supplied_context",
+          "source": {
+            "path": "private/lesson-20261014/overlay.json",
+            "sha256": "453ccba341027f52cd24cd145fc9984079070c5aa24d802878a9e3addd3a12ec",
+            "jsonPointer": "/students/0/teacherEvents/1"
+          },
+          "value": {
+            "id": "context-event",
+            "studentId": "synthetic-student-1",
+            "sourceKind": "user_supplied_message_context",
+            "recordedAt": "2026-10-14T12:01:00Z",
+            "facts": [
+              {
+                "kind": "parent_reported_observation"
+              }
+            ]
+          }
+        },
+        {
+          "classification": "source_observation_snapshot",
+          "source": {
+            "path": "private/lesson-20261014/overlay.json",
+            "sha256": "453ccba341027f52cd24cd145fc9984079070c5aa24d802878a9e3addd3a12ec",
+            "jsonPointer": "/students/0/observations/0"
+          },
+          "value": {
+            "kind": "dailyRecord",
+            "observedAt": "2026-10-14T11:00:00Z",
+            "progress": "",
+            "homework": ""
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 3,
+        "returned": 3,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "wrong-date-no-evidence": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset.",
+        "No matching preserved records; activity, historical existence and server deletion remain unknown."
+      ],
+      "status": "partial",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": 0,
+        "returned": 0,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "unsaved-draft": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "unsaved_draft",
+          "source": {
+            "path": "private/lesson-20261014/overlay.json",
+            "sha256": "453ccba341027f52cd24cd145fc9984079070c5aa24d802878a9e3addd3a12ec",
+            "jsonPointer": "/students/0/dailyRecordDraft"
+          },
+          "value": {
+            "status": "local_draft_only_not_saved",
+            "serverSaved": false,
+            "parentSent": false
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 1,
+        "returned": 1,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "summary-bounded": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "derived_saved_summary",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0"
+          },
+          "value": {
+            "studentId": "synthetic-student-1",
+            "name": "Synthetic Student 1",
+            "observedCounts": {
+              "books": 2,
+              "sectionRows": 3,
+              "historicalAttemptObservations": 7,
+              "historicalVideoObservations": 0
+            },
+            "availableFacets": [
+              "books",
+              "sections",
+              "attempts",
+              "assignments",
+              "videos",
+              "daily_tests",
+              "daily_records",
+              "teacher_events",
+              "daily_record_drafts"
+            ],
+            "lessonSupplementPresent": true,
+            "recordedHistoryCoverageClaim": null,
+            "countsMeaning": "Preserved rows and observations; not unique assignments, current roster completeness or completion."
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 1,
+        "returned": 1,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "roster-duplicate-name": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "partial",
+      "records": [
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/0"
+          },
+          "value": {
+            "studentId": "synthetic-student-1",
+            "name": "Synthetic Student 1",
+            "membershipBasis": "preserved_authorized_managed_roster",
+            "completeTeacherRosterVerified": false
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/1"
+          },
+          "value": {
+            "studentId": "synthetic-student-2",
+            "name": "Synthetic Student 2",
+            "membershipBasis": "preserved_authorized_managed_roster",
+            "completeTeacherRosterVerified": false
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/2"
+          },
+          "value": {
+            "studentId": "synthetic-student-3",
+            "name": "Synthetic Student 3",
+            "membershipBasis": "preserved_authorized_managed_roster",
+            "completeTeacherRosterVerified": false
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/3"
+          },
+          "value": {
+            "studentId": "synthetic-student-4",
+            "name": "Synthetic Student 4",
+            "membershipBasis": "preserved_authorized_managed_roster",
+            "completeTeacherRosterVerified": false
+          }
+        },
+        {
+          "classification": "saved_source_record",
+          "source": {
+            "path": "private/student-audit-20261014/audit.json",
+            "sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+            "jsonPointer": "/students/4"
+          },
+          "value": {
+            "studentId": "synthetic-student-5",
+            "name": "Synthetic Student 4",
+            "membershipBasis": "preserved_authorized_managed_roster",
+            "completeTeacherRosterVerified": false
+          }
+        }
+      ],
+      "page": {
+        "totalInSavedSelection": 5,
+        "returned": 5,
+        "exhausted": true,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "unknown-student": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "student_not_in_preserved_roster",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "student-id-not-trimmed": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "student_not_in_preserved_roster",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "unknown-edition": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "book_edition_not_in_preserved_student_scope",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "unsupported-book-filter": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "book_filter_not_supported_for_facet",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "cursor-cross-selection": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "cursor_scope_or_snapshot_conflict",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "cursor-malformed": {
+    "outcome": "returned",
+    "value": {
+      "schemaVersion": 1,
+      "sourceMode": "saved_context",
+      "retrievedAt": "2026-11-02T00:00:00.000Z",
+      "snapshot": {
+        "sha256": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+        "collectedAt": "2026-10-14T08:00:00Z",
+        "lessonDate": "2026-10-14",
+        "lessonPreparedAt": "2026-10-14T13:05:00Z"
+      },
+      "scope": {
+        "teacherLabel": "박경찬",
+        "intendedPopulation": "all_teacher_managed_students",
+        "preservedStudentCount": 5,
+        "completeTeacherRosterVerified": false,
+        "totalTeacherManagedStudents": null
+      },
+      "coverage": "bounded_preserved_evidence",
+      "currentAcademyServerQueried": false,
+      "absenceProvesNonperformance": false,
+      "unknowns": [
+        "The complete teacher-managed roster and complete current history are not established by this preserved subset."
+      ],
+      "status": "unavailable",
+      "code": "cursor_scope_or_snapshot_conflict",
+      "records": [],
+      "page": {
+        "totalInSavedSelection": null,
+        "returned": 0,
+        "exhausted": false,
+        "nextCursor": null
+      }
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "changed-bytes": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "pinned_input_changed"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "missing-pin": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "input_pin_missing"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "symlink-input": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "pinned_input_file_invalid"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "duplicate-student-id": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "student_scope_invalid"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "foreign-lesson-student": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "lesson_student_scope_invalid"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "missing-evidence-root": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "s05_explicit_evidence_root_required"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "missing-source-root": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "s05_explicit_source_root_required"
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "live-mode": {
+    "outcome": "threw",
+    "error": {
+      "name": "ZodError",
+      "message": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"saved_context\"\n    ],\n    \"path\": [\n      \"sourceMode\"\n    ],\n    \"message\": \"Invalid input: expected \\\"saved_context\\\"\"\n  }\n]",
+      "issues": [
+        {
+          "code": "invalid_value",
+          "values": [
+            "saved_context"
+          ],
+          "path": [
+            "sourceMode"
+          ],
+          "message": "Invalid input: expected \"saved_context\""
+        }
+      ]
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "mutating-get-query": {
+    "outcome": "threw",
+    "error": {
+      "name": "ZodError",
+      "message": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"operation\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"operation\\\"\"\n  }\n]",
+      "issues": [
+        {
+          "code": "unrecognized_keys",
+          "keys": [
+            "operation"
+          ],
+          "path": [],
+          "message": "Unrecognized key: \"operation\""
+        }
+      ]
+    },
+    "effects": {
+      "deniedTransportAttempts": 0,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "deny-get": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "s05_transport_denied"
+    },
+    "effects": {
+      "deniedTransportAttempts": 1,
+      "forbiddenFakeDispatches": 0
+    }
+  },
+  "deny-post": {
+    "outcome": "threw",
+    "error": {
+      "name": "Error",
+      "message": "s05_transport_denied"
+    },
+    "effects": {
+      "deniedTransportAttempts": 1,
+      "forbiddenFakeDispatches": 0
+    }
+  }
+}
