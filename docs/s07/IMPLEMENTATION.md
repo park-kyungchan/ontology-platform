@@ -22,8 +22,10 @@ Local lock order is Authority read -> store IMMEDIATE -> target IMMEDIATE.
 The target writer transaction validates identity/version/value before local fence
 commit and remains held until target apply/evidence commit. The durable decision
 linearizes at fence commit. `local_action_basis_hold` prevents UPDATE of the
-admitted source object while its fence is present, including an old S06 append
-transaction (which rolls back). This preserves the data decision across the
+admitted source object while its fence is present. The append rollback evidence
+is the SQLite trigger plus the identical Store append path exercised in the new
+binary and the Python design probe. The separately archived S06 binary was
+tested for read compatibility, not for append. This preserves the data decision across the
 local commit/target gap. Revocation waits for Admission publication as in S06.
 Target lock release precedes local reacquisition for readback, so there is no
 target->store acquisition inversion. SQLite waits are bounded at 250ms.
