@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "ontd"
 default-run = "ontd"
 version.workspace = true
