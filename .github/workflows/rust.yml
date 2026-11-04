@@ -1,23 +1,62 @@
 name: Rust
-
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('rust-pr-{0}', github.ref) || format('rust-push-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  check:
+  rust:
+    name: rust
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
     steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned Rust toolchain
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply docs-only paths-ignore semantics inside the always-run job
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          rustup toolchain install
-          rustup show active-toolchain
-      - name: Check formatting
-        run: cargo fmt --all --check
-      - name: Clippy
+          set -euo pipefail
+          run_rust=true
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- . ':!docs/**' ':!README.md'; then
+              run_rust=false
+            fi
+          fi
+          echo "run_rust=$run_rust" >> "$GITHUB_OUTPUT"
+      - name: Install repository-pinned Rust
+        if: steps.scope.outputs.run_rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component clippy --component rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        if: steps.scope.outputs.run_rust == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format
+        if: steps.scope.outputs.run_rust == 'true'
+        run: cargo fmt --all -- --check
+      - name: Lint
+        if: steps.scope.outputs.run_rust == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        if: steps.scope.outputs.run_rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked
