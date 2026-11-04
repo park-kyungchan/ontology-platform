@@ -1,0 +1,8 @@
+{
+  "docs/S06-CONTRACT.md": "b9796b913c401d0a34ec556431eaf47355177f74ec3d6cf29d0f863b74aa0dfb",
+  "conformance/cases.json": "90cc79aa66ee37978860d1f75c6dace44db507b69a1c617f5d0ae39c9eca4812",
+  "conformance/library-cases.json": "609f567484582a367fd1051d67004cfc4459a566cf376e613cd54970446f6b2f",
+  "conformance/fixtures/synthetic.json": "724369c8087ef324d47df7973e3b0dfacc1687bfe7e4261c8bc1e20ad60b0a90",
+  "conformance/fixtures/s05/expected.json": "aae41a0f4d79752a0b14d2d4504d5112d4bc576ba6827412675f6789eb6ee234",
+  "conformance/fixtures/s05/audit.json": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e"
+}

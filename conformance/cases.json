@@ -1,0 +1,2390 @@
+[
+  {
+    "id": "ONT-01-leading-zero",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "s1",
+            "observations": [
+              {
+                "revision": "s1",
+                "source_revision": "s1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-01-exact-'1'",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "1"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-01-exact-'001 '",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001 "
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001 "
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-01-exact-'a|b'",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "a|b"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "a|b"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-01-delimiter-tuple",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student|a",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "b"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student|a",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "b"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-02-other-account",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "B"
+        },
+        "native_key": "001"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "unavailable"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-02-other-student",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "secret"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "unavailable"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-02-other-class",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "class-secret"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "unavailable"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-02-absent",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "Synthetic Student"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "unavailable"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-02-no-name-guess",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": " 001"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "unavailable"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-02-traverse",
+    "input": {
+      "op": "traverse",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "0007|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "p3",
+            "observations": [
+              {
+                "revision": "p1",
+                "source_revision": "p1",
+                "observed_at": 1793577000,
+                "fresh_until": 1793577100,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "value",
+                    "value": 0
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              },
+              {
+                "revision": "p2",
+                "source_revision": "p2",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "correction",
+                "supersedes": "p1",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "unknown"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              },
+              {
+                "revision": "p3",
+                "source_revision": "p3",
+                "observed_at": 1793576000,
+                "fresh_until": 1793576100,
+                "change": "backfill",
+                "supersedes": "p2",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "missing"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001 "
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "textbook",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "book:01|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "b1",
+            "observations": [
+              {
+                "revision": "b1",
+                "source_revision": "b1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "title": {
+                    "kind": "value",
+                    "value": "Synthetic Book"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-04-history",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "progress",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "0007|x"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "0007|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "p3",
+            "observations": [
+              {
+                "revision": "p1",
+                "source_revision": "p1",
+                "observed_at": 1793577000,
+                "fresh_until": 1793577100,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "value",
+                    "value": 0
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              },
+              {
+                "revision": "p2",
+                "source_revision": "p2",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "correction",
+                "supersedes": "p1",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "unknown"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              },
+              {
+                "revision": "p3",
+                "source_revision": "p3",
+                "observed_at": 1793576000,
+                "fresh_until": 1793576100,
+                "change": "backfill",
+                "supersedes": "p2",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "missing"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-04-decision",
+    "input": {
+      "op": "decide",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "learning"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "decision",
+        "decision": "review_required",
+        "basis": [
+          {
+            "id": {
+              "object_type": "progress",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "0007|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "p3",
+            "observations": [
+              {
+                "revision": "p1",
+                "source_revision": "p1",
+                "observed_at": 1793577000,
+                "fresh_until": 1793577100,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "value",
+                    "value": 0
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              },
+              {
+                "revision": "p2",
+                "source_revision": "p2",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "correction",
+                "supersedes": "p1",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "unknown"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              },
+              {
+                "revision": "p3",
+                "source_revision": "p3",
+                "observed_at": 1793576000,
+                "fresh_until": 1793576100,
+                "change": "backfill",
+                "supersedes": "p2",
+                "coverage": "partial",
+                "fields": {
+                  "score": {
+                    "kind": "missing"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "s1",
+            "observations": [
+              {
+                "revision": "s1",
+                "source_revision": "s1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001 "
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "x1",
+            "observations": [
+              {
+                "revision": "x1",
+                "source_revision": "x1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "textbook",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "book:01|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "b1",
+            "observations": [
+              {
+                "revision": "b1",
+                "source_revision": "b1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "title": {
+                    "kind": "value",
+                    "value": "Synthetic Book"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "useful-observed-books",
+    "input": {
+      "op": "decide",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "books"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "decision",
+        "decision": "evidence_available",
+        "basis": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "001"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "s1",
+            "observations": [
+              {
+                "revision": "s1",
+                "source_revision": "s1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "label": {
+                    "kind": "value",
+                    "value": "Synthetic Student"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "textbook",
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "native_key": "book:01|x"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "synthetic://same-host",
+                "account": "A"
+              },
+              "class_key": "C1",
+              "student_key": "001"
+            },
+            "head": "b1",
+            "observations": [
+              {
+                "revision": "b1",
+                "source_revision": "b1",
+                "observed_at": 1793577500,
+                "fresh_until": 1793577800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "complete",
+                "fields": {
+                  "title": {
+                    "kind": "value",
+                    "value": "Synthetic Book"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                  "pointer": "/synthetic"
+                },
+                "stale": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "empty-traversal",
+    "input": {
+      "op": "traverse",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "relation": "absent"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": []
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "S05-recorded-student",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "recording://s05-synthetic",
+          "account": "fixture-A"
+        },
+        "native_key": "synthetic-student-1"
+      }
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "synthetic-student-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "teacher_authenticated": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "complete_roster_verified": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "absence_proves_nonperformance": {
+                    "kind": "value",
+                    "value": false
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "S05-section",
+    "input": {
+      "op": "traverse",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "recording://s05-synthetic",
+          "account": "fixture-A"
+        },
+        "native_key": "synthetic-student-1"
+      },
+      "relation": "section"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "section",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "placeholder"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "placeholder",
+                      "bookEditionId": "edition-a",
+                      "rowKind": "placeholder"
+                    }
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/sections/1"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "section",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "section-a"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "section-a",
+                      "bookEditionId": "edition-a",
+                      "rowKind": "section"
+                    }
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/sections/0"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "S05-section-decision",
+    "input": {
+      "op": "decide",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "recording://s05-synthetic",
+          "account": "fixture-A"
+        },
+        "native_key": "synthetic-student-1"
+      },
+      "relation": "section"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "decision",
+        "decision": "review_required",
+        "basis": [
+          {
+            "id": {
+              "object_type": "section",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "placeholder"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "placeholder",
+                      "bookEditionId": "edition-a",
+                      "rowKind": "placeholder"
+                    }
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/sections/1"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "section",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "section-a"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "section-a",
+                      "bookEditionId": "edition-a",
+                      "rowKind": "section"
+                    }
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/sections/0"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "synthetic-student-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "teacher_authenticated": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "complete_roster_verified": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "absence_proves_nonperformance": {
+                    "kind": "value",
+                    "value": false
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "S05-attempt",
+    "input": {
+      "op": "traverse",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "recording://s05-synthetic",
+          "account": "fixture-A"
+        },
+        "native_key": "synthetic-student-1"
+      },
+      "relation": "attempt"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "objects",
+        "objects": [
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "blank-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "blank-score",
+                      "score": ""
+                    }
+                  },
+                  "score": {
+                    "kind": "blank"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/3"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "missing-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "missing-score"
+                    }
+                  },
+                  "score": {
+                    "kind": "missing"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/1"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "not-performed"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "not-performed",
+                      "assessmentState": "not_performed"
+                    }
+                  },
+                  "score": {
+                    "kind": "not_performed"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/6"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "null-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "null-score",
+                      "score": null
+                    }
+                  },
+                  "score": {
+                    "kind": "null"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/2"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "old-attempt"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "old-attempt",
+                      "score": 75,
+                      "displayedAt": "2020-01-01 10:00",
+                      "teacherReview": "unknown"
+                    }
+                  },
+                  "score": {
+                    "kind": "value",
+                    "value": 75
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/0"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "unknown-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "unknown-score",
+                      "score": "unknown"
+                    }
+                  },
+                  "score": {
+                    "kind": "unknown"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/5"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "zero-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "zero-score",
+                      "score": 0
+                    }
+                  },
+                  "score": {
+                    "kind": "value",
+                    "value": 0
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/4"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "S05-attempt-decision",
+    "input": {
+      "op": "decide",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "recording://s05-synthetic",
+          "account": "fixture-A"
+        },
+        "native_key": "synthetic-student-1"
+      },
+      "relation": "attempt"
+    },
+    "expected": {
+      "status": "ok",
+      "authorization_revision": 1,
+      "result": {
+        "kind": "decision",
+        "decision": "review_required",
+        "basis": [
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "blank-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "blank-score",
+                      "score": ""
+                    }
+                  },
+                  "score": {
+                    "kind": "blank"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/3"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "missing-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "missing-score"
+                    }
+                  },
+                  "score": {
+                    "kind": "missing"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/1"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "not-performed"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "not-performed",
+                      "assessmentState": "not_performed"
+                    }
+                  },
+                  "score": {
+                    "kind": "not_performed"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/6"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "null-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "null-score",
+                      "score": null
+                    }
+                  },
+                  "score": {
+                    "kind": "null"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/2"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "old-attempt"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "old-attempt",
+                      "score": 75,
+                      "displayedAt": "2020-01-01 10:00",
+                      "teacherReview": "unknown"
+                    }
+                  },
+                  "score": {
+                    "kind": "value",
+                    "value": 75
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/0"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "unknown-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "unknown-score",
+                      "score": "unknown"
+                    }
+                  },
+                  "score": {
+                    "kind": "unknown"
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/5"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "attempt",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "zero-score"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "source_record": {
+                    "kind": "value",
+                    "value": {
+                      "id": "zero-score",
+                      "score": 0
+                    }
+                  },
+                  "score": {
+                    "kind": "value",
+                    "value": 0
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0/attempts/4"
+                },
+                "stale": true
+              }
+            ]
+          },
+          {
+            "id": {
+              "object_type": "student",
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "native_key": "synthetic-student-1"
+            },
+            "scope": {
+              "namespace": {
+                "instance": "recording://s05-synthetic",
+                "account": "fixture-A"
+              },
+              "class_key": "saved-subset",
+              "student_key": "synthetic-student-1"
+            },
+            "head": "saved-s05",
+            "observations": [
+              {
+                "revision": "saved-s05",
+                "source_revision": "9b5a3c565f4aa9296ba98cdd7460138aa0642f38ded31470e9c8327cda12ee9c",
+                "observed_at": 1791964800,
+                "fresh_until": 1791964800,
+                "change": "initial",
+                "supersedes": null,
+                "coverage": "partial",
+                "fields": {
+                  "teacher_authenticated": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "complete_roster_verified": {
+                    "kind": "value",
+                    "value": false
+                  },
+                  "absence_proves_nonperformance": {
+                    "kind": "value",
+                    "value": false
+                  }
+                },
+                "lineage": {
+                  "artifact_sha256": "4bdf5431cf2823cf707f9b73d2f7b07b47122369fde7ba7a0831bd9700922c3e",
+                  "pointer": "/students/0"
+                },
+                "stale": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "exit": 0
+  },
+  {
+    "id": "ONT-06-claimed-principal",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "principal": "root"
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-06-claimed-grants",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "grants": [
+        "*"
+      ]
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-06-claimed-host_uid",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "host_uid": 0
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  },
+  {
+    "id": "ONT-06-claimed-teacherLabel",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      },
+      "teacherLabel": "박경찬"
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  },
+  {
+    "id": "invalid-identity",
+    "input": {
+      "op": "get",
+      "id": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": ""
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  },
+  {
+    "id": "invalid-op",
+    "input": {
+      "op": "action",
+      "root": {
+        "object_type": "student",
+        "namespace": {
+          "instance": "synthetic://same-host",
+          "account": "A"
+        },
+        "native_key": "001"
+      }
+    },
+    "expected": {
+      "status": "refused",
+      "code": "invalid_request"
+    },
+    "exit": 2
+  }
+]

@@ -1,0 +1,325 @@
+{
+  "schemaVersion": "academy.audit.normalized/1.0.0",
+  "collectedAt": "2026-10-14T08:00:00Z",
+  "students": [
+    {
+      "studentId": "synthetic-student-1",
+      "name": "Synthetic Student 1",
+      "books": [
+        {
+          "sourceBookEditionId": "edition-a",
+          "displayName": "Synthetic Book A"
+        },
+        {
+          "sourceBookEditionId": "edition-b",
+          "displayName": "Synthetic Book B"
+        }
+      ],
+      "sections": [
+        {
+          "id": "section-a",
+          "bookEditionId": "edition-a",
+          "rowKind": "section"
+        },
+        {
+          "id": "placeholder",
+          "bookEditionId": "edition-a",
+          "rowKind": "placeholder"
+        },
+        {
+          "id": "section-b",
+          "bookEditionId": "edition-b",
+          "rowKind": "section"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "old-attempt",
+          "score": 75,
+          "displayedAt": "2020-01-01 10:00",
+          "teacherReview": "unknown"
+        },
+        {
+          "id": "missing-score"
+        },
+        {
+          "id": "null-score",
+          "score": null
+        },
+        {
+          "id": "blank-score",
+          "score": ""
+        },
+        {
+          "id": "zero-score",
+          "score": 0
+        },
+        {
+          "id": "unknown-score",
+          "score": "unknown"
+        },
+        {
+          "id": "not-performed",
+          "assessmentState": "not_performed"
+        }
+      ],
+      "effectiveAssignments": [],
+      "DTZT": {
+        "current/DT~1": {
+          "score": 0,
+          "teacherFinal": "unknown"
+        }
+      },
+      "liveDailyRecords": [
+        {
+          "date": "2026-10-14",
+          "progress": "",
+          "homework": null,
+          "recordKey": "synthetic-current"
+        },
+        {
+          "date": "2026-10-12",
+          "progress": null,
+          "recordKey": "synthetic-prior"
+        }
+      ]
+    },
+    {
+      "studentId": "synthetic-student-2",
+      "name": "Synthetic Student 2",
+      "books": [
+        {
+          "sourceBookEditionId": "edition-a",
+          "displayName": "Synthetic Book A"
+        },
+        {
+          "sourceBookEditionId": "edition-b",
+          "displayName": "Synthetic Book B"
+        }
+      ],
+      "sections": [
+        {
+          "id": "section-a",
+          "bookEditionId": "edition-a",
+          "rowKind": "section"
+        },
+        {
+          "id": "placeholder",
+          "bookEditionId": "edition-a",
+          "rowKind": "placeholder"
+        },
+        {
+          "id": "section-b",
+          "bookEditionId": "edition-b",
+          "rowKind": "section"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "old-attempt",
+          "score": 75,
+          "displayedAt": "2020-01-01 10:00",
+          "teacherReview": "unknown"
+        }
+      ],
+      "effectiveAssignments": [],
+      "DTZT": {
+        "current/DT~1": {
+          "score": 0,
+          "teacherFinal": "unknown"
+        }
+      },
+      "liveDailyRecords": [
+        {
+          "date": "2026-10-14",
+          "progress": "",
+          "homework": null,
+          "recordKey": "synthetic-current"
+        },
+        {
+          "date": "2026-10-12",
+          "progress": null,
+          "recordKey": "synthetic-prior"
+        }
+      ]
+    },
+    {
+      "studentId": "synthetic-student-3",
+      "name": "Synthetic Student 3",
+      "books": [
+        {
+          "sourceBookEditionId": "edition-a",
+          "displayName": "Synthetic Book A"
+        },
+        {
+          "sourceBookEditionId": "edition-b",
+          "displayName": "Synthetic Book B"
+        }
+      ],
+      "sections": [
+        {
+          "id": "section-a",
+          "bookEditionId": "edition-a",
+          "rowKind": "section"
+        },
+        {
+          "id": "placeholder",
+          "bookEditionId": "edition-a",
+          "rowKind": "placeholder"
+        },
+        {
+          "id": "section-b",
+          "bookEditionId": "edition-b",
+          "rowKind": "section"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "old-attempt",
+          "score": 75,
+          "displayedAt": "2020-01-01 10:00",
+          "teacherReview": "unknown"
+        }
+      ],
+      "effectiveAssignments": [],
+      "DTZT": {
+        "current/DT~1": {
+          "score": 0,
+          "teacherFinal": "unknown"
+        }
+      },
+      "liveDailyRecords": [
+        {
+          "date": "2026-10-14",
+          "progress": "",
+          "homework": null,
+          "recordKey": "synthetic-current"
+        },
+        {
+          "date": "2026-10-12",
+          "progress": null,
+          "recordKey": "synthetic-prior"
+        }
+      ]
+    },
+    {
+      "studentId": "synthetic-student-4",
+      "name": "Synthetic Student 4",
+      "books": [
+        {
+          "sourceBookEditionId": "edition-a",
+          "displayName": "Synthetic Book A"
+        },
+        {
+          "sourceBookEditionId": "edition-b",
+          "displayName": "Synthetic Book B"
+        }
+      ],
+      "sections": [
+        {
+          "id": "section-a",
+          "bookEditionId": "edition-a",
+          "rowKind": "section"
+        },
+        {
+          "id": "placeholder",
+          "bookEditionId": "edition-a",
+          "rowKind": "placeholder"
+        },
+        {
+          "id": "section-b",
+          "bookEditionId": "edition-b",
+          "rowKind": "section"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "old-attempt",
+          "score": 75,
+          "displayedAt": "2020-01-01 10:00",
+          "teacherReview": "unknown"
+        }
+      ],
+      "effectiveAssignments": [],
+      "DTZT": {
+        "current/DT~1": {
+          "score": 0,
+          "teacherFinal": "unknown"
+        }
+      },
+      "liveDailyRecords": [
+        {
+          "date": "2026-10-14",
+          "progress": "",
+          "homework": null,
+          "recordKey": "synthetic-current"
+        },
+        {
+          "date": "2026-10-12",
+          "progress": null,
+          "recordKey": "synthetic-prior"
+        }
+      ],
+      "prepVideosHistorical": null
+    },
+    {
+      "studentId": "synthetic-student-5",
+      "name": "Synthetic Student 4",
+      "books": [
+        {
+          "sourceBookEditionId": "edition-a",
+          "displayName": "Synthetic Book A"
+        },
+        {
+          "sourceBookEditionId": "edition-b",
+          "displayName": "Synthetic Book B"
+        }
+      ],
+      "sections": [
+        {
+          "id": "section-a",
+          "bookEditionId": "edition-a",
+          "rowKind": "section"
+        },
+        {
+          "id": "placeholder",
+          "bookEditionId": "edition-a",
+          "rowKind": "placeholder"
+        },
+        {
+          "id": "section-b",
+          "bookEditionId": "edition-b",
+          "rowKind": "section"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "old-attempt",
+          "score": 75,
+          "displayedAt": "2020-01-01 10:00",
+          "teacherReview": "unknown"
+        }
+      ],
+      "effectiveAssignments": [],
+      "DTZT": {
+        "current/DT~1": {
+          "score": 0,
+          "teacherFinal": "unknown"
+        }
+      },
+      "liveDailyRecords": [
+        {
+          "date": "2026-10-14",
+          "progress": "",
+          "homework": null,
+          "recordKey": "synthetic-current"
+        },
+        {
+          "date": "2026-10-12",
+          "progress": null,
+          "recordKey": "synthetic-prior"
+        }
+      ]
+    }
+  ]
+}

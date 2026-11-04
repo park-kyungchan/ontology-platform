@@ -1,0 +1,141 @@
+{
+  "kind": "static_only",
+  "rust_compiled": false,
+  "rust_candidate_executed": false,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--no-deps",
+        "--format-version",
+        "1"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "fetch",
+        "--locked",
+        "--offline"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "conformance/verify.py",
+        "--self-check"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "conformance/s07/verify_v2.py",
+        "--selfcheck"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "-m",
+        "py_compile",
+        "conformance/s07/prepare_old_reader.py",
+        "conformance/s07/rollback_v1.py",
+        "conformance/s07/sqlite_probe_v1.py",
+        "conformance/s07/static_v1.py",
+        "conformance/s07/verify_v1.py",
+        "conformance/s07/verify_v2.py"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "rustfmt",
+        "+1.95.0",
+        "--edition",
+        "2024",
+        "--check",
+        "conformance/s07/old_reader.rs"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "status": 0
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "status": 0
+    }
+  ],
+  "source_sha256": {
+    "Cargo.lock": "b52588aff0741668d076a85684a02f4194afa0182132eaac51a76608d48c3d47",
+    "Cargo.toml": "239cf286ef001877ea9e989f8e66bdfc24ac4dd6002d70ed15a7ae1603d8f6b9",
+    "README.md": "0108f008a6a1d09221c35c54365c92bf8de9b95f1af9c918de05c14134a30b50",
+    "conformance/s07/cases-v1.json": "e8c18de131f900c01326e7b3a1be8bbb5d1dbb6a11d5a977bef24d2225dca809",
+    "conformance/s07/old_reader.rs": "8c4af9f030786377e366fa4abf56d6f2f1c2a268db981141b21bc8fc2bd58132",
+    "conformance/s07/pins-v1.json": "48171b23a92af6d05118f3d3c6e1cad5013ce65d4c3d1116196ec3ea3c9cfe3c",
+    "conformance/s07/pins-v2.json": "8ca3dc5d4b5844d35186b6f0432e5da0cfc1c33fd1d8ce6a281f64a09185e8a5",
+    "conformance/s07/prepare_old_reader.py": "cd77d6d19c5a083bab3212bb31bf349a0814dd5af468c0a94deb920bfb0d473b",
+    "conformance/s07/rollback_v1.py": "8f34112b84f3ea6520929c97c93dbf10531d870ad969384891e5da7de0550950",
+    "conformance/s07/source-v1.json": "c0f61e899b944597ef95a63d09ee9e52a2a408980524cd00b9ae875bba2493a2",
+    "conformance/s07/sqlite_probe_v1.py": "6b4146ef5d8f4fe847cec72afe1f4d05867eacc6e9cc7bba9fbb878913f16194",
+    "conformance/s07/static_v1.py": "2a315a53a7464289bf44d7ea5fc2d7795790b34022a1883fd5c49a6e851338c6",
+    "conformance/s07/verify_v1.py": "9a3ed876d6cde6219468681b40fba2d1eb2abf05e593ed9bb5ca97a3d90ba298",
+    "conformance/s07/verify_v2.py": "8b42b1c0c219c89dbe1152f378922a5f50cfc7dc9f719f7ef7404c93afa4f339",
+    "crates/ont-core/Cargo.toml": "a1ab82e63b14bb1b9fa7aca137d99c8c512cfe5a48800d2706157ac53f41cec8",
+    "crates/ont-core/README.md": "444cc609dcd9616c6abc80a90a7b13e84d07b6a14228c2fd135d33bcfde6c0bb",
+    "crates/ont-core/src/action.rs": "754e5a5f6483e7c96e7d1dc3197d8132731b7cfd2a0ecf03dcd171d6e33f7cd0",
+    "crates/ont-core/src/lib.rs": "6ecec960ed1048657ca0926374f8ef00557d76fcd2e26c930583b85784ca01e5",
+    "crates/ont-store/Cargo.toml": "b77ac7c5b8ecd9cdb1ae2f85f75c8d89d43dabb408be8832869e085c827be5ea",
+    "crates/ont-store/README.md": "47090aeaa1c8a9f0baf090c2fd8ad257aa93bc504d65a9c73b311281828e3ed5",
+    "crates/ont-store/actions.sql": "e215a5160505cc2390bf0ab649669c7ccfbaef08871a853ba74d6753cc5990ae",
+    "crates/ont-store/fake.sql": "3a086f82a0fcb31760a9ea9461c6a09c97fe6fb1cd2fa30738e97cbcd49254fa",
+    "crates/ont-store/schema.sql": "c3c604e0cf566202905e80093e72d5a9f779eb8cd9f378b31e3efe918c7fe7f8",
+    "crates/ont-store/src/actions.rs": "133b687fb6b30463bc00af13547215ec70ca6642223f92f9eb0506752bb0a699",
+    "crates/ont-store/src/fake.rs": "cbfe43da9d81071a3866f3604e405d95c345856c002d29a4c5bc969dbbb0099a",
+    "crates/ont-store/src/lib.rs": "df84dd37fd3224f35fe1b2ac69f3ee42ce5266656b697a5a3ac8d845d14676e6",
+    "crates/ontd/Cargo.toml": "7a04e948cd68f866bc2c15dc30deb5591c18b4c73078b2c47fd1559d9f4c4458",
+    "crates/ontd/README.md": "96531fba349ac460690978f7ce4fad2a73df436b63b05d9cd644c5d2ada7e5c5",
+    "crates/ontd/src/bin/ont-local-fake.rs": "4600c649127d74bbff1e693eeb3bac5a925a1a03bbd22122956214d47b3ab026",
+    "crates/ontd/src/lib.rs": "707726037e5ab04b8428496d400aae4c78d3a5d6b3688a62606852329c62e6fe",
+    "crates/ontd/src/local_fake.rs": "0b4b664f136ae4ad0a1ad16c0f9a64986a0981517df43ed1cfbc2b0765eb5e0b",
+    "crates/ontd/src/main.rs": "4802d17e957d5e6622c07b41c5bf5aefdd513d77c4fb8e1f15c96d5a55f13bb5",
+    "crates/ontd/src/synthetic.rs": "3be07bd405208ea7081f012f9b29e1328aba3f7545d60f20225447f44454f422",
+    "crates/ontd/tests/local_actions.rs": "3783469839310f93858ecd537bf064b2c002abf1472ae54b81c9d549320f73d9",
+    "crates/ontd/tests/restricted.rs": "64b0c578413bf0fd76c598d2b99e582489ffdaef4e57bbf1b77d9f69d94a44fb",
+    "docs/s07/CONTRACT-v1.md": "aaea3ac7bf7909035ce2fff4b1ef00a92c7514ba303b88c69a43c5407082652c",
+    "docs/s07/HANDOFF.md": "18b7cc6e59dacd127cc32b590312d7780de8228d6abb93f832de8cbff0272374",
+    "docs/s07/IMPLEMENTATION.md": "35a9da69391836ae0c25e62455457fb9ac9bb106f874306b43b1f8c74f000730",
+    "docs/s07/JUDGE-v2-CORRECTION.md": "9b98ebe32958a511790a25fc8937135ad17e32d85f7333a0c5dfe1328618f553"
+  },
+  "passed": true
+}

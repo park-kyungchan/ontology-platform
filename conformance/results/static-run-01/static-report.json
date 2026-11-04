@@ -1,0 +1,69 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "static-00.stdout",
+      "stderr": "static-00.stderr"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.95.0",
+        "metadata",
+        "--locked",
+        "--offline",
+        "--no-deps",
+        "--format-version",
+        "1"
+      ],
+      "exit": 0,
+      "stdout": "static-01.stdout",
+      "stderr": "static-01.stderr"
+    },
+    {
+      "argv": [
+        "/usr/bin/python3",
+        "/home/palantirkc/work/ws-replan/wt/ontology-platform/conformance/verify.py",
+        "--self-check"
+      ],
+      "exit": 0,
+      "stdout": "static-02.stdout",
+      "stderr": "static-02.stderr"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "static-03.stdout",
+      "stderr": "static-03.stderr"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "static-04.stdout",
+      "stderr": "static-04.stderr"
+    }
+  ],
+  "frozen_pins": 6,
+  "packages": 3,
+  "s05_exact_audit_pointer_rows": 9,
+  "rust_compilation": false,
+  "candidate_execution": false,
+  "lockfile_sha256": "b52588aff0741668d076a85684a02f4194afa0182132eaac51a76608d48c3d47"
+}

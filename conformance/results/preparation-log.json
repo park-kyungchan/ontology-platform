@@ -1,0 +1,46 @@
+{
+  "initial_lock_resolution": {
+    "argv": [
+      "cargo",
+      "+1.95.0",
+      "generate-lockfile"
+    ],
+    "exit": 101,
+    "cause": "ontd target source not created yet",
+    "reported": "missing_target@crates/ontd/Cargo.toml:1"
+  },
+  "system_sqlite_probe": {
+    "argv": [
+      "pkg-config",
+      "--modversion",
+      "sqlite3"
+    ],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Package sqlite3 was not found in the pkg-config search path. sqlite3.pc unavailable."
+  },
+  "resolved_lock": {
+    "argv": [
+      "cargo",
+      "+1.95.0",
+      "generate-lockfile"
+    ],
+    "exit": 0,
+    "registry_packages": 38
+  },
+  "fetch": {
+    "argv": [
+      "cargo",
+      "+1.95.0",
+      "fetch",
+      "--locked"
+    ],
+    "exit": 0,
+    "compiled": false
+  },
+  "official_dependency_source_inspection": {
+    "rusqlite": "0.32.1 transaction.rs:106-130,186-245: default rollback, failed commit drops and attempts rollback",
+    "libsqlite3_sys": "0.30.1 sqlite3/sqlite3.h:149 reports 3.46.0"
+  },
+  "hindsight": "Read-only knowledge search/list/read; official installed coding-agents0.8.2 and pinned1.1.0 a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5 documentation/test inspected. DB/service write tools not called."
+}

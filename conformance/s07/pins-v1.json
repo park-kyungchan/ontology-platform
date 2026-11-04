@@ -1,0 +1,6 @@
+{
+  "docs/s07/CONTRACT-v1.md": "aaea3ac7bf7909035ce2fff4b1ef00a92c7514ba303b88c69a43c5407082652c",
+  "conformance/s07/source-v1.json": "c0f61e899b944597ef95a63d09ee9e52a2a408980524cd00b9ae875bba2493a2",
+  "conformance/s07/cases-v1.json": "e8c18de131f900c01326e7b3a1be8bbb5d1dbb6a11d5a977bef24d2225dca809",
+  "conformance/s07/verify_v1.py": "9a3ed876d6cde6219468681b40fba2d1eb2abf05e593ed9bb5ca97a3d90ba298"
+}
