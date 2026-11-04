@@ -1,3 +1,4 @@
 /target/
-/conformance/results/candidate-*/
+/conformance/results/
+/conformance/s07/results/
 __pycache__/
