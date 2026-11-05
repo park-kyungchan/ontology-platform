@@ -8,6 +8,7 @@ use ont_core::{
     Observation, Policy, Query, Response, Scope,
 };
 use ont_store::Store;
+use program::v2;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -158,10 +159,22 @@ struct RepositoryConfig {
     after_observed_at: u64,
 }
 #[derive(Deserialize)]
+#[serde(tag = "version", rename_all = "snake_case", deny_unknown_fields)]
+enum SnapshotInput {
+    V1 {},
+    V2 {
+        producer: v2::ProducerPin,
+        definition_sha256: String,
+        repositories: BTreeMap<String, v2::model::Identity>,
+        guardrails: BTreeMap<String, v2::wire::Contract>,
+    },
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OwnerConfig {
     schema: String,
     adopted_uid: u32,
+    snapshot_input: Option<SnapshotInput>,
     producer_sha256: Option<String>,
     manifest_sha256: Option<String>,
     legacy_definition: Option<Definition>,
@@ -178,7 +191,41 @@ impl OwnerConfig {
         {
             return Err(err("pilot_invalid_config"));
         }
+        if matches!(c.snapshot_input, Some(SnapshotInput::V2 { .. }))
+            && (c.producer_sha256.is_some() || c.legacy_definition.is_some())
+        {
+            return Err(err("pilot_ambiguous_snapshot_input"));
+        }
         Ok(c)
+    }
+    fn v2_contract(&self) -> Result<v2::IntakeContract> {
+        let Some(SnapshotInput::V2 {
+            producer,
+            definition_sha256,
+            repositories,
+            guardrails,
+        }) = &self.snapshot_input
+        else {
+            return Err(err("pilot_invalid_config"));
+        };
+        Ok(v2::IntakeContract {
+            namespace: namespace(false),
+            guardrail_namespace: namespace(true),
+            program_key: PROGRAM.into(),
+            definition: self
+                .exact_definition
+                .as_ref()
+                .ok_or(err("pilot_config_not_ready"))?
+                .metric()?,
+            producer: producer.clone(),
+            definition_sha256: definition_sha256.clone(),
+            manifest_sha256: self
+                .manifest_sha256
+                .clone()
+                .ok_or(err("pilot_config_not_ready"))?,
+            repositories: repositories.clone(),
+            guardrails: guardrails.clone(),
+        })
     }
     fn contract(&self) -> Result<program::IntakeContract> {
         let producer = self
@@ -343,8 +390,12 @@ fn canonical_root(graph: &mut Graph) -> Result<()> {
         let admitted_pr3 =
             observation.fields == pr3_fields && observation.revision == program::ADAPTER_REVISION;
         let admitted_identity = observation.fields == identity_fields
-            && [program_git::ADAPTER_REVISION, "program-pilot-identity/v1"]
-                .contains(&observation.source_revision.as_str());
+            && [
+                program_git::ADAPTER_REVISION,
+                v2::ADAPTER_REVISION,
+                "program-pilot-identity/v1",
+            ]
+            .contains(&observation.source_revision.as_str());
         if !(admitted_pr3 || admitted_identity) {
             return Err(err("pilot_composition_collision"));
         }
@@ -374,6 +425,14 @@ fn canonical_root(graph: &mut Graph) -> Result<()> {
     });
     Ok(())
 }
+fn snapshots_v2(capture: &v2::Capture, window: ReportWindow, now: u64) -> Result<Graph> {
+    let g = capture.selected_graph(window, now).map_err(intake)?;
+    Ok(Graph {
+        objects: g.objects,
+        links: g.links,
+        artifacts: g.artifacts,
+    })
+}
 fn snapshots(capture: &program::Capture, window: ReportWindow) -> Result<Graph> {
     let (objects, links) = program::selected_graph(capture, window).map_err(intake)?;
     Ok(Graph {
@@ -391,9 +450,18 @@ fn git_sources<T: program_git::Transport, C: FnMut() -> u64>(
     transport: T,
     mut clock: C,
 ) -> Result<Graph> {
+    git_population(config, capture.population(), transport, &mut clock)
+}
+fn git_population<T: program_git::Transport, C: FnMut() -> u64>(
+    config: &OwnerConfig,
+    source_population: &ont_core::program::PathPopulation,
+    transport: T,
+    mut clock: C,
+) -> Result<Graph> {
     if config.repositories.is_empty() {
         return Ok(Graph::default());
     }
+    let is_v2 = matches!(config.snapshot_input, Some(SnapshotInput::V2 { .. }));
     let exact = config
         .exact_definition
         .as_ref()
@@ -402,12 +470,14 @@ fn git_sources<T: program_git::Transport, C: FnMut() -> u64>(
     if exact.reference.id.namespace != namespace(false) {
         return Err(err("pilot_invalid_config"));
     }
-    if exact.reference == capture.population().basis.definition {
+    if !is_v2 && exact.reference == source_population.basis.definition {
         return Err(err("pilot_incompatible_definition"));
     }
-    let mut population = capture.population().clone();
+    let mut population = source_population.clone();
     population.basis.definition = exact.reference;
-    population.basis.adapter_revision = "program-pilot-exact-paths/v1".into();
+    if !is_v2 {
+        population.basis.adapter_revision = "program-pilot-exact-paths/v1".into();
+    }
     let old = std::mem::take(&mut population.repositories);
     let mut configured = BTreeSet::new();
     let mut sources = Vec::new();
@@ -418,9 +488,27 @@ fn git_sources<T: program_git::Transport, C: FnMut() -> u64>(
         if !configured.insert(r.manifest_key.clone()) {
             return Err(err("pilot_invalid_config"));
         }
+        let repository =
+            program_git::Repository::github(&r.owner, &r.name, r.github_id).map_err(git_error)?;
+        if let Some(SnapshotInput::V2 { repositories, .. }) = &config.snapshot_input {
+            let binding = repositories
+                .get(&r.manifest_key)
+                .ok_or(err("pilot_invalid_config"))?;
+            if binding.github_id != r.github_id
+                || binding.full_name != format!("{}/{}", r.owner, r.name)
+            {
+                return Err(err("pilot_invalid_config"));
+            }
+        }
         let paths = old
             .iter()
-            .find(|(id, _)| id.native_key == r.manifest_key)
+            .find(|(id, _)| {
+                if is_v2 {
+                    *id == repository.id()
+                } else {
+                    id.native_key == r.manifest_key
+                }
+            })
             .map(|(_, p)| p.clone())
             .ok_or(err("pilot_invalid_config"))?;
         let repository =
@@ -663,6 +751,60 @@ fn retain(
         .map_err(|_| err("pilot_evidence_failure"))
 }
 
+#[cfg(target_os = "linux")]
+fn execute_v2(
+    input: &[u8],
+    config_bytes: &[u8],
+    config: &OwnerConfig,
+    policy: Policy,
+    query: Query,
+    window: ReportWindow,
+) -> Result<String> {
+    let mut previous = clock()?;
+    let mut failed = false;
+    let capture = v2::capture_fixed(config.v2_contract()?, || match clock() {
+        Ok(t) if t >= previous => {
+            previous = t;
+            t
+        }
+        _ => {
+            failed = true;
+            previous
+        }
+    })
+    .map_err(intake)?;
+    if failed {
+        return Err(err("pilot_clock_failure"));
+    }
+    let git = git_population(
+        config,
+        capture.population(),
+        program_git::GhTransport,
+        || match clock() {
+            Ok(t) if t >= previous => {
+                previous = t;
+                t
+            }
+            _ => {
+                failed = true;
+                previous
+            }
+        },
+    )?;
+    if failed {
+        return Err(err("pilot_clock_failure"));
+    }
+    let now = clock()?;
+    if now < previous {
+        return Err(err("pilot_clock_failure"));
+    }
+    let mut graph = snapshots_v2(&capture, window, now)?;
+    graph.merge(git)?;
+    let (answer, artifacts) = render(graph, policy, query, now)?;
+    retain(artifacts, &answer, input, config_bytes, now)?;
+    Ok(answer)
+}
+
 /// Fixed host UID/config/source boundary. Call only in a separately released live
 /// run. Unit tests use internal synthetic seams and never invoke this acquisition.
 #[cfg(target_os = "linux")]
@@ -674,8 +816,11 @@ pub fn execute(input: &[u8]) -> Result<String> {
     let (query, window) = request(input)?;
     let config_bytes = owner_file()?;
     let config = OwnerConfig::parse(&config_bytes)?;
-    let contract = config.contract()?;
     let policy = config.policy()?;
+    if matches!(config.snapshot_input, Some(SnapshotInput::V2 { .. })) {
+        return execute_v2(input, &config_bytes, &config, policy, query, window);
+    }
+    let contract = config.contract()?;
     // Checked fallible clock around fixed source capture; callback is a trusted
     // captured value, never stdin, with each boundary sampled explicitly.
     let start = clock()?;

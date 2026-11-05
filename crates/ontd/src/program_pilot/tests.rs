@@ -329,3 +329,143 @@ fn pr4_validated_collector_joins_pr3_pr5_and_preserves_unbound_reconciliation() 
     assert!(!text.contains("a.ts"));
     assert!(text.contains("unresolved_reconciliation"));
 }
+
+#[test]
+fn v2_owner_selection_is_explicit_and_never_mixes_v1() {
+    let mut v=serde_json::to_value(json!({"schema":"ont-program-pilot/v1","adopted_uid":0,"snapshot_input":{"version":"v2","producer":{"source_commit":"1".repeat(40),"source_tree":"2".repeat(40),"binary_sha256":"3".repeat(64),"build_evidence_sha256":"4".repeat(64)},"definition_sha256":"a".repeat(64),"repositories":{},"guardrails":{}},"producer_sha256":"b".repeat(64),"legacy_definition":null,"exact_definition":null,"manifest_sha256":"a".repeat(64),"repositories":[]})).unwrap();
+    assert!(matches!(
+        OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()),
+        Err(PilotError("pilot_ambiguous_snapshot_input"))
+    ));
+    v["producer_sha256"] = Value::Null;
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_ok());
+    v["snapshot_input"]["version"] = json!("both");
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_err());
+    // Existing owner configurations still select the original v1 branch.
+    assert!(config().snapshot_input.is_none());
+}
+fn v2_base() -> Graph {
+    let c = program::v2::tests::fixture().capture().unwrap();
+    snapshots_v2(
+        &c,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW,
+    )
+    .unwrap()
+}
+#[test]
+fn v2_real_intake_through_pilot_is_partial_with_exact_guardrail_contract() {
+    let (answer, _) = render(
+        v2_base(),
+        config().policy().unwrap(),
+        Query::ProgramReport {
+            root: id("program", PROGRAM, false),
+            window: ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+        },
+        NOW,
+    )
+    .unwrap();
+    let v: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(v["trust_limit"], TRUST_LIMIT);
+    assert_eq!(
+        v["response"]["result"]["report"]["assessment"],
+        "insufficient_evidence"
+    );
+    let guards = v["response"]["result"]["report"]["guardrails"]
+        .as_array()
+        .unwrap();
+    assert_eq!(guards.len(), 4);
+    let disk = guards
+        .iter()
+        .find(|g| g["guardrail"]["value"] == "disk")
+        .unwrap();
+    assert_eq!(disk["value"]["value"], 20_u64 << 30);
+    assert_eq!(disk["bound_satisfied"]["value"], true);
+    let basis = v["response"]["result"]["report"]["basis"]
+        .as_array()
+        .unwrap();
+    let disk_basis = basis.iter().find(|o| o["id"] == disk["id"]).unwrap();
+    assert_eq!(
+        disk_basis["observations"][0]["fields"]["bound_value"]["value"],
+        16106127360_u64
+    );
+}
+#[test]
+fn v2_full_and_reduced_store_match_through_pilot_with_hidden_sources() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let full = v2_base();
+    let mut reduced = v2_base();
+    let visible = BTreeSet::from(["program", "metric", "measurement", "target"]);
+    reduced.objects.retain(|o| {
+        o.id.namespace == namespace(false) && visible.contains(o.id.object_type.as_str())
+    });
+    let ids: BTreeSet<_> = reduced.objects.iter().map(|o| o.id.clone()).collect();
+    reduced
+        .links
+        .retain(|l| ids.contains(&l.source) && ids.contains(&l.target));
+    let query = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let a = render(full, policy.clone(), query(), NOW).unwrap().0;
+    assert_eq!(a, render(reduced, policy.clone(), query(), NOW).unwrap().0);
+    // Identity disclosure does not depend on any intake/evidence being present.
+    policy.principals.get_mut(PRINCIPAL).unwrap()[0].object_types =
+        BTreeSet::from(["program".into()]);
+    assert_eq!(
+        render(v2_base(), policy.clone(), query(), NOW).unwrap().0,
+        render(Graph::default(), policy, query(), NOW).unwrap().0
+    );
+}
+
+#[test]
+fn v2_hidden_guardrail_changes_do_not_change_visible_metric_or_identity_bytes() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let q = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let expected = render(v2_base(), policy.clone(), q(), NOW).unwrap().0;
+    for free in [14_u64 << 30, 30_u64 << 30] {
+        let mut f = program::v2::tests::fixture();
+        let mut recording: Value =
+            serde_json::from_slice(&f.evidence["synthetic-test"]["disk-recording.json"]).unwrap();
+        recording["outcome"]["numerator"] = json!(free);
+        f.replace_artifact("disk-recording.json", recording);
+        f.row["guard_disk_free_gib"]["value"]["value"] = json!(free);
+        f.row["guard_disk_free_gib"]["free_gib"]["value"]["numerator"] = json!(free);
+        let c = f.capture().unwrap();
+        let graph = snapshots_v2(
+            &c,
+            ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(expected, render(graph, policy.clone(), q(), NOW).unwrap().0);
+    }
+}
