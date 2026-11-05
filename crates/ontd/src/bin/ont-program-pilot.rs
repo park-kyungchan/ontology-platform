@@ -1,5 +1,5 @@
 //! One-shot local ProgramReport caller. This is not a human authentication route.
-use ont_core::answer::AnswerRecord;
+use ont_core::answer::{AnswerRecord, Version};
 use ontd::program_pilot::{PilotError, TRUST_LIMIT};
 use std::{
     ffi::OsString,
@@ -13,8 +13,14 @@ fn output_failure() -> ! {
     );
     std::process::exit(1);
 }
-fn run(args: &[OsString], answer_record: bool) -> Result<(String, bool), &'static str> {
-    if !args.is_empty() && args != ["--answer-record"] {
+fn run(args: &[OsString], answer_record: Option<Version>) -> Result<(String, bool), &'static str> {
+    if !(args.is_empty()
+        || args.len() == 1
+            && matches!(
+                args[0].to_str(),
+                Some("--answer-record" | "--answer-record=v1" | "--answer-record=v2")
+            ))
+    {
         return Err("invalid_request");
     }
     let mut bytes = Vec::new();
@@ -22,8 +28,8 @@ fn run(args: &[OsString], answer_record: bool) -> Result<(String, bool), &'stati
         .take(65_537)
         .read_to_end(&mut bytes)
         .map_err(|_| "pilot_input_failure")?;
-    if answer_record {
-        ontd::program_pilot::execute_answer_record_with_status(&bytes)
+    if let Some(version) = answer_record {
+        ontd::program_pilot::execute_answer_record_version_with_status(&bytes, version)
     } else {
         ontd::program_pilot::execute(&bytes).map(|answer| (answer, false))
     }
@@ -39,18 +45,31 @@ fn main() {
         }
         return;
     }
-    let answer_record = args.iter().any(|arg| arg == "--answer-record");
-    let result = if answer_record && non_utf8 {
+    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v2") {
+        Some(Version::V2)
+    } else if args
+        .iter()
+        .any(|arg| arg == "--answer-record" || arg == "--answer-record=v1")
+    {
+        Some(Version::V1)
+    } else {
+        None
+    };
+    let result = if answer_record.is_some() && non_utf8 {
         Err("invalid_request")
     } else {
         run(args, answer_record)
     };
     let (answer, status) = match result {
         Ok((answer, refused)) => (answer, if refused { 2 } else { 0 }),
-        Err(code) if answer_record => match AnswerRecord::from_outcome(code).render() {
-            Ok(record) => (record, 2),
-            Err(_) => std::process::exit(1),
-        },
+        Err(code) if answer_record.is_some() => {
+            match AnswerRecord::from_outcome_version(code, answer_record.unwrap_or(Version::V1))
+                .render()
+            {
+                Ok(record) => (record, 2),
+                Err(_) => std::process::exit(1),
+            }
+        }
         Err(code) => {
             // Preserve base stderr bytes when the new mode is not selected.
             if writeln!(

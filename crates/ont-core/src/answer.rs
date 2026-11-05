@@ -1,9 +1,25 @@
 //! Closed deterministic publication of native results. No query/request input,
-//! arithmetic, authorization, source acquisition, or free-text inference.
+//! authorization, source acquisition, or free-text inference. V2 adds exact arithmetic.
 use crate::{Error, Response, action::ActionOutput};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+mod v2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    V1,
+    V2,
+}
+impl Version {
+    pub fn schema(self) -> &'static str {
+        match self {
+            Self::V1 => SCHEMA,
+            Self::V2 => "ontology-answer/v2",
+        }
+    }
+}
 
 pub const SCHEMA: &str = "ontology-answer/v1";
 
@@ -40,6 +56,55 @@ impl Cell {
             status: "not_available",
             reason,
             native,
+        }
+    }
+    // Rebuild an enriched publication tree without reordering existing explicit
+    // unavailable cells. Knowledge payloads remain opaque at the same boundary.
+    fn publication(value: Value) -> Self {
+        match value {
+            Value::Object(fields)
+                if fields.get("kind").and_then(Value::as_str) == Some("value") =>
+            {
+                Self::Native(Value::Object(fields))
+            }
+            Value::Object(mut fields) => {
+                if fields.len() == 3
+                    && fields.get("status").and_then(Value::as_str) == Some("not_available")
+                {
+                    let reason = match fields.get("reason").and_then(Value::as_str) {
+                        Some("native_null") => Some("native_null"),
+                        Some("missing") => Some("missing"),
+                        Some("null") => Some("null"),
+                        Some("blank") => Some("blank"),
+                        Some("unknown") => Some("unknown"),
+                        Some("not_performed") => Some("not_performed"),
+                        Some("missing_endpoints") => Some("missing_endpoints"),
+                        Some("missing_endpoint_values") => Some("missing_endpoint_values"),
+                        Some("empty_denominator") => Some("empty_denominator"),
+                        Some("incomparable_components") => Some("incomparable_components"),
+                        Some("invalid_rational") => Some("invalid_rational"),
+                        Some("arithmetic_overflow") => Some("arithmetic_overflow"),
+                        Some("unbound_endpoints") => Some("unbound_endpoints"),
+                        Some("unbound_aggregate_change") => Some("unbound_aggregate_change"),
+                        _ => None,
+                    };
+                    if let Some(reason) = reason
+                        && let Some(native) = fields.remove("native")
+                    {
+                        return Self::unavailable(reason, native);
+                    }
+                }
+                Self::Object(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| (k, Self::publication(v)))
+                        .collect(),
+                )
+            }
+            Value::Array(values) => {
+                Self::Array(values.into_iter().map(Self::publication).collect())
+            }
+            value => Self::Native(value),
         }
     }
     fn native(value: Value) -> Self {
@@ -94,6 +159,33 @@ impl AnswerRecord {
             }),
             Response::Refused { code } => Ok(Self::from_outcome(code)),
         }
+    }
+    /// Additive selector; the historical constructor remains byte-identical v1.
+    pub fn from_response_version(response: &Response, version: Version) -> Result<Self, Error> {
+        let mut record = Self::from_response(response)?;
+        record.schema = version.schema();
+        if version == Version::V2
+            && let Response::Ok { result, .. } = response
+        {
+            let mut cells =
+                serde_json::to_value(&record.result).map_err(|_| Error::StoreFailure)?;
+            v2::enrich(result, &mut cells);
+            record.result = Cell::publication(cells);
+        }
+        Ok(record)
+    }
+    pub fn from_outcome_version(code: &str, version: Version) -> Self {
+        let mut record = Self::from_outcome(code);
+        record.schema = version.schema();
+        record
+    }
+    pub fn from_error_version(error: Error, version: Version) -> Self {
+        Self::from_outcome_version(error.code(), version)
+    }
+    pub fn from_action_version(action: &ActionOutput, version: Version) -> Result<Self, Error> {
+        let mut record = Self::from_action(action)?;
+        record.schema = version.schema();
+        Ok(record)
     }
     /// Preserve native action state and post-condition readback. This does not
     /// execute an action or authorize an arbitrary ActionOutput for publication.

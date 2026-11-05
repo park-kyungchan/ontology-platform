@@ -1,6 +1,7 @@
 //! One-shot, OS-account-bound ProgramReport composition. No listener or human login.
 //! Only execute is public; graph/config/policy administration stays crate-internal.
 use crate::{Service, program, program_git, program_guardrails as guards};
+use ont_core::answer::Version;
 use ont_core::program::{DefinitionRef, Direction, MetricDefinition, MetricRole, Unit};
 use ont_core::report::ReportWindow;
 use ont_core::{
@@ -691,20 +692,36 @@ fn render_selected(
     render_output(graph, policy, query, now, answer_record)
         .map(|output| (output.answer, output.artifacts))
 }
+#[cfg(test)]
 fn render_output(
-    mut graph: Graph,
+    graph: Graph,
     policy: Policy,
     query: Query,
     now: u64,
     answer_record: bool,
+) -> Result<Rendered> {
+    render_output_version(
+        graph,
+        policy,
+        query,
+        now,
+        answer_record.then_some(Version::V1),
+    )
+}
+fn render_output_version(
+    mut graph: Graph,
+    policy: Policy,
+    query: Query,
+    now: u64,
+    answer_record: Option<Version>,
 ) -> Result<Rendered> {
     canonical_root(&mut graph)?;
     let (store, artifacts) = graph.seed()?;
     let authority = Authority::new(policy);
     let session = authority.bind_trusted(PRINCIPAL).map_err(core)?;
     let mut service = Service::new(store, authority);
-    let (bytes, refused) = if answer_record {
-        service.render_answer_record_with_status(&session, query, now)
+    let (bytes, refused) = if let Some(version) = answer_record {
+        service.render_answer_record_version_with_status(&session, query, now, version)
     } else {
         service
             .render(&session, query, now)
@@ -712,7 +729,7 @@ fn render_output(
     }
     .map_err(core)?;
     // Keep the native response path and metadata field order byte-stable.
-    if answer_record {
+    if answer_record.is_some() {
         if refused {
             return Ok(Rendered {
                 answer: bytes,
@@ -841,7 +858,7 @@ fn execute_v2(
     policy: Policy,
     query: Query,
     window: ReportWindow,
-    answer_record: bool,
+    answer_record: Option<Version>,
 ) -> Result<(String, bool)> {
     let mut previous = clock()?;
     let mut failed = false;
@@ -883,7 +900,7 @@ fn execute_v2(
     }
     let mut graph = snapshots_v2(&capture, window, now)?;
     graph.merge(git)?;
-    let output = render_output(graph, policy, query, now, answer_record)?;
+    let output = render_output_version(graph, policy, query, now, answer_record)?;
     retain(output.artifacts, &output.answer, input, config_bytes, now)?;
     Ok((output.answer, output.refused))
 }
@@ -892,7 +909,7 @@ fn execute_v2(
 /// run. Unit tests use internal synthetic seams and never invoke this acquisition.
 #[cfg(target_os = "linux")]
 pub fn execute(input: &[u8]) -> Result<String> {
-    execute_selected(input, false).map(|(answer, _)| answer)
+    execute_selected(input, None).map(|(answer, _)| answer)
 }
 /// Same fixed acquisition/retention boundary; selects ontology-answer/v1 only.
 /// Calling this still requires the separately released live-run authority.
@@ -903,10 +920,22 @@ pub fn execute_answer_record(input: &[u8]) -> Result<String> {
 /// Same publication with the native refusal flag for process exit status.
 #[cfg(target_os = "linux")]
 pub fn execute_answer_record_with_status(input: &[u8]) -> Result<(String, bool)> {
-    execute_selected(input, true)
+    execute_selected(input, Some(Version::V1))
+}
+/// Version selector shares the fixed acquisition and retained answer path.
+#[cfg(target_os = "linux")]
+pub fn execute_answer_record_version_with_status(
+    input: &[u8],
+    version: Version,
+) -> Result<(String, bool)> {
+    execute_selected(input, Some(version))
+}
+#[cfg(not(target_os = "linux"))]
+pub fn execute_answer_record_version_with_status(_: &[u8], _: Version) -> Result<(String, bool)> {
+    Err(err("pilot_platform_unavailable"))
 }
 #[cfg(target_os = "linux")]
-fn execute_selected(input: &[u8], answer_record: bool) -> Result<(String, bool)> {
+fn execute_selected(input: &[u8], answer_record: Option<Version>) -> Result<(String, bool)> {
     check_uid(
         rustix::process::getuid().as_raw(),
         rustix::process::geteuid().as_raw(),
@@ -989,7 +1018,7 @@ fn execute_selected(input: &[u8], answer_record: bool) -> Result<(String, bool)>
     ] {
         g.merge(not_performed(kind, unit, now)?)?;
     }
-    let output = render_output(g, policy, query, now, answer_record)?;
+    let output = render_output_version(g, policy, query, now, answer_record)?;
     retain(output.artifacts, &output.answer, input, &config_bytes, now)?;
     Ok((output.answer, output.refused))
 }

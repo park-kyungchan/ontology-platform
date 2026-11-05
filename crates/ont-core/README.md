@@ -24,3 +24,10 @@ binds reviewed source/target inputs and requires explicit named action grants.
 Review, dispatch, recovery and receipt publication keep exact account/class/student
 scope. Opaque current Session and generation checks remain Authority-owned; no
 Host UID or principal-string authentication, identity nonce or registry was added.
+
+Answer publication retains `ontology-answer/v1` through every existing entrypoint.
+`answer::Version::V2` explicitly selects publication-only aggregate and exact
+fixed-decimal fields; native `Response` and `ProgramReport` serialization stay
+unchanged. See [ontd answer record v2](../ontd/README.md#answer-record-v2-explicit-selector)
+for field names, arithmetic units, rounding, unavailable reasons and disclosure
+rules. The closed constructors accept typed native results, never request text.
