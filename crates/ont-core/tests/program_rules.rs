@@ -654,3 +654,58 @@ fn conflicting_or_malformed_pr_records_cannot_establish_complete_association() {
     i.changes[0].prs.candidates[0].merge_commit = None;
     assert_eq!(attribute_v1(&p, &[i], 30), Err(RuleError::InvalidEvidence));
 }
+
+#[test]
+fn one_pr_cannot_claim_different_merged_revisions_across_commit_searches() {
+    let p = population(set(&["a", "b"]));
+    let mut i = interval(
+        &p,
+        &[
+            tree(1, set(&["a", "b"])),
+            tree(2, set(&["b"])),
+            tree(3, set(&[])),
+        ],
+    );
+    let consistent = i.changes[0].prs.candidates[0].clone();
+    // Seeing the same exact record in both complete searches is consistent.
+    i.changes[1].prs.candidates.push(consistent.clone());
+    assert!(
+        attribute_v1(&p, &[i.clone()], 30)
+            .unwrap()
+            .has_unique_pr_explanation()
+    );
+    i.changes[1].prs.candidates.truncate(1);
+    i.changes[1].prs.candidates[0].id = consistent.id.clone();
+    assert_eq!(attribute_v1(&p, &[i], 30), Err(RuleError::IntegrityFailure));
+}
+
+#[test]
+fn contradictory_pr_records_in_different_repository_searches_also_refuse() {
+    let mut p = population(set(&["a"]));
+    let other = id("repository", "other");
+    p.repositories.insert(other.clone(), set(&["a"]));
+    p.basis.denominator = 2;
+    let mut a = interval(&p, &[tree(1, set(&["a"])), tree(2, set(&[]))]);
+    a.repository = id("repository", "repo");
+    a.changes[0].prs.candidates = vec![candidate(&a.repository, 1, &a.after.tree.commit)];
+    let mut b = a.clone();
+    b.repository = other.clone();
+    b.changes[0].prs.candidates = vec![candidate(&other, 1, &b.after.tree.commit)];
+    // Equal PR numbers in different repositories are separate identities.
+    assert!(
+        attribute_v1(&p, &[a.clone(), b.clone()], 30)
+            .unwrap()
+            .has_unique_pr_explanation()
+    );
+    let mut contradiction = a.changes[0].prs.candidates[0].clone();
+    contradiction.merge_commit = Some(sha(99));
+    b.changes[0].prs.candidates.push(contradiction);
+    assert_eq!(
+        attribute_v1(&p, &[a.clone(), b.clone()], 30),
+        Err(RuleError::IntegrityFailure)
+    );
+    assert_eq!(
+        attribute_v1(&p, &[b, a], 30),
+        Err(RuleError::IntegrityFailure)
+    );
+}

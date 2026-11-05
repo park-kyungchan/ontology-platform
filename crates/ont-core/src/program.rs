@@ -439,8 +439,12 @@ pub enum PrAssociation {
     Missing,
     Unknown { eligible: BTreeSet<PrId> },
 }
-fn associate(repository: &Id, commit: &str, search: &PrSearch) -> Result<PrAssociation, RuleError> {
-    let mut seen = BTreeMap::new();
+fn associate(
+    repository: &Id,
+    commit: &str,
+    search: &PrSearch,
+    seen: &mut BTreeMap<PrId, PrCandidate>,
+) -> Result<PrAssociation, RuleError> {
     let mut eligible = BTreeSet::new();
     for candidate in &search.candidates {
         candidate
@@ -457,8 +461,8 @@ fn associate(repository: &Id, commit: &str, search: &PrSearch) -> Result<PrAssoc
         {
             return Err(RuleError::InvalidEvidence);
         }
-        if let Some(previous) = seen.insert(&candidate.id, candidate)
-            && previous != candidate
+        if let Some(previous) = seen.insert(candidate.id.clone(), candidate.clone())
+            && previous != *candidate
         {
             return Err(RuleError::IntegrityFailure);
         }
@@ -579,6 +583,9 @@ pub fn attribute_v1(
         gaps: BTreeSet::new(),
     };
     let mut repositories = BTreeSet::new();
+    // One PR has one accepted merge identity, even when it appears in several
+    // paginated searches, commits or repository intervals in this request.
+    let mut pr_records = BTreeMap::new();
     let mut total_delta = 0_i128;
     let mut total_contribution = 0_i128;
     for interval in intervals {
@@ -625,6 +632,15 @@ pub fn attribute_v1(
             {
                 return Err(RuleError::IntegrityFailure);
             }
+            let association = associate(
+                &interval.repository,
+                &change.accepted.commit,
+                &change.prs,
+                &mut pr_records,
+            )?;
+            if !matches!(association, PrAssociation::Unique(_)) {
+                result.gaps.insert(ReconciliationGap::PrAssociation);
+            }
             if change.first_parent.coverage != Coverage::Complete
                 || change.accepted.coverage != Coverage::Complete
             {
@@ -640,11 +656,6 @@ pub fn attribute_v1(
             let newly_absent: BTreeSet<_> = new.difference(&old).cloned().collect();
             let restored: BTreeSet<_> = old.difference(&new).cloned().collect();
             let count = newly_absent.len() as i128 - restored.len() as i128;
-            let association =
-                associate(&interval.repository, &change.accepted.commit, &change.prs)?;
-            if !matches!(association, PrAssociation::Unique(_)) {
-                result.gaps.insert(ReconciliationGap::PrAssociation);
-            }
             total_contribution = total_contribution
                 .checked_add(count)
                 .ok_or(RuleError::ArithmeticOverflow)?;
