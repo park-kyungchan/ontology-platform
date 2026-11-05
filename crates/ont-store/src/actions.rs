@@ -1,6 +1,6 @@
 //! Durable action journal for the closed fake target. No replay loop or expiration.
 use crate::fake::{FakeTarget, Outcome, Proof};
-use crate::{ReadSnapshot, Store, db, decode, v1_scope};
+use crate::{ReadSnapshot, Store, StoreMode, db, decode, v1_scope};
 use ont_core::action::{
     ActionInput, ActionOutput, PhysicalField, RequestKey, Review, State, physical,
 };
@@ -65,7 +65,10 @@ fn json<T: Serialize>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(|_| Error::StoreFailure)
 }
 fn snapshot<'a>(tx: &'a Transaction<'_>) -> ReadSnapshot<'a> {
-    ReadSnapshot { connection: tx }
+    ReadSnapshot {
+        connection: tx,
+        mode: StoreMode::Education,
+    }
 }
 pub(crate) fn decode_v1_review(raw: &str) -> Result<Review, Error> {
     let review: Review = decode(raw)?;
@@ -123,6 +126,7 @@ impl Store {
     /// Explicit additive installation on this trusted synthetic S06 store only.
     /// S06 readers keep their version-1 object tables and ignore this extension.
     pub fn prepare_local_actions(&mut self) -> Result<(), Error> {
+        self.education_actions()?;
         let tx = db(self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate))?;
@@ -137,7 +141,14 @@ impl Store {
         }
         db(tx.commit())
     }
+    fn education_actions(&self) -> Result<(), Error> {
+        if self.mode != StoreMode::Education {
+            return Err(Error::StoreFailure);
+        }
+        Ok(())
+    }
     pub fn local_journal_id(&self) -> Result<String, Error> {
+        self.education_actions()?;
         db(self.connection.query_row(
             "SELECT journal_id FROM local_action_meta WHERE singleton=1 AND version=1",
             [],
@@ -204,6 +215,7 @@ impl Store {
         key: &RequestKey,
         now: u64,
     ) -> Result<ActionOutput, Error> {
+        self.education_actions()?;
         let tx = db(self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate))?;
