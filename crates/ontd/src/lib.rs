@@ -4,6 +4,7 @@ use ont_store::Store;
 
 pub mod local_fake;
 pub mod program;
+pub mod program_git;
 pub mod synthetic;
 
 /// Public restricted read entrypoint. The embedding owner authenticates and binds
