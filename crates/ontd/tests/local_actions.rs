@@ -389,9 +389,12 @@ fn pending_basis_hold_and_no_effect_recovery_survive_a_real_child_exit() {
     assert!(result.stdout.is_empty());
     assert!(result.stderr.is_empty());
     let mut narrowed = policy(true, true, true);
-    narrowed.principals.get_mut(fixture::PRINCIPAL).unwrap()[0]
-        .scope
-        .student_key = "other-student".into();
+    let ont_core::Scope::Education { student_key, .. } =
+        &mut narrowed.principals.get_mut(fixture::PRINCIPAL).unwrap()[0].scope
+    else {
+        panic!("Education fixture required");
+    };
+    *student_key = "other-student".into();
     authority.replace_trusted(narrowed).unwrap();
     session = authority.bind_trusted(fixture::PRINCIPAL).unwrap();
     assert_eq!(

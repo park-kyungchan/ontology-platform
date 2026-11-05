@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 pub mod action;
+mod scope;
+pub use scope::Scope;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -85,13 +87,6 @@ impl Id {
         }
         Ok(())
     }
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Scope {
-    pub namespace: Namespace,
-    pub class_key: String,
-    pub student_key: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(

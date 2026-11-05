@@ -71,7 +71,10 @@ impl FakeTarget {
             [journal_id],
         ))?;
         for cell in cells {
-            if cell.scope.namespace != cell.physical.namespace {
+            if !matches!(cell.scope, Scope::Education { .. })
+                || cell.scope.validate().is_err()
+                || cell.scope.namespace() != &cell.physical.namespace
+            {
                 return Err(Error::InvalidEvidence);
             }
             db(tx.execute(
@@ -306,7 +309,7 @@ mod tests {
             instance: "synthetic://target-unit".into(),
             account: "001|A".into(),
         };
-        let scope = Scope {
+        let scope = Scope::Education {
             namespace: namespace.clone(),
             class_key: "C1".into(),
             student_key: "001".into(),

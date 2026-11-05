@@ -62,7 +62,7 @@ pub fn policy() -> Policy {
     .map(String::from)
     .collect();
     let grant = Grant {
-        scope: Scope {
+        scope: Scope::Education {
             namespace: namespace(),
             class_key: "C1".into(),
             student_key: "001".into(),
@@ -73,7 +73,7 @@ pub fn policy() -> Policy {
         actions: Default::default(),
     };
     let mut recorded_grant = grant.clone();
-    recorded_grant.scope = Scope {
+    recorded_grant.scope = Scope::Education {
         namespace: recorded_namespace(),
         class_key: "saved-subset".into(),
         student_key: "synthetic-student-1".into(),
@@ -182,7 +182,7 @@ fn recorded_object(
             namespace: recorded_namespace(),
             native_key: key.into(),
         },
-        scope: Scope {
+        scope: Scope::Education {
             namespace: recorded_namespace(),
             class_key: "saved-subset".into(),
             student_key: "synthetic-student-1".into(),

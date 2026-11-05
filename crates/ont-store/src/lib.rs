@@ -138,7 +138,9 @@ fn append_in(transaction: &Transaction<'_>, item: &Append) -> Result<(), Error> 
     } = item;
     id.validate()?;
     observation.validate()?;
-    if scope.namespace != id.namespace || scope.class_key.is_empty() || scope.student_key.is_empty()
+    if !matches!(scope, Scope::Education { .. })
+        || scope.validate().is_err()
+        || scope.namespace() != &id.namespace
     {
         return Err(Error::InvalidEvidence);
     }

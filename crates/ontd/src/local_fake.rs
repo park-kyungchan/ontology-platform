@@ -86,7 +86,10 @@ pub fn authority(profile: &str) -> Result<(Authority, Session), Error> {
         .ok_or(Error::InvalidEvidence)?
         .scope;
     if profile == "account_b" {
-        scope.namespace.account = "B".into();
+        let ont_core::Scope::Education { namespace, .. } = &mut scope else {
+            return Err(Error::InvalidEvidence);
+        };
+        namespace.account = "B".into();
     }
     let grant = ont_core::Grant {
         scope,
