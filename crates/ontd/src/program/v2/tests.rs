@@ -133,6 +133,7 @@ pub(crate) fn fixture() -> Fixture {
         namespace: ns.clone(),
         guardrail_namespace: gn,
         program_key: "ws-replan".into(),
+        source_owner_uid: 0,
         definition: MetricDefinition {
             reference: ont_core::program::DefinitionRef {
                 id: Id {
@@ -584,5 +585,140 @@ fn complete_capture_cross_checks_all_pr5_units_cutoffs_baselines_and_fixed_incid
     assert_eq!(
         fields("defects")["bound_satisfied"],
         Knowledge::Value(false.into())
+    );
+}
+
+#[test]
+fn knowledge_unit_variants_reject_even_null_content_fields() {
+    for pointer in [
+        "/kpi_mcp_parity/value",
+        "/repositories/0/ref_read/signal",
+        "/guard_recall_regression/total",
+    ] {
+        let mut f = fixture();
+        f.row
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("value".into(), Value::Null);
+        assert!(
+            f.capture().is_err(),
+            "unit wrapper must contain only kind: {pointer}"
+        );
+    }
+}
+
+pub(crate) fn failed_repository_fixture() -> Fixture {
+    let mut f = fixture();
+    let r = &mut f.row["repositories"][1];
+    r["source_qualified"] = json!(false);
+    r["qualification"] = json!("failed_source");
+    r["removed"] = unknown();
+    r["tree_read"]["status"] = json!("failed");
+    r["tree_read"]["reason"] = json!("github_exit_nonzero");
+    r["tree_read"]["exit_code"] = known(json!(1));
+    r["tree_read"]["observed_at"] = unknown();
+    r["tree_read"]["artifact"] = unknown();
+    r["membership"] = unknown();
+    r["leaf_path_set_sha256"] = unknown();
+    r["absent_path_set_sha256"] = unknown();
+    for name in ["repo-1-tree.json", "repo-1-membership.json"] {
+        f.evidence.get_mut("synthetic-test").unwrap().remove(name);
+        f.row["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|a| a["path"] != name);
+    }
+    let aggregate = &mut f.row["kpi_legacy_removal"];
+    aggregate["value"] = unknown();
+    aggregate["source_qualified"] = json!(false);
+    aggregate["qualification"] = json!("incomplete_source");
+    aggregate["source"]["status"] = json!("incomplete");
+    aggregate["source"]["reason"] = json!("incomplete_repository_population");
+    aggregate["source"]["observed_at"] = unknown();
+    f
+}
+fn retain(f: &mut Fixture, name: &str, v: Value) -> Value {
+    let b = bytes(&v);
+    let a = value(&ArtifactRef::new(name, &b)).unwrap();
+    f.evidence
+        .get_mut("synthetic-test")
+        .unwrap()
+        .insert(name.into(), b);
+    f.row["artifacts"].as_array_mut().unwrap().push(a.clone());
+    f.row["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|a| a["path"].as_str().unwrap().to_string());
+    a
+}
+fn parity_with_gates(production: bool, complete: bool) -> Fixture {
+    let mut f = fixture();
+    let mut request: Value =
+        serde_json::from_slice(&f.evidence["synthetic-test"]["request.json"]).unwrap();
+    request["parity_recording_path"] = json!("/synthetic/parity.json");
+    f.replace_artifact("request.json", request);
+    let mut tool = json!({"id":"synthetic-tool","bounded_implemented":true,"production_qualified":production,"parity":unknown(),"synthetic_tests":unknown(),"independent_review":unknown(),"ci":unknown(),"rollback":unknown()});
+    for kind in if complete {
+        vec![
+            "parity",
+            "synthetic_tests",
+            "independent_review",
+            "ci",
+            "rollback",
+        ]
+    } else {
+        vec!["parity"]
+    } {
+        let a = retain(
+            &mut f,
+            &format!("gate-{kind}.json"),
+            json!({"gate":kind,"candidate_commit":"a".repeat(40),"passed":production,"owner_revision":"synthetic-gate-owner"}),
+        );
+        tool[kind] = known(a);
+    }
+    let a = retain(
+        &mut f,
+        "parity-recording.json",
+        json!({"source_revision":"synthetic-parity-read","observed_at":NOW-1,"population_complete":true,"tools":[tool]}),
+    );
+    f.row["kpi_mcp_parity"] = json!({"value":known(json!({"qualified":u64::from(production),"total":1,"bounded_implemented":known(json!(1)),"unit":"fraction","tool_set_sha256":path_hash(&BTreeSet::from(["synthetic-tool".into()])),"result_revision":"synthetic-parity-read"})),"source":source("captured",Some(NOW-1),known(a),NOW-1,NOW),"source_qualified":true,"qualification":"qualified"});
+    f
+}
+#[test]
+fn review_partial_failed_gates_preserve_unqualified_tool_progress() {
+    let f = parity_with_gates(false, false);
+    assert!(
+        f.capture().is_ok(),
+        "an unqualified tool may retain a failed or partial gate as diagnostic evidence"
+    );
+    assert!(parity_with_gates(true, true).capture().is_ok());
+    assert!(
+        parity_with_gates(true, false).capture().is_err(),
+        "qualification still requires all five passing gates"
+    );
+}
+#[test]
+fn review_absent_parity_rejects_cross_state_contradictions() {
+    let mut f = fixture();
+    f.row["kpi_mcp_parity"]["source"]["status"] = json!("failed");
+    f.row["kpi_mcp_parity"]["source"]["reason"] = json!("failed_source");
+    assert!(
+        f.capture().is_err(),
+        "failed source cannot become NotPerformed"
+    );
+    let mut f = fixture();
+    let mut request: Value =
+        serde_json::from_slice(&f.evidence["synthetic-test"]["request.json"]).unwrap();
+    request["parity_recording_path"] = json!("/synthetic/parity.json");
+    f.replace_artifact("request.json", request);
+    f.row["kpi_mcp_parity"]["source"]["status"] = json!("captured");
+    f.row["kpi_mcp_parity"]["source"]["reason"] = json!("none");
+    f.row["kpi_mcp_parity"]["qualification"] = json!("qualified");
+    f.row["kpi_mcp_parity"]["value"] = unknown();
+    assert!(
+        f.capture().is_err(),
+        "captured/qualified parity requires evidence"
     );
 }

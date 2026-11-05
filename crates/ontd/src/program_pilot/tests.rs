@@ -469,3 +469,62 @@ fn v2_hidden_guardrail_changes_do_not_change_visible_metric_or_identity_bytes() 
         assert_eq!(expected, render(graph, policy.clone(), q(), NOW).unwrap().0);
     }
 }
+
+#[test]
+fn review_hidden_repository_diagnostics_do_not_change_public_aggregate_bytes() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let q = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let f = program::v2::tests::failed_repository_fixture();
+    let c = f.capture().unwrap();
+    let expected = render(
+        snapshots_v2(
+            &c,
+            ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+            NOW,
+        )
+        .unwrap(),
+        policy.clone(),
+        q(),
+        NOW,
+    )
+    .unwrap()
+    .0;
+    let mut changed = program::v2::tests::failed_repository_fixture();
+    changed.row["repositories"][1]["tree_read"]["reason"] = json!("tree_deadline");
+    changed.row["repositories"][1]["tree_read"]["exit_code"] = json!({"kind":"value","value":124});
+    changed.row["repositories"][1]["tree_read"]["capture"]["end"] = json!(NOW - 1);
+    let c = changed.capture().unwrap();
+    assert_eq!(
+        expected,
+        render(
+            snapshots_v2(
+                &c,
+                ReportWindow {
+                    start: 0,
+                    end: u64::MAX
+                },
+                NOW
+            )
+            .unwrap(),
+            policy,
+            q(),
+            NOW
+        )
+        .unwrap()
+        .0
+    );
+}

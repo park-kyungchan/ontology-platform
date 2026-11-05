@@ -212,6 +212,7 @@ impl OwnerConfig {
             namespace: namespace(false),
             guardrail_namespace: namespace(true),
             program_key: PROGRAM.into(),
+            source_owner_uid: self.adopted_uid,
             definition: self
                 .exact_definition
                 .as_ref()

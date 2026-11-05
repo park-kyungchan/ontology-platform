@@ -44,6 +44,8 @@ pub struct IntakeContract {
     pub namespace: Namespace,
     pub guardrail_namespace: Namespace,
     pub program_key: String,
+    /// Trusted acquisition owner, supplied independently of row bytes.
+    pub source_owner_uid: u32,
     pub definition: MetricDefinition,
     pub producer: ProducerPin,
     pub definition_sha256: String,
@@ -54,7 +56,7 @@ pub struct IntakeContract {
 impl IntakeContract {
     fn metadata(&self) -> Value {
         json!({"namespace":self.namespace,"guardrail_namespace":self.guardrail_namespace,
-            "program_key":self.program_key,"definition":super::definition_metadata(&self.definition),
+            "program_key":self.program_key,"source_owner_uid":self.source_owner_uid,"definition":super::definition_metadata(&self.definition),
             "producer":self.producer,"definition_sha256":self.definition_sha256,
             "manifest_sha256":self.manifest_sha256,"repositories":self.repositories,"guardrails":self.guardrails})
     }
@@ -125,11 +127,20 @@ fn hex(s: &str, n: usize) -> bool {
 fn text(s: &str) -> bool {
     !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
 }
-fn integer_json(v: &Value) -> bool {
+fn closed_json(v: &Value) -> bool {
     match v {
         Value::Number(n) => n.as_u64().is_some(),
-        Value::Array(a) => a.iter().all(integer_json),
-        Value::Object(m) => m.values().all(integer_json),
+        Value::Array(a) => a.iter().all(closed_json),
+        Value::Object(m) => {
+            // serde accepts a null content field for an adjacent-tagged unit
+            // variant. The v2 grammar permits only {kind} for these states.
+            let shape = match m.get("kind").and_then(Value::as_str) {
+                Some("unknown" | "not_performed") => m.len() == 1,
+                Some("value") => m.len() == 2 && m.contains_key("value"),
+                _ => true,
+            };
+            shape && m.values().all(closed_json)
+        }
         _ => true,
     }
 }
@@ -138,7 +149,7 @@ fn parse<T: DeserializeOwned>(bytes: &[u8], limit: usize) -> Result<T> {
         return Err(IntakeError::Bounds);
     }
     let v = strict::parse(bytes)?;
-    if !integer_json(&v) {
+    if !closed_json(&v) {
         return Err(IntakeError::InvalidData);
     }
     serde_json::from_value(v).map_err(|_| IntakeError::InvalidData)
@@ -824,12 +835,33 @@ struct Gate {
 fn verify_parity(s: &Snapshot, b: &BTreeMap<String, Vec<u8>>, _c: &IntakeContract) -> Result<()> {
     let p = &s.kpi_mcp_parity;
     let Some(a) = p.source.artifact.get() else {
-        if p.source_qualified || matches!(p.value, K::Value(_)) {
+        let expected = match (&p.source.status, &p.qualification) {
+            (Status::NotPerformed, Qualification::NotPerformed) => {
+                Some((Knowledge::NotPerformed, "not_performed"))
+            }
+            (Status::Missing, Qualification::MissingSource) => {
+                Some((Knowledge::Unknown, "missing_source"))
+            }
+            (Status::Failed, Qualification::FailedSource) => {
+                Some((Knowledge::Unknown, "failed_source"))
+            }
+            (Status::Invalid, Qualification::InvalidSource) => {
+                Some((Knowledge::Unknown, "invalid_source"))
+            }
+            (Status::Incomplete, Qualification::IncompleteSource) => {
+                Some((Knowledge::Unknown, "incomplete_source"))
+            }
+            _ => None,
+        };
+        let Some((expected_value, reason)) = expected else {
             return Err(IntakeError::InvalidData);
-        }
-        if p.source.status == Status::NotPerformed
-            && (p.qualification != Qualification::NotPerformed
-                || !matches!(p.value, K::NotPerformed))
+        };
+        if p.source_qualified
+            || knowledge(&p.value)? != expected_value
+            || p.source.reason != reason
+            || (p.source.status == Status::NotPerformed
+                && (matches!(p.source.exit_code, K::Value(_))
+                    || matches!(p.source.signal, K::Value(_))))
         {
             return Err(IntakeError::InvalidData);
         }
@@ -837,6 +869,9 @@ fn verify_parity(s: &Snapshot, b: &BTreeMap<String, Vec<u8>>, _c: &IntakeContrac
     };
     let d: DefinitionContract = parse(artifact(&s.definition.contract, b)?, LINE_LIMIT)?;
     let r: ToolRecording = parse(artifact(a, b)?, 1024 * 1024)?;
+    if p.source.status != Status::Captured || p.source.reason != "none" {
+        return Err(IntakeError::InvalidData);
+    }
     let ids: BTreeSet<_> = r.tools.iter().map(|t| t.id.clone()).collect();
     if !text(&r.source_revision)
         || !r.population_complete
@@ -860,16 +895,15 @@ fn verify_parity(s: &Snapshot, b: &BTreeMap<String, Vec<u8>>, _c: &IntakeContrac
                     return Err(IntakeError::InvalidData);
                 }
                 let g: Gate = parse(artifact(a, b)?, LINE_LIMIT)?;
-                if !t.production_qualified
-                    || !g.passed
-                    || g.gate != kind
-                    || !hex(&g.candidate_commit, 40)
-                    || !text(&g.owner_revision)
-                    || candidate.as_ref().is_some_and(|c| c != &g.candidate_commit)
-                {
+                if g.gate != kind || !hex(&g.candidate_commit, 40) || !text(&g.owner_revision) {
                     return Err(IntakeError::InvalidData);
                 }
-                candidate = Some(g.candidate_commit);
+                if t.production_qualified {
+                    if !g.passed || candidate.as_ref().is_some_and(|c| c != &g.candidate_commit) {
+                        return Err(IntakeError::InvalidData);
+                    }
+                    candidate = Some(g.candidate_commit);
+                }
             } else if t.production_qualified {
                 return Err(IntakeError::InvalidData);
             }
@@ -901,7 +935,7 @@ fn verify_parity(s: &Snapshot, b: &BTreeMap<String, Vec<u8>>, _c: &IntakeContrac
 #[cfg(target_os = "linux")]
 pub fn capture_fixed(contract: IntakeContract, mut clock: impl FnMut() -> u64) -> Result<Capture> {
     let start = clock();
-    let journal = super::bounded_file(SNAPSHOTS_PATH, JOURNAL_LIMIT)?;
+    let journal = source::read_journal(contract.source_owner_uid)?;
     let manifest = super::bounded_file(super::MANIFEST_PATH, super::MAX_MANIFEST)?;
     let mut evidence = Evidence::new();
     let mut total = 0usize;
@@ -914,7 +948,8 @@ pub fn capture_fixed(contract: IntakeContract, mut clock: impl FnMut() -> u64) -
         if evidence.contains_key(&s.measurement_id) {
             continue;
         }
-        let bytes = source::read_evidence(&s.measurement_id, &s.artifacts)?;
+        let bytes =
+            source::read_evidence(&s.measurement_id, &s.artifacts, contract.source_owner_uid)?;
         total = total
             .checked_add(bytes.values().map(Vec::len).sum::<usize>())
             .ok_or(IntakeError::Bounds)?;
@@ -1186,7 +1221,7 @@ impl Capture {
                     );
                     fields.insert(
                         "repository_pins".into(),
-                        Knowledge::Value(value(&r.snapshot.repositories)?),
+                        Knowledge::Value(Value::Array(r.snapshot.repositories.iter().map(|repo|json!({"identity":repo.identity,"commit_sha":repo.commit_sha,"tree_sha":repo.tree_sha})).collect())),
                     );
                 }
                 let disclosed = json!({"measurement_id":r.snapshot.measurement_id,"source_revision":r.snapshot.producer.binary_sha256,"observed_at":at,"fields":fields});
