@@ -1,9 +1,12 @@
 //! One-shot local ProgramReport caller. This is not a human authentication route.
 use ont_core::answer::AnswerRecord;
 use ontd::program_pilot::{PilotError, TRUST_LIMIT};
-use std::io::{Read, Write};
+use std::{
+    ffi::OsString,
+    io::{Read, Write},
+};
 const HELP: &str = "Usage: ont-program-pilot [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.\nOS-account principal only; this CLI does not authenticate a human.";
-fn run(args: &[String], answer_record: bool) -> Result<(String, bool), &'static str> {
+fn run(args: &[OsString], answer_record: bool) -> Result<(String, bool), &'static str> {
     if !args.is_empty() && args != ["--answer-record"] {
         return Err("invalid_request");
     }
@@ -20,26 +23,34 @@ fn run(args: &[String], answer_record: bool) -> Result<(String, bool), &'static 
     .map_err(PilotError::code)
 }
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args == ["--help"] {
+    let argv: Vec<OsString> = std::env::args_os().collect();
+    let args = argv.get(1..).unwrap_or_default();
+    let non_utf8 = argv.iter().any(|arg| arg.to_str().is_none());
+    if !non_utf8 && args == ["--help"] {
         println!("{HELP}");
         return;
     }
     let answer_record = args.iter().any(|arg| arg == "--answer-record");
-    let (answer, status) = match run(&args, answer_record) {
+    let result = if answer_record && non_utf8 {
+        Err("invalid_request")
+    } else {
+        run(args, answer_record)
+    };
+    let (answer, status) = match result {
         Ok((answer, refused)) => (answer, if refused { 2 } else { 0 }),
         Err(code) if answer_record => match AnswerRecord::from_outcome(code).render() {
             Ok(record) => (record, 2),
             Err(_) => std::process::exit(1),
         },
         Err(code) => {
-            eprintln!("{code}@{}:{}", file!(), line!());
+            // Preserve base stderr bytes when the new mode is not selected.
+            eprintln!("{code}@crates/ontd/src/bin/ont-program-pilot.rs:24");
             eprintln!("{TRUST_LIMIT}");
             std::process::exit(2);
         }
     };
     if writeln!(std::io::stdout().lock(), "{answer}").is_err() {
-        eprintln!("pilot_output_failure@{}:{}", file!(), line!());
+        eprintln!("pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19");
         std::process::exit(1);
     }
     std::process::exit(status);

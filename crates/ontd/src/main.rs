@@ -1,9 +1,12 @@
 //! Explicitly synthetic stdin demonstration; no production credentials or paths.
 use ont_core::{Error, Query, Response, answer::AnswerRecord};
-use std::io::{Read, Write};
+use std::{
+    ffi::OsString,
+    io::{Read, Write},
+};
 const LIMIT: u64 = 65_536;
 const HELP: &str = "Usage: ontd --synthetic [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.";
-fn execute(args: &[String], answer_record: bool) -> Result<(String, i32), Error> {
+fn execute(args: &[OsString], answer_record: bool) -> Result<(String, i32), Error> {
     let valid = args == ["--synthetic"]
         || args == ["--synthetic", "--answer-record"]
         || args == ["--answer-record", "--synthetic"];
@@ -29,32 +32,42 @@ fn execute(args: &[String], answer_record: bool) -> Result<(String, i32), Error>
     }
 }
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args == ["--help"] {
+    let argv: Vec<OsString> = std::env::args_os().collect();
+    let args = argv.get(1..).unwrap_or_default();
+    let non_utf8 = argv.iter().any(|arg| arg.to_str().is_none());
+    if !non_utf8 && args == ["--help"] {
         println!("{HELP}");
         return;
     }
     let answer_record = args.iter().any(|arg| arg == "--answer-record");
-    let (line, status) = match execute(&args, answer_record) {
+    // Lead-approved compatibility exception: default non-UTF-8 argv also
+    // refuses without the legacy std::env::args panic and caller-byte echo.
+    let result = if non_utf8 {
+        Err(Error::InvalidRequest)
+    } else {
+        execute(args, answer_record)
+    };
+    let (line, status) = match result {
         Ok(result) => result,
-        Err(e) if answer_record => match AnswerRecord::from_error(e).render() {
+        Err(e) if answer_record || non_utf8 => match AnswerRecord::from_error(e).render() {
             Ok(line) => (line, 2),
             Err(_) => std::process::exit(1),
         },
         Err(e @ (Error::StoreFailure | Error::AuthorityFailure | Error::InvalidEvidence)) => {
-            eprintln!("{}@{}:{}", e.code(), file!(), line!());
+            // Diagnostic locations are part of the default CLI byte contract.
+            eprintln!("{}@crates/ontd/src/main.rs:25", e.code());
             std::process::exit(1);
         }
         Err(e) => match serde_json::to_string(&Response::refused(e)) {
             Ok(line) => (line, 2),
             Err(_) => {
-                eprintln!("serialization_failure@{}:{}", file!(), line!());
+                eprintln!("serialization_failure@crates/ontd/src/main.rs:31");
                 std::process::exit(1);
             }
         },
     };
     if writeln!(std::io::stdout().lock(), "{line}").is_err() {
-        eprintln!("output_failure@{}:{}", file!(), line!());
+        eprintln!("output_failure@crates/ontd/src/main.rs:37");
         std::process::exit(1);
     }
     std::process::exit(status);

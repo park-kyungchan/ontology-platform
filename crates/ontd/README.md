@@ -113,3 +113,10 @@ record serialization succeeds. `Service::render_answer_record_with_status` and
 pilot `execute_answer_record_with_status` carry the native refusal boolean with
 the serialized bytes; callers need not parse record text to determine outcome.
 The pilot retains those same bytes before publication for either outcome.
+
+Both CLIs read OS arguments fallibly. With `--answer-record`, every invalid or
+non-UTF-8 argument yields only `invalid_request`, empty stderr and exit 2,
+regardless of argument/help order. Default pilot invalid arguments preserve the
+base static diagnostic and exit 2. One explicit compatibility exception removes
+a legacy leak: default ontd non-UTF-8 arguments now also yield the code-only
+`invalid_request` record and exit 2 instead of a panic containing argument bytes.

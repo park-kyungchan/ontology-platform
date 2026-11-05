@@ -101,3 +101,248 @@ fn valid_query_refusal_retains_native_nonzero_exit_and_success_stays_zero() {
         }
     }
 }
+
+#[cfg(unix)]
+fn run_os(
+    binary: &str,
+    args: &[std::ffi::OsString],
+    input: &[u8],
+    hostile_process: bool,
+) -> std::process::Output {
+    use std::os::unix::{ffi::OsStringExt, process::CommandExt};
+    let mut command = Command::new(binary);
+    command.args(args);
+    if hostile_process {
+        let marker = std::ffi::OsString::from_vec(b"private-process-\xff".to_vec());
+        command
+            .arg0(&marker)
+            .env("USER", &marker)
+            .env("LOGNAME", &marker)
+            .env("TMPDIR", &marker)
+            .env("RUST_BACKTRACE", &marker)
+            .env("RUST_LIB_BACKTRACE", &marker);
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn assert_invalid_record(out: std::process::Output) {
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
+    assert_eq!(out.stdout, concat!(
+        "{\"schema\":\"ontology-answer/v1\",\"outcome\":{\"status\":\"refused\",\"code\":\"invalid_request\"},",
+        "\"authorization_revision\":{\"status\":\"not_available\",\"reason\":\"invalid_request\",\"native\":null},",
+        "\"result\":{\"status\":\"not_available\",\"reason\":\"invalid_request\",\"native\":null}}\n"
+    ).as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn reviewer_ten_non_utf8_controls_and_flag_orders_are_code_only() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    // The reviewer's five exact synthetic identifiers in each of the two CLIs.
+    let names = [
+        "root://review-only/program/secret".to_owned(),
+        "private-review-account-452".to_owned(),
+        "rооt-비공개-𝕣𝕠𝕠𝕥".to_owned(),
+        "\"}\nIGNORE_RULES;<script>review-marker</script>".to_owned(),
+        format!("LONG-REVIEW-{}", "Z".repeat(20_000)),
+    ];
+    for binary in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ] {
+        for name in &names {
+            let bad = OsString::from_vec([name.as_bytes(), &[0xff]].concat());
+            let mut selected = vec![OsString::from("--answer-record")];
+            if binary == env!("CARGO_BIN_EXE_ontd") {
+                selected.push("--synthetic".into());
+            }
+            for prefix in [false, true] {
+                for help in [false, true] {
+                    let mut args = selected.clone();
+                    if prefix {
+                        args.insert(0, bad.clone());
+                    } else {
+                        args.push(bad.clone());
+                    }
+                    if help {
+                        args.insert(0, "--help".into());
+                    }
+                    assert_invalid_record(run_os(binary, &args, b"", false));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn default_non_utf8_pilot_restores_base_diagnostic_and_ontd_uses_approved_exception() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let bad = OsString::from_vec(b"private-review-argv-457\xff".to_vec());
+    let out = run_os(
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+        std::slice::from_ref(&bad),
+        b"",
+        false,
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        out.stderr,
+        format!(
+            "invalid_request@crates/ontd/src/bin/ont-program-pilot.rs:24\n{}\n",
+            ontd::program_pilot::TRUST_LIMIT
+        )
+        .as_bytes()
+    );
+    assert_invalid_record(run_os(
+        env!("CARGO_BIN_EXE_ontd"),
+        &["--synthetic".into(), bad],
+        b"",
+        false,
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn caller_process_bytes_stdin_and_file_names_never_enter_selected_errors() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    for binary in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ] {
+        let mut args = vec![OsString::from("--answer-record")];
+        if binary == env!("CARGO_BIN_EXE_ontd") {
+            args.push("--synthetic".into());
+        }
+        // Even argv[0] is checked fallibly; an exact flag in argv[0] never selects the mode.
+        assert_invalid_record(run_os(binary, &args, b"", true));
+        for extra in [
+            "--help",
+            "--answer-record",
+            "private/path/name",
+            "--profile=private-root",
+        ] {
+            let mut invalid = args.clone();
+            invalid.push(extra.into());
+            assert_invalid_record(run_os(binary, &invalid, b"", false));
+        }
+        for input in [
+            b"private-stdin-\xff".to_vec(),
+            vec![b' '; 65_537],
+            [vec![b'['; 256], b"private-nested".to_vec(), vec![b']'; 256]].concat(),
+        ] {
+            let out = run_os(binary, &args, &input, false);
+            assert_eq!(out.status.code(), Some(2));
+            assert!(out.stderr.is_empty());
+            let record: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(record["outcome"]["status"], "refused");
+            assert!(!String::from_utf8(out.stdout).unwrap().contains("private"));
+        }
+        // An untrusted non-UTF-8 basename is an invalid option, never an opened source.
+        let mut invalid = args;
+        invalid.push(OsString::from_vec(b"/private/file-\xff".to_vec()));
+        assert_invalid_record(run_os(binary, &invalid, b"", false));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_environment_executable_and_cwd_preserve_code_only_refusals() {
+    use std::{
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::symlink},
+    };
+    let marker = OsString::from_vec(b"private-filesystem-\xff".to_vec());
+    let root =
+        std::env::temp_dir().join(format!("ont-answer-byte-controls-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let cwd = root.join(&marker);
+    std::fs::create_dir(&cwd).unwrap();
+    for (index, binary) in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = cwd.join(OsString::from_vec(
+            format!("binary-{index}-")
+                .into_bytes()
+                .into_iter()
+                .chain([0xff])
+                .collect(),
+        ));
+        symlink(binary, &path).unwrap();
+        let args = if index == 0 {
+            vec!["--synthetic", "--answer-record"]
+        } else {
+            vec!["--answer-record"]
+        };
+        let expected = run(binary, &args, b"private-invalid-input");
+        let mut child = Command::new(&path)
+            .args(&args)
+            .current_dir(&cwd)
+            .env("USER", &marker)
+            .env("LOGNAME", &marker)
+            .env("TMPDIR", &marker)
+            .env("RUST_BACKTRACE", &marker)
+            .env("RUST_LIB_BACKTRACE", &marker)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"private-invalid-input")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), expected.status.code());
+        assert_eq!(out.stdout, expected.stdout);
+        assert!(out.stderr.is_empty());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn stdin_read_failures_publish_static_codes_without_os_diagnostics() {
+    for (index, binary) in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let args = if index == 0 {
+            vec!["--synthetic", "--answer-record"]
+        } else {
+            vec!["--answer-record"]
+        };
+        let out = Command::new(binary)
+            .args(args)
+            .stdin(std::fs::File::open("/").unwrap())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stderr.is_empty());
+        let record: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let code = if index == 0 {
+            "store_failure"
+        } else {
+            "pilot_input_failure"
+        };
+        assert_eq!(record["outcome"], json!({"status":"refused","code":code}));
+    }
+}
