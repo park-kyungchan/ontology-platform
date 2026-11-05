@@ -1263,25 +1263,49 @@ impl Capture {
             let bytes = &self.evidence[&r.snapshot.measurement_id];
             for g in guardrails(&r.snapshot) {
                 let q = qualify_guardrail(g, bytes, c, now, false)?;
-                if !(window.start..=window.end).contains(&q.observation().observed_at) {
-                    continue;
-                }
-                graph
-                    .artifacts
-                    .insert(digest(q.envelope_bytes()), q.envelope_bytes().to_vec());
                 let id = Id {
                     object_type: "guardrail".into(),
                     namespace: c.guardrail_namespace.clone(),
                     native_key: format!("v2:{}:{}", r.snapshot.measurement_id, g.kind),
                 };
-                graph.objects.push(
-                    q.object(
+                let mut object = q
+                    .object(
                         id.clone(),
                         Scope::program(c.guardrail_namespace.clone(), c.program_key.clone())
                             .map_err(|_| IntakeError::InvalidContract)?,
                     )
-                    .map_err(|_| IntakeError::InvalidData)?,
-                );
+                    .map_err(|_| IntakeError::InvalidData)?;
+                let observation = &mut object.observations[0];
+                let mut envelope = q.envelope_bytes().to_vec();
+                // PR5 has no source observation time for these diagnostics.
+                // Index their availability by the retained source capture end,
+                // without refreshing or qualifying the original source value.
+                if observation.observed_at == 0
+                    && matches!(
+                        observation.fields.get("qualification"),
+                        Some(Knowledge::Value(Value::String(reason)))
+                        if matches!(reason.as_str(), "not_performed" | "failed_source" | "missing_source" | "invalid_source" | "future_source")
+                    )
+                {
+                    observation.observed_at = g.source.capture.end;
+                    observation.fresh_until = g.source.capture.end;
+                    let mut retained: Value =
+                        serde_json::from_slice(&envelope).map_err(|_| IntakeError::InvalidData)?;
+                    retained["v2_reporting_time"] = json!({
+                        "observed_at": observation.observed_at,
+                        "source_capture": g.source.capture,
+                    });
+                    envelope =
+                        serde_json::to_vec(&retained).map_err(|_| IntakeError::InvalidData)?;
+                    observation.revision = digest(&envelope);
+                    observation.lineage.artifact_sha256 = observation.revision.clone();
+                    object.head = observation.revision.clone();
+                }
+                if !(window.start..=window.end).contains(&observation.observed_at) {
+                    continue;
+                }
+                graph.artifacts.insert(digest(&envelope), envelope);
+                graph.objects.push(object);
                 graph.links.push(edge(root.clone(), "guardrail", id));
             }
             // Retained producer assertions are restricted source-only records.

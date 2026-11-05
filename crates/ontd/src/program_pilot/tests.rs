@@ -396,6 +396,133 @@ fn v2_real_intake_through_pilot_is_partial_with_exact_guardrail_contract() {
         16106127360_u64
     );
 }
+
+#[test]
+fn review_v2_diagnostic_guardrails_survive_nonzero_report_windows() {
+    for (status, reason, outcome) in [
+        (
+            "not_performed",
+            "not_performed",
+            json!({"kind":"not_performed"}),
+        ),
+        ("failed", "failed_source", json!({"kind":"failed"})),
+        ("missing", "missing_source", Value::Null),
+        ("invalid", "invalid_source", json!({})),
+    ] {
+        let mut f = program::v2::tests::fixture();
+        if status != "not_performed" {
+            let mut request: Value =
+                serde_json::from_slice(&f.evidence["synthetic-test"]["request.json"]).unwrap();
+            request["billing_recording_path"] = json!("/synthetic/billing.json");
+            f.replace_artifact("request.json", request);
+            if status != "missing" {
+                let recording = if status == "invalid" {
+                    outcome
+                } else {
+                    json!({"source_revision":"synthetic-failed/v2","capture_start":NOW-1,"capture_end":NOW,"outcome":outcome})
+                };
+                f.replace_artifact("billing-recording.json", recording);
+            }
+            let g = &mut f.row["guard_ci_minutes_month"];
+            g["value"] = json!({"kind":"unknown"});
+            g["qualification"] = json!(reason);
+            g["source"]["status"] = json!(status);
+            g["source"]["reason"] = json!(reason);
+            g["source"]["exit_code"] = json!({"kind":"unknown"});
+            g["source"]["signal"] = json!({"kind":"unknown"});
+            if status == "missing" {
+                g["recording"] = json!({"kind":"unknown"});
+                g["source"]["artifact"] = json!({"kind":"unknown"});
+            }
+        }
+        let capture = f.capture().unwrap();
+        let w = ReportWindow {
+            start: NOW - 1,
+            end: NOW,
+        };
+        let graph = snapshots_v2(&capture, w, NOW).unwrap();
+        for object in graph
+            .objects
+            .iter()
+            .filter(|o| o.id.object_type == "guardrail")
+        {
+            let observation = &object.observations[0];
+            let envelope = &graph.artifacts[&observation.lineage.artifact_sha256];
+            assert_eq!(digest(envelope), observation.revision);
+            let envelope: Value = serde_json::from_slice(envelope).unwrap();
+            assert_eq!(
+                envelope["qualification"],
+                serde_json::to_value(&observation.fields).unwrap()
+            );
+            if !object.id.native_key.ends_with(":disk") {
+                assert_eq!(observation.fresh_until, NOW);
+                assert_eq!(envelope["v2_reporting_time"]["observed_at"], NOW);
+                assert_eq!(envelope["v2_reporting_time"]["source_capture"]["end"], NOW);
+            } else {
+                assert!(envelope.get("v2_reporting_time").is_none());
+                assert_eq!(envelope["source"]["outcome"]["observed_at"], NOW - 1);
+            }
+        }
+        let answer = render(
+            graph,
+            config().policy().unwrap(),
+            Query::ProgramReport {
+                root: id("program", PROGRAM, false),
+                window: w,
+            },
+            NOW,
+        )
+        .unwrap()
+        .0;
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        let report = &v["response"]["result"]["report"];
+        let guards = report["guardrails"].as_array().unwrap();
+        assert_eq!(
+            guards.len(),
+            4,
+            "diagnostic state {status} must survive both window filters"
+        );
+        for guard in guards {
+            let kind = guard["guardrail"]["value"].as_str().unwrap();
+            let expected = if kind == "disk" {
+                "qualified"
+            } else if kind == "billing" {
+                reason
+            } else {
+                "not_performed"
+            };
+            assert_eq!(guard["qualification"]["value"], expected);
+            let basis = report["basis"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["id"] == guard["id"])
+                .unwrap();
+            assert_eq!(
+                basis["observations"][0]["observed_at"],
+                if kind == "disk" { NOW - 1 } else { NOW }
+            );
+            if kind != "disk" {
+                assert_eq!(guard["source_qualified"], false);
+            }
+        }
+        let outside = snapshots_v2(
+            &capture,
+            ReportWindow {
+                start: NOW + 1,
+                end: NOW + 2,
+            },
+            NOW,
+        )
+        .unwrap();
+        assert!(
+            outside
+                .objects
+                .iter()
+                .all(|o| o.id.object_type != "guardrail")
+        );
+    }
+}
 #[test]
 fn v2_full_and_reduced_store_match_through_pilot_with_hidden_sources() {
     let mut policy = config().policy().unwrap();
