@@ -1388,9 +1388,13 @@ impl Capture {
                         r.snapshot.measurement_id, repo.identity.github_id
                     ),
                 };
-                graph
-                    .objects
-                    .push(object(id, &repository.namespace, &c.program_key, o)?);
+                graph.objects.push(object(
+                    id.clone(),
+                    &repository.namespace,
+                    &c.program_key,
+                    o,
+                )?);
+                graph.links.push(edge(root.clone(), "has_measurement", id));
             }
         }
         Ok(graph)

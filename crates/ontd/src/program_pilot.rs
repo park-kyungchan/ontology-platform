@@ -167,6 +167,9 @@ enum SnapshotInput {
         definition_sha256: String,
         repositories: BTreeMap<String, v2::model::Identity>,
         guardrails: BTreeMap<String, v2::wire::Contract>,
+        // Owner-adopted numeric IDs only; omission discloses no components.
+        #[serde(default)]
+        repository_measurement_disclosure: BTreeSet<u64>,
     },
 }
 #[derive(Deserialize)]
@@ -204,6 +207,7 @@ impl OwnerConfig {
             definition_sha256,
             repositories,
             guardrails,
+            ..
         }) = &self.snapshot_input
         else {
             return Err(err("pilot_invalid_config"));
@@ -273,6 +277,27 @@ impl OwnerConfig {
                 repo.id().namespace.clone(),
                 &["repository", "change"],
             )?);
+        }
+        if let Some(SnapshotInput::V2 {
+            repositories,
+            repository_measurement_disclosure,
+            ..
+        }) = &self.snapshot_input
+        {
+            for github_id in repository_measurement_disclosure {
+                let mut matches = repositories.values().filter(|r| r.github_id == *github_id);
+                let r = matches.next().ok_or(err("pilot_invalid_config"))?;
+                if matches.next().is_some() {
+                    return Err(err("pilot_invalid_config"));
+                }
+                let (owner, name) = r
+                    .full_name
+                    .split_once('/')
+                    .ok_or(err("pilot_invalid_config"))?;
+                let repo =
+                    program_git::Repository::github(owner, name, *github_id).map_err(git_error)?;
+                grants.push(grant(repo.id().namespace.clone(), &["measurement"])?);
+            }
         }
         Ok(Policy {
             principals: BTreeMap::from([(PRINCIPAL.into(), grants)]),

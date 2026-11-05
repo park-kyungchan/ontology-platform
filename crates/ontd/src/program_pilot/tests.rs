@@ -655,3 +655,246 @@ fn review_hidden_repository_diagnostics_do_not_change_public_aggregate_bytes() {
         .0
     );
 }
+
+#[test]
+fn fix1_surviving_v2_component_reaches_authorized_pilot_basis() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let graph = snapshots_v2(&f.capture().unwrap(), window(), NOW).unwrap();
+    let component = graph
+        .objects
+        .iter()
+        .find(|o| o.id.object_type == "measurement" && o.id.namespace != namespace(false))
+        .unwrap();
+    let component_id = component.id.clone();
+    assert_eq!(component.observations[0].coverage, Coverage::Complete);
+    let owner = v2_disclosure_config(&f, Some(json!([41])));
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&owner).unwrap()).unwrap();
+    let adopted = v2::Capture::recorded(
+        &f.journal(),
+        &f.manifest,
+        f.evidence.clone(),
+        NOW + 1,
+        NOW + 2,
+        owner.v2_contract().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        adopted.envelope_bytes(),
+        f.capture().unwrap().envelope_bytes()
+    );
+    let v: Value = serde_json::from_str(&answer(graph, owner.policy().unwrap())).unwrap();
+    let report = &v["response"]["result"]["report"];
+    let basis = report["basis"].as_array().unwrap();
+    let shown = basis
+        .iter()
+        .find(|o| o["id"] == serde_json::to_value(&component_id).unwrap())
+        .unwrap();
+    let fields = &shown["observations"][0]["fields"];
+    assert_eq!(fields["removed"], json!({"kind":"value","value":1}));
+    assert_eq!(fields["total"], json!({"kind":"value","value":2}));
+    assert_eq!(
+        fields["source_qualified"],
+        json!({"kind":"value","value":true})
+    );
+    let aggregate = basis
+        .iter()
+        .find(|o| {
+            o["id"]["object_type"] == "measurement"
+                && o["id"]["namespace"] == serde_json::to_value(namespace(false)).unwrap()
+                && o["observations"][0]["fields"].get("removed").is_some()
+        })
+        .unwrap();
+    assert_eq!(
+        aggregate["observations"][0]["fields"]["removed"],
+        json!({"kind":"unknown"})
+    );
+    assert_eq!(aggregate["observations"][0]["coverage"], "partial");
+    assert_eq!(report["assessment"], "insufficient_evidence");
+}
+
+fn v2_disclosure_config(f: &program::v2::tests::Fixture, disclosure: Option<Value>) -> Value {
+    let c = &f.contract;
+    let mut v = json!({
+        "schema":"ont-program-pilot/v1", "adopted_uid":0,
+        "snapshot_input": {
+            "version":"v2", "producer":c.producer,
+            "definition_sha256":c.definition_sha256,
+            "repositories":c.repositories, "guardrails":c.guardrails
+        },
+        "manifest_sha256":c.manifest_sha256,
+        "exact_definition": {
+            "id":c.definition.reference.id, "revision":c.definition.reference.revision,
+            "formula":c.definition.formula, "population":c.definition.population,
+            "adoption":null
+        },
+        "repositories":[]
+    });
+    if let Some(disclosure) = disclosure {
+        v["snapshot_input"]["repository_measurement_disclosure"] = disclosure;
+    }
+    v
+}
+
+#[test]
+fn fix1_v2_disclosure_is_opt_in_identity_bound_and_does_not_grant_source_records() {
+    let f = program::v2::tests::fixture();
+    for (disclosure, expected) in [
+        (None, vec![]),
+        (Some(json!([])), vec![]),
+        (Some(json!([41])), vec![41]),
+        (Some(json!([41, 42])), vec![41, 42]),
+    ] {
+        let v = v2_disclosure_config(&f, disclosure);
+        let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let policy = owner.policy().unwrap();
+        let baseline = config().policy().unwrap();
+        let grants = &policy.principals[PRINCIPAL];
+        assert_eq!(
+            grant_frames(&grants[..2]),
+            grant_frames(&baseline.principals[PRINCIPAL])
+        );
+        assert_eq!(grants.len(), 2 + expected.len());
+        for (grant, github_id) in grants[2..].iter().zip(expected) {
+            let identity = f
+                .contract
+                .repositories
+                .values()
+                .find(|r| r.github_id == github_id)
+                .unwrap();
+            let (owner, name) = identity.full_name.split_once('/').unwrap();
+            let repo = program_git::Repository::github(owner, name, github_id).unwrap();
+            assert_eq!(grant.scope, scope(repo.id().namespace.clone()).unwrap());
+            assert_eq!(grant.object_types, BTreeSet::from(["measurement".into()]));
+            assert!(grant.read && grant.derive && grant.actions.is_empty());
+        }
+    }
+    let mut v = v2_disclosure_config(&f, Some(json!([999])));
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(matches!(
+        owner.policy(),
+        Err(PilotError("pilot_invalid_config"))
+    ));
+    v["snapshot_input"]["repository_measurement_disclosure"] = json!([41]);
+    v["snapshot_input"]["repositories"]["alias"] = v["snapshot_input"]["repositories"]["a"].clone();
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(matches!(
+        owner.policy(),
+        Err(PilotError("pilot_invalid_config"))
+    ));
+    v["snapshot_input"] = json!({"version":"v1","repository_measurement_disclosure":[41]});
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_err());
+}
+
+#[test]
+fn fix1_denied_v2_components_are_byte_invariant_through_pilot() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let owner =
+        OwnerConfig::parse(&serde_json::to_vec(&v2_disclosure_config(&f, None)).unwrap()).unwrap();
+    let policy = owner.policy().unwrap();
+    let full = snapshots_v2(&f.capture().unwrap(), window(), NOW).unwrap();
+    let mut reduced = full.clone();
+    let hidden: BTreeSet<_> = reduced
+        .objects
+        .iter()
+        .filter(|o| o.id.object_type == "measurement" && o.id.namespace != namespace(false))
+        .map(|o| o.id.clone())
+        .collect();
+    assert_eq!(hidden.len(), 1);
+    assert!(
+        full.links
+            .iter()
+            .any(|l| l.relation == "has_measurement" && hidden.contains(&l.target))
+    );
+    reduced.objects.retain(|o| !hidden.contains(&o.id));
+    reduced
+        .links
+        .retain(|l| !hidden.contains(&l.target) && !hidden.contains(&l.source));
+    let expected = answer(full, policy.clone());
+    assert_eq!(expected, answer(reduced, policy.clone()));
+    let report: Value = serde_json::from_str(&expected).unwrap();
+    assert!(
+        report["response"]["result"]["report"]["basis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| !hidden.contains(&serde_json::from_value(o["id"].clone()).unwrap()))
+    );
+    // Change a hidden qualified component and its evidence without changing the
+    // unavailable aggregate. Its source-only digest must not leak into output.
+    let mut changed = program::v2::tests::failed_repository_fixture();
+    changed.row["repositories"][0]["ref_read"]["capture"]["start"] = json!(NOW - 5);
+    let mut ref_evidence: Value =
+        serde_json::from_slice(&changed.evidence["synthetic-test"]["repo-0-ref.json"]).unwrap();
+    ref_evidence["capture"]["start"] = json!(NOW - 5);
+    changed.replace_artifact("repo-0-ref.json", ref_evidence);
+    assert_eq!(
+        expected,
+        answer(
+            snapshots_v2(&changed.capture().unwrap(), window(), NOW).unwrap(),
+            policy
+        )
+    );
+}
+
+#[test]
+fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
+    // SHA-256 of the independent review's 203,958-byte v1-base.json at
+    // 17de548816bd26bafcf0e5c4236fff5ba89cff38; synthetic sources only.
+    let c = capture();
+    let mut frames = Vec::new();
+    for (start, end) in [
+        (0, u64::MAX),
+        (1793838060, 1793838060),
+        (1793842980, 1793842980),
+        (NOW, NOW),
+    ] {
+        let w = ReportWindow { start, end };
+        let g = snapshots(&c, w).unwrap();
+        let objects = serde_json::to_value(&g.objects).unwrap();
+        let links = serde_json::to_value(&g.links).unwrap();
+        let answer = render(
+            g,
+            config().policy().unwrap(),
+            Query::ProgramReport {
+                root: id("program", PROGRAM, false),
+                window: w,
+            },
+            NOW,
+        )
+        .unwrap()
+        .0;
+        frames.push(json!({"window":w,"objects":objects,"links":links,"answer":answer}));
+    }
+    let mut g = base();
+    g.merge(disk(Some(&disk_bytes(16 << 30)), NOW).unwrap())
+        .unwrap();
+    for (kind, unit) in [
+        ("billing", "linux_minutes"),
+        ("recall", "fraction"),
+        ("defects", "count"),
+    ] {
+        g.merge(not_performed(kind, unit, NOW).unwrap()).unwrap();
+    }
+    let full = answer(g, config().policy().unwrap());
+    let payload = json!({"envelope":String::from_utf8(c.envelope_bytes().to_vec()).unwrap(),"frames":frames,"full_answer":full});
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    assert_eq!(bytes.len(), 203958);
+    assert_eq!(
+        digest(&bytes),
+        "133ee7f01653b740a7376a68fda09ee2eb1101838a7e09fb3b500d0134096bc2"
+    );
+    let mut explicit = config();
+    explicit.snapshot_input = Some(SnapshotInput::V1 {});
+    assert_eq!(
+        grant_frames(&explicit.policy().unwrap().principals[PRINCIPAL]),
+        grant_frames(&config().policy().unwrap().principals[PRINCIPAL])
+    );
+    assert_eq!(
+        answer(base(), explicit.policy().unwrap()),
+        answer(base(), config().policy().unwrap())
+    );
+}
+
+fn grant_frames(grants: &[Grant]) -> Value {
+    json!(grants.iter().map(|g| json!({"scope":g.scope,"object_types":g.object_types,"read":g.read,"derive":g.derive,"actions":g.actions})).collect::<Vec<_>>())
+}
