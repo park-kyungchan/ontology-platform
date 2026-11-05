@@ -221,3 +221,71 @@ pub(super) fn enrich(output: &Output, result: &mut Value) {
         }
     }
 }
+
+/// V3 enriches only the new native typed rational paths; basis/Knowledge remain opaque.
+pub(super) fn enrich_derived(output: &Output, result: &mut Value) {
+    let Output::ProgramReportV2 { report } = output else {
+        return;
+    };
+    fn available(cell: &mut Value, f: &crate::report::derived::Available<ExactFraction>) {
+        if let Some(f) = f.get() {
+            cell["value"] = exact(f);
+        }
+    }
+    fn sample(cell: &mut Value, s: &crate::report::derived::Sample) {
+        available(&mut cell["value"], &s.value);
+    }
+    fn endpoints(
+        cell: &mut Value,
+        e: &crate::report::derived::Available<crate::report::derived::Endpoints>,
+    ) {
+        if let Some(e) = e.get() {
+            sample(&mut cell["value"]["start"], &e.start);
+            sample(&mut cell["value"]["end"], &e.end);
+        }
+    }
+    for (m, cell) in report.metrics.iter().zip(
+        result["report"]["metrics"]
+            .as_array_mut()
+            .into_iter()
+            .flatten(),
+    ) {
+        for (s, c) in m
+            .samples
+            .iter()
+            .zip(cell["samples"].as_array_mut().into_iter().flatten())
+        {
+            sample(c, s);
+        }
+        endpoints(&mut cell["endpoints"], &m.endpoints);
+        available(&mut cell["change"], &m.change);
+        available(
+            &mut cell["percentage_point_change"],
+            &m.percentage_point_change,
+        );
+    }
+    for (a, cell) in report.attributions.iter().zip(
+        result["report"]["attributions"]
+            .as_array_mut()
+            .into_iter()
+            .flatten(),
+    ) {
+        endpoints(&mut cell["endpoints"], &a.endpoints);
+        available(&mut cell["change"], &a.change);
+        available(
+            &mut cell["component_contribution_sum"],
+            &a.component_contribution_sum,
+        );
+        available(
+            &mut cell["reconciliation_residual"],
+            &a.reconciliation_residual,
+        );
+        for (c, cell) in a
+            .contributions
+            .iter()
+            .zip(cell["contributions"].as_array_mut().into_iter().flatten())
+        {
+            available(&mut cell["change"], &c.change);
+        }
+    }
+}

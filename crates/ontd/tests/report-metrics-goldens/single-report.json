@@ -1,0 +1,302 @@
+{
+  "schema": "ontology-program-report/v2",
+  "derivation_rule": "program-report-derivation/v1",
+  "window": {
+    "start": 10,
+    "end": 20
+  },
+  "assessment": "insufficient_evidence",
+  "metrics": [
+    {
+      "metric": {
+        "object_type": "metric",
+        "namespace": {
+          "instance": "synthetic://metrics",
+          "account": "owner"
+        },
+        "native_key": "legacy"
+      },
+      "scope": {
+        "namespace": {
+          "instance": "synthetic://metrics",
+          "account": "owner"
+        },
+        "domain": "program",
+        "program_key": "p"
+      },
+      "kind": "defined_metric",
+      "definition": {
+        "status": "known",
+        "value": {
+          "id": {
+            "object_type": "metric",
+            "namespace": {
+              "instance": "synthetic://metrics",
+              "account": "owner"
+            },
+            "native_key": "legacy"
+          },
+          "revision": "d1",
+          "formula": "removed / total",
+          "population": "adopted",
+          "unit": "fraction",
+          "direction": "increase",
+          "role": {
+            "kind": "indicator"
+          }
+        }
+      },
+      "unit": "fraction",
+      "samples": [
+        {
+          "basis": {
+            "id": {
+              "object_type": "measurement",
+              "namespace": {
+                "instance": "synthetic://metrics",
+                "account": "owner"
+              },
+              "native_key": "start"
+            },
+            "revision": "r1",
+            "observed_at": 10
+          },
+          "value": {
+            "status": "known",
+            "value": {
+              "numerator": "2",
+              "denominator": 17
+            }
+          },
+          "source_qualified": true
+        },
+        {
+          "basis": {
+            "id": {
+              "object_type": "measurement",
+              "namespace": {
+                "instance": "synthetic://metrics",
+                "account": "owner"
+              },
+              "native_key": "middle"
+            },
+            "revision": "r1",
+            "observed_at": 15
+          },
+          "value": {
+            "status": "known",
+            "value": {
+              "numerator": "4",
+              "denominator": 17
+            }
+          },
+          "source_qualified": true
+        },
+        {
+          "basis": {
+            "id": {
+              "object_type": "measurement",
+              "namespace": {
+                "instance": "synthetic://metrics",
+                "account": "owner"
+              },
+              "native_key": "end"
+            },
+            "revision": "r1",
+            "observed_at": 20
+          },
+          "value": {
+            "status": "known",
+            "value": {
+              "numerator": "7",
+              "denominator": 17
+            }
+          },
+          "source_qualified": true
+        }
+      ],
+      "endpoints": {
+        "status": "known",
+        "value": {
+          "start": {
+            "basis": {
+              "id": {
+                "object_type": "measurement",
+                "namespace": {
+                  "instance": "synthetic://metrics",
+                  "account": "owner"
+                },
+                "native_key": "start"
+              },
+              "revision": "r1",
+              "observed_at": 10
+            },
+            "value": {
+              "status": "known",
+              "value": {
+                "numerator": "2",
+                "denominator": 17
+              }
+            },
+            "source_qualified": true
+          },
+          "end": {
+            "basis": {
+              "id": {
+                "object_type": "measurement",
+                "namespace": {
+                  "instance": "synthetic://metrics",
+                  "account": "owner"
+                },
+                "native_key": "end"
+              },
+              "revision": "r1",
+              "observed_at": 20
+            },
+            "value": {
+              "status": "known",
+              "value": {
+                "numerator": "7",
+                "denominator": 17
+              }
+            },
+            "source_qualified": true
+          }
+        }
+      },
+      "population": {
+        "status": "known",
+        "value": 17
+      },
+      "change": {
+        "status": "known",
+        "value": {
+          "numerator": "5",
+          "denominator": 17
+        }
+      },
+      "percentage_point_change": {
+        "status": "known",
+        "value": {
+          "numerator": "500",
+          "denominator": 17
+        }
+      },
+      "source_qualified": true
+    }
+  ],
+  "attributions": [
+    {
+      "basis": {
+        "id": {
+          "object_type": "measurement",
+          "namespace": {
+            "instance": "synthetic://metrics",
+            "account": "owner"
+          },
+          "native_key": "attribution"
+        },
+        "revision": "r1",
+        "observed_at": 20
+      },
+      "definition": {
+        "status": "known",
+        "value": {
+          "id": {
+            "object_type": "metric",
+            "namespace": {
+              "instance": "synthetic://metrics",
+              "account": "owner"
+            },
+            "native_key": "legacy"
+          },
+          "revision": "d1",
+          "manifest_sha256": "m1",
+          "algorithm": "exact_utf8_paths_v1"
+        }
+      },
+      "population": {
+        "status": "known",
+        "value": 17
+      },
+      "endpoints": {
+        "status": "not_available",
+        "reason": "unbound_endpoints"
+      },
+      "contributions": [
+        {
+          "repository": {
+            "object_type": "repository",
+            "namespace": {
+              "instance": "synthetic://metrics",
+              "account": "repo-0"
+            },
+            "native_key": "r"
+          },
+          "changes": [
+            {
+              "object_type": "change",
+              "namespace": {
+                "instance": "synthetic://metrics",
+                "account": "repo-0"
+              },
+              "native_key": "1"
+            }
+          ],
+          "commit": "commit-0",
+          "first_parent": "parent",
+          "change": {
+            "status": "known",
+            "value": {
+              "numerator": "2",
+              "denominator": 17
+            }
+          },
+          "assignment": {
+            "status": "known",
+            "value": {
+              "object_type": "change",
+              "namespace": {
+                "instance": "synthetic://metrics",
+                "account": "repo-0"
+              },
+              "native_key": "1"
+            }
+          }
+        }
+      ],
+      "change": {
+        "status": "known",
+        "value": {
+          "numerator": "5",
+          "denominator": 17
+        }
+      },
+      "component_contribution_sum": {
+        "status": "known",
+        "value": {
+          "numerator": "2",
+          "denominator": 17
+        }
+      },
+      "reconciliation_residual": {
+        "status": "known",
+        "value": {
+          "numerator": "3",
+          "denominator": 17
+        }
+      },
+      "source_qualified": false,
+      "qualification": "unresolved_reconciliation"
+    }
+  ],
+  "guardrails": [],
+  "guardrail_availability": {
+    "kind": "unknown"
+  },
+  "limitations": [
+    "authorized_basis_only",
+    "not_available_in_authorized_result",
+    "unresolved_source"
+  ]
+}

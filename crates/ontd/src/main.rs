@@ -25,7 +25,12 @@ fn execute(args: &[OsString], answer_record: Option<Version>) -> Result<(String,
                 .filter(|a| {
                     matches!(
                         a.to_str(),
-                        Some("--answer-record" | "--answer-record=v1" | "--answer-record=v2")
+                        Some(
+                            "--answer-record"
+                                | "--answer-record=v1"
+                                | "--answer-record=v2"
+                                | "--answer-record=v3"
+                        )
                     )
                 })
                 .count()
@@ -65,7 +70,9 @@ fn main() {
         }
         return;
     }
-    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v2") {
+    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v3") {
+        Some(Version::V3)
+    } else if args.iter().any(|arg| arg == "--answer-record=v2") {
         Some(Version::V2)
     } else if args
         .iter()

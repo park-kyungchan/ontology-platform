@@ -192,3 +192,39 @@ unknown totals are never reconstructed from a partially disclosed repository
 population. No second Store pass occurs. Refusals remain code-only. Prose may
 only restate fields present in the selected record; the new fields do not assert
 operational acceptance, complete source qualification, or human authentication.
+
+Native typed derivation is explicitly selected by `op: "program_report_v2"`
+(with the same root/window fields), returning `ontology-program-report/v2` and
+`program-report-derivation/v1`. `--answer-record=v3` on either CLI selects that
+builder for a ProgramReport request; library callers use `Version::V3` with
+`render_answer_record_version_with_status`. Default, v1 and v2 keep their previous
+builder/bytes. Help literals remain the historical protocol; these selectors are
+additively documented here.
+
+The new report publishes typed samples and endpoint ID/revision/time pins,
+exact rational changes, percentage points for fraction units, signed merge
+contributions, contribution sums and reconciliation residuals. Every arithmetic
+cell has `status: known` plus `value`, or `status: not_available` plus a closed
+reason. V3 adds exact 2/3/4/6-place half-away-from-zero decimal renderings at typed
+rational locations. Basis payloads remain opaque. Recorded arithmetic never
+upgrades stale, partial or unqualified sources.
+
+Rules recognize existing metric measurement links and explicit definitions,
+allowlisted snapshot selectors, fully admitted billing account/month records,
+and native attribute_v1 projections. Fractions require compatible definition,
+population, algorithm and denominator pins; duplicate timestamps are ambiguous.
+Scalar values require integer JSON; decimal-number source lexemes are not
+recoverable from the native JSON Value boundary and remain unavailable. Parity
+without an explicit definition requires matching tool-set/result pins. Repository
+components remain separate; monthly billing samples are cumulative values, not
+additive usage rows. Different accounts/months are separate series. CI execution
+duration and merged PR metadata do not prove savings or path contribution.
+
+Attribution endpoints remain `unbound_endpoints`: the source projection has no
+measurement ID/revision/interval binding. Query times, equal values or shared
+population pins do not establish one. Unique PR associations receive a commit
+contribution once; ambiguous/missing associations stay unresolved. A known empty
+attribution with a bound zero retains exact zero sum/residual; absent evidence
+does not become zero. If any referenced repository/change is withheld, the entire
+derived attribution is omitted without hidden counts or reasons. No new source,
+Store pass, authorization rule, action or operational acceptance is introduced.

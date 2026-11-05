@@ -564,3 +564,74 @@ fn v2_non_utf8_arguments_are_code_only_and_failed_outputs_do_not_panic() {
         assert!(!String::from_utf8(out.stderr).unwrap().contains("panic"));
     }
 }
+
+#[test]
+fn v3_selector_keeps_closed_refusals_and_output_failure_status() {
+    for binary in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ] {
+        let args = if binary == env!("CARGO_BIN_EXE_ontd") {
+            vec!["--synthetic", "--answer-record=v3"]
+        } else {
+            vec!["--answer-record=v3"]
+        };
+        for data in [
+            b"{\"op\":\"invalid\",\"root\":\"private-root\"}".as_slice(),
+            b"{}",
+            b"\xff",
+        ] {
+            let out = run(binary, &args, data);
+            assert_eq!(out.status.code(), Some(2));
+            assert!(out.stderr.is_empty());
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["schema"], "ontology-answer/v3");
+            assert!(
+                !String::from_utf8(out.stdout)
+                    .unwrap()
+                    .contains("private-root")
+            );
+        }
+        for extra in [
+            "--answer-record=v2",
+            "--answer-record=v1",
+            "--answer-record=v3",
+            "--help",
+        ] {
+            let mut bad = args.clone();
+            bad.push(extra);
+            let out = run(binary, &bad, b"");
+            assert_eq!(out.status.code(), Some(2));
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["schema"], "ontology-answer/v3");
+            assert_eq!(v["outcome"]["code"], "invalid_request");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let out = Command::new(binary)
+                .arg("--answer-record=v3")
+                .arg(std::ffi::OsString::from_vec(b"private-root\xff".to_vec()))
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(2));
+            assert!(out.stderr.is_empty());
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["schema"], "ontology-answer/v3");
+            assert_eq!(v["outcome"]["code"], "invalid_request");
+            let out = Command::new(binary)
+                .arg("--answer-record=v3")
+                .arg("invalid")
+                .stdout(
+                    std::fs::File::options()
+                        .write(true)
+                        .open("/dev/full")
+                        .unwrap(),
+                )
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(1));
+            assert!(!String::from_utf8(out.stderr).unwrap().contains("panicked"));
+        }
+    }
+}

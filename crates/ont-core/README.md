@@ -31,3 +31,13 @@ fixed-decimal fields; native `Response` and `ProgramReport` serialization stay
 unchanged. See [ontd answer record v2](../ontd/README.md#answer-record-v2-explicit-selector)
 for field names, arithmetic units, rounding, unavailable reasons and disclosure
 rules. The closed constructors accept typed native results, never request text.
+
+`Query::ProgramReportV2` explicitly selects the additive native typed derivation
+schema `ontology-program-report/v2` (rule `program-report-derivation/v1`). The
+existing ProgramReport builder still selects one authorized basis; the new pure
+derivation reads only that basis and its admitted metric membership. Exact
+samples, endpoint identity pins, changes, contributions and residuals carry
+`Available<T>` with closed unavailable reasons. `Version::V3` publishes these
+rational locations with the existing exact decimal renderings. Source qualification
+and the original assessment remain conservative. See the ontd README for selectors,
+population/period comparability and the unchanged unbound-attribution-endpoint rule.

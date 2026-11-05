@@ -18,7 +18,12 @@ fn run(args: &[OsString], answer_record: Option<Version>) -> Result<(String, boo
         || args.len() == 1
             && matches!(
                 args[0].to_str(),
-                Some("--answer-record" | "--answer-record=v1" | "--answer-record=v2")
+                Some(
+                    "--answer-record"
+                        | "--answer-record=v1"
+                        | "--answer-record=v2"
+                        | "--answer-record=v3"
+                )
             ))
     {
         return Err("invalid_request");
@@ -45,7 +50,9 @@ fn main() {
         }
         return;
     }
-    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v2") {
+    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v3") {
+        Some(Version::V3)
+    } else if args.iter().any(|arg| arg == "--answer-record=v2") {
         Some(Version::V2)
     } else if args
         .iter()
