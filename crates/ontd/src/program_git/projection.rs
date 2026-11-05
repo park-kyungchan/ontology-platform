@@ -5,7 +5,8 @@ use ont_store::Store;
 /// Trusted disclosure choice: an aggregate measurement requires its own grant.
 /// This builder supplies no grants, sessions or action permissions. program and
 /// measurement must share the owner's program namespace; source objects retain
-/// their separate repository namespaces.
+/// their separate repository namespaces. The program root exposes only configured
+/// identity metadata; a program-type grant does not grant aggregate disclosure.
 pub struct ProjectionSpec {
     pub program: Id,
     pub measurement: Id,
@@ -198,10 +199,11 @@ pub fn build_projection(
             })
         });
     let records: Vec<_> = records.into_iter().map(|(id, fields)| {
-        // Public source observations never inherit aggregate endpoint/reconciliation
-        // state or another repository's sources, timing, coverage or artifact hash.
+        // Configured program/repository identity and public source observations
+        // never inherit aggregate endpoint/reconciliation state or another
+        // repository's sources, timing, coverage or artifact hash.
         let (observed_at, fresh_until, partial) = match id.object_type.as_str() {
-            "repository" => (0, u64::MAX, false), // immutable configured identity
+            "program" | "repository" => (0, u64::MAX, false), // complete configured identity only
             "change" => {
                 let source = captures.iter().find(|c| c.repository.id.namespace == id.namespace).ok_or(IntakeError::InvalidResponse)?;
                 let since = source.captured.start;
@@ -227,17 +229,17 @@ pub fn build_projection(
             .iter()
             .map(|(k, v)| (k.clone(), Knowledge::Value(v.clone())))
             .collect();
-        let (object_digest, pointer) = if matches!(id.object_type.as_str(), "repository" | "change")
-        {
-            let source_artifact =
-                serde_json::to_vec(&json!({"adapter":ADAPTER_REVISION,"record":record}))
-                    .map_err(|_| IntakeError::InvalidResponse)?;
-            let own_digest = sha256(&source_artifact);
-            artifacts.insert(own_digest.clone(), source_artifact);
-            (own_digest, "/record".to_string())
-        } else {
-            (digest.clone(), format!("/records/{i}"))
-        };
+        let (object_digest, pointer) =
+            if matches!(id.object_type.as_str(), "program" | "repository" | "change") {
+                let source_artifact =
+                    serde_json::to_vec(&json!({"adapter":ADAPTER_REVISION,"record":record}))
+                        .map_err(|_| IntakeError::InvalidResponse)?;
+                let own_digest = sha256(&source_artifact);
+                artifacts.insert(own_digest.clone(), source_artifact);
+                (own_digest, "/record".to_string())
+            } else {
+                (digest.clone(), format!("/records/{i}"))
+            };
         let observation = Observation {
             revision: object_digest.clone(),
             source_revision: ADAPTER_REVISION.into(),

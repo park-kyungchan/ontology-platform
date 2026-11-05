@@ -399,8 +399,9 @@ impl<T: Transport, C: FnMut() -> u64> Collector<T, C> {
                 }
                 Err(e) => return Err(e),
             };
-            if response.total_count > self.limits.max_pages * 100
-                || expected.is_some_and(|n| n != response.total_count)
+            // A valid population may exceed our page budget. Keep bounded runs
+            // and let the loop's Partial result preserve immutable merge facts.
+            if expected.is_some_and(|n| n != response.total_count)
                 || response.check_runs.len() > 100
             {
                 return Err(IntakeError::InvalidResponse);

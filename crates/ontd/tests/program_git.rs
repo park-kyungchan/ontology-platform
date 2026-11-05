@@ -245,11 +245,24 @@ fn absent_original_snapshot_pins_stay_unbound_after_successful_collection() {
         p.attribution.qualification(),
         ont_core::program::UNRESOLVED_RECONCILIATION
     );
-    assert!(
+    // FIX-1: the aggregate is partial; disclosed program metadata is independent.
+    assert_eq!(
         p.objects
             .iter()
-            .filter(|o| matches!(o.id.object_type.as_str(), "program" | "measurement"))
-            .all(|o| o.observations[0].coverage == Coverage::Partial)
+            .find(|o| o.id.object_type == "measurement")
+            .unwrap()
+            .observations[0]
+            .coverage,
+        Coverage::Partial
+    );
+    assert_eq!(
+        p.objects
+            .iter()
+            .find(|o| o.id.object_type == "program")
+            .unwrap()
+            .observations[0]
+            .coverage,
+        Coverage::Complete
     );
 }
 #[test]
@@ -407,11 +420,24 @@ fn failed_check_fetch_is_partial_status_without_erasing_merge_fact() {
     );
     let p = projection(collect(f, 1, 2, true, Limits::default()).unwrap());
     assert!(p.attribution.has_unique_pr_explanation());
-    assert!(
+    // FIX-1: the aggregate is partial; disclosed program metadata is independent.
+    assert_eq!(
         p.objects
             .iter()
-            .filter(|o| matches!(o.id.object_type.as_str(), "program" | "measurement"))
-            .all(|o| o.observations[0].coverage == Coverage::Partial)
+            .find(|o| o.id.object_type == "measurement")
+            .unwrap()
+            .observations[0]
+            .coverage,
+        Coverage::Partial
+    );
+    assert_eq!(
+        p.objects
+            .iter()
+            .find(|o| o.id.object_type == "program")
+            .unwrap()
+            .observations[0]
+            .coverage,
+        Coverage::Complete
     );
 }
 #[test]
@@ -785,4 +811,339 @@ fn check_page_bound_never_fabricates_complete_status_and_run_ids_are_unique() {
             IntakeError::InvalidResponse
         );
     }
+}
+
+// FIX-1: program metadata is independently disclosable; no aggregate grant is
+// implied by its type. Full/reduced stores use identical public captures.
+fn root_disclosure_pair(hidden_bound: bool, hidden_capture_time: u64) -> (Projection, Projection) {
+    let public = repo();
+    let hidden = Repository::github("fixture-owner", "root-hidden", 43).unwrap();
+    let mut pop = population(&public, &["old 한글\n\".rs"]);
+    pop.repositories.insert(
+        hidden.id().clone(),
+        BTreeSet::from(["old 한글\n\".rs".into()]),
+    );
+    pop.basis.denominator = 2;
+    let first = Collector::new(ordinary(), || 100, Limits::default())
+        .unwrap()
+        .collect(&public, &pop.basis, binding(1, true), binding(2, true))
+        .unwrap();
+    let mut hidden_fake = ordinary();
+    hidden_fake.responses = hidden_fake
+        .responses
+        .into_iter()
+        .map(|(route, bytes)| {
+            (
+                route.replace("fixture-owner/fixture-repo", "fixture-owner/root-hidden"),
+                bytes.map(|b| {
+                    String::from_utf8(b)
+                        .unwrap()
+                        .replace("fixture-owner/fixture-repo", "fixture-owner/root-hidden")
+                        .replace("\"id\":42", "\"id\":43")
+                        .into_bytes()
+                }),
+            )
+        })
+        .collect();
+    let second = Collector::new(hidden_fake, || hidden_capture_time, Limits::default())
+        .unwrap()
+        .collect(
+            &hidden,
+            &pop.basis,
+            binding(1, hidden_bound),
+            binding(2, hidden_bound),
+        )
+        .unwrap();
+    let reduced = build_projection(&pop, std::slice::from_ref(&first), spec()).unwrap();
+    let full = build_projection(&pop, &[first, second], spec()).unwrap();
+    (reduced, full)
+}
+fn render_root_scope(
+    projection: &Projection,
+    aggregate_granted: bool,
+    query: Query,
+) -> Result<String, ont_core::Error> {
+    let mut root_types = BTreeSet::from(["program".into()]);
+    if aggregate_granted {
+        root_types.insert("measurement".into());
+    }
+    let grants = vec![
+        Grant {
+            scope: Scope::program(id("program", "pilot").namespace, "pilot").unwrap(),
+            object_types: root_types,
+            read: true,
+            derive: true,
+            actions: BTreeSet::new(),
+        },
+        Grant {
+            scope: Scope::program(repo().id().namespace.clone(), "pilot").unwrap(),
+            object_types: BTreeSet::from(["repository".into(), "change".into()]),
+            read: true,
+            derive: true,
+            actions: BTreeSet::new(),
+        },
+    ];
+    let authority = Authority::new(Policy {
+        principals: BTreeMap::from([("worker".into(), grants)]),
+    });
+    let session = authority.bind_trusted("worker").unwrap();
+    ontd::Service::new(projection.memory_store().unwrap(), authority).render(&session, query, 100)
+}
+fn assert_root_bytes_equal(reduced: &Projection, full: &Projection) {
+    let mut queries = vec![Query::Get {
+        id: id("program", "pilot"),
+    }];
+    for relation in ["repository", "has_measurement"] {
+        queries.push(Query::Traverse {
+            root: id("program", "pilot"),
+            relation: relation.into(),
+        });
+        queries.push(Query::Decide {
+            root: id("program", "pilot"),
+            relation: relation.into(),
+        });
+    }
+    for query in queries {
+        let before = render_root_scope(reduced, false, query.clone()).unwrap();
+        let after = render_root_scope(full, false, query.clone()).unwrap();
+        assert_eq!(
+            before, after,
+            "hidden repository changed root query: {query:?}"
+        );
+    }
+    for projection in [reduced, full] {
+        assert_eq!(
+            render_root_scope(
+                projection,
+                false,
+                Query::Get {
+                    id: id("measurement", "delta")
+                }
+            ),
+            Err(ont_core::Error::Unavailable)
+        );
+        let hidden = Repository::github("fixture-owner", "root-hidden", 43).unwrap();
+        assert_eq!(
+            render_root_scope(
+                projection,
+                false,
+                Query::Get {
+                    id: hidden.id().clone()
+                }
+            ),
+            Err(ont_core::Error::Unavailable)
+        );
+    }
+}
+#[test]
+fn fix1_root_reads_and_derives_do_not_reveal_hidden_aggregate_coverage_or_time() {
+    let (reduced, full) = root_disclosure_pair(true, 95);
+    let measurement = |p: &Projection| {
+        p.objects
+            .iter()
+            .find(|o| o.id.object_type == "measurement")
+            .unwrap()
+            .observations[0]
+            .coverage
+            .clone()
+    };
+    assert_eq!(measurement(&reduced), Coverage::Partial);
+    assert_eq!(measurement(&full), Coverage::Complete);
+    assert_root_bytes_equal(&reduced, &full);
+    // A deliberate aggregate grant still reveals its own changing evidence.
+    let query = Query::Get {
+        id: id("measurement", "delta"),
+    };
+    assert_ne!(
+        render_root_scope(&reduced, true, query.clone()).unwrap(),
+        render_root_scope(&full, true, query).unwrap()
+    );
+}
+#[test]
+fn fix1_equal_aggregate_coverage_cannot_leak_through_root_digest_or_lineage_index() {
+    let (reduced, full) = root_disclosure_pair(false, 100);
+    for projection in [&reduced, &full] {
+        assert_eq!(
+            projection
+                .objects
+                .iter()
+                .find(|o| o.id.object_type == "measurement")
+                .unwrap()
+                .observations[0]
+                .coverage,
+            Coverage::Partial
+        );
+    }
+    assert_root_bytes_equal(&reduced, &full);
+    for projection in [&reduced, &full] {
+        let root = projection
+            .objects
+            .iter()
+            .find(|o| o.id.object_type == "program")
+            .unwrap();
+        let observation = &root.observations[0];
+        assert_eq!(observation.observed_at, 0);
+        assert_eq!(observation.fresh_until, u64::MAX);
+        assert_eq!(observation.coverage, Coverage::Complete);
+        assert_eq!(observation.lineage.pointer, "/record");
+        assert_eq!(
+            observation.fields,
+            BTreeMap::from([("program_key".into(), Knowledge::Value(json!("pilot")))])
+        );
+    }
+}
+fn check_runs(first: u64, last: u64) -> Vec<Value> {
+    (first..=last).map(|n| json!({"id":n,"name":"rust","head_sha":pin(507),"status":"completed","conclusion":"success"})).collect()
+}
+fn checks_route(page: usize) -> String {
+    Fake::route(&format!(
+        "commits/{}/check-runs?filter=all&per_page=100&page={page}",
+        pin(507)
+    ))
+}
+fn captured_checks(projection: &Projection) -> &Value {
+    let change = projection
+        .objects
+        .iter()
+        .find(|o| o.id.object_type == "change")
+        .unwrap();
+    match &change.observations[0].fields["metadata"] {
+        Knowledge::Value(metadata) => &metadata["checks"],
+        _ => panic!("expected captured PR metadata"),
+    }
+}
+#[test]
+fn fix1_valid_check_totals_at_or_above_page_budget_preserve_attribution_and_partial_runs() {
+    for total in [100, 101, 1001] {
+        let mut fake = ordinary();
+        fake.put(
+            &checks_route(1),
+            json!({"total_count":total,"check_runs":check_runs(1,100)}),
+        );
+        let p = projection(
+            collect(
+                fake,
+                1,
+                2,
+                true,
+                Limits {
+                    max_pages: 1,
+                    ..Limits::default()
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(captured_checks(&p)["coverage"], "partial");
+        assert_eq!(captured_checks(&p)["runs"].as_array().unwrap().len(), 100);
+        assert!(p.attribution.has_unique_pr_explanation());
+        assert_eq!(p.attribution.contributions[0].paths, 1);
+        assert_eq!(p.attribution.delta_bound, Some(1));
+        assert_eq!(p.attribution.residual, Some(0));
+        assert_eq!(
+            p.objects
+                .iter()
+                .find(|o| o.id.object_type == "measurement")
+                .unwrap()
+                .observations[0]
+                .coverage,
+            Coverage::Partial
+        );
+    }
+}
+#[test]
+fn fix1_check_followup_failure_preserves_bounded_runs_and_immutable_facts() {
+    for failure in [
+        IntakeError::Unavailable,
+        IntakeError::RateLimited,
+        IntakeError::Timeout,
+    ] {
+        let mut fake = ordinary();
+        fake.put(
+            &checks_route(1),
+            json!({"total_count":101,"check_runs":check_runs(1,100)}),
+        );
+        fake.fail(&checks_route(2), failure);
+        let p = projection(
+            collect(
+                fake,
+                1,
+                2,
+                true,
+                Limits {
+                    max_pages: 2,
+                    ..Limits::default()
+                },
+            )
+            .unwrap(),
+        );
+        assert_eq!(captured_checks(&p)["coverage"], "partial");
+        assert_eq!(captured_checks(&p)["runs"].as_array().unwrap().len(), 100);
+        assert!(p.attribution.has_unique_pr_explanation());
+        assert_eq!(p.attribution.delta_bound, Some(1));
+    }
+}
+#[test]
+fn fix1_check_total_changes_between_pages_remain_invalid() {
+    for total in [100, 102] {
+        let mut fake = ordinary();
+        fake.put(
+            &checks_route(1),
+            json!({"total_count":101,"check_runs":check_runs(1,100)}),
+        );
+        fake.put(
+            &checks_route(2),
+            json!({"total_count":total,"check_runs":check_runs(101,101)}),
+        );
+        assert_eq!(
+            collect(
+                fake,
+                1,
+                2,
+                true,
+                Limits {
+                    max_pages: 2,
+                    ..Limits::default()
+                }
+            )
+            .unwrap_err(),
+            IntakeError::InvalidResponse
+        );
+    }
+}
+#[test]
+fn fix1_complete_check_pagination_keeps_complete_status_and_attribution() {
+    let mut fake = ordinary();
+    fake.put(
+        &checks_route(1),
+        json!({"total_count":101,"check_runs":check_runs(1,100)}),
+    );
+    fake.put(
+        &checks_route(2),
+        json!({"total_count":101,"check_runs":check_runs(101,101)}),
+    );
+    let p = projection(
+        collect(
+            fake,
+            1,
+            2,
+            true,
+            Limits {
+                max_pages: 2,
+                ..Limits::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(captured_checks(&p)["coverage"], "complete");
+    assert_eq!(captured_checks(&p)["runs"].as_array().unwrap().len(), 101);
+    assert!(p.attribution.has_unique_pr_explanation());
+    assert_eq!(
+        p.objects
+            .iter()
+            .find(|o| o.id.object_type == "measurement")
+            .unwrap()
+            .observations[0]
+            .coverage,
+        Coverage::Complete
+    );
 }
