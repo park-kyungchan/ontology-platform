@@ -713,9 +713,14 @@ fn report_publication_holds_policy_and_one_snapshot_during_concurrent_replacemen
 #[test]
 fn native_snapshot_stays_coherent_when_another_connection_attempts_a_commit() {
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "program-report-{}-{}.sqlite",
+        "program-report-{}-{nonce}-{}.sqlite",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::SeqCst)
     ));

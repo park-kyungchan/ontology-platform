@@ -5,6 +5,7 @@ use ont_store::{Append, Store};
 use ontd::{Service, synthetic as fixture};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -211,12 +212,16 @@ fn revisions_are_atomic_and_scope_is_immutable() {
 struct Disposable(PathBuf);
 impl Disposable {
     fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("s06-rust-synthetic-{}-{nonce}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "s06-rust-synthetic-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
