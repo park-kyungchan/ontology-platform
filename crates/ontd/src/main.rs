@@ -1,5 +1,8 @@
 //! Explicitly synthetic stdin demonstration; no production credentials or paths.
-use ont_core::{Error, Query, Response, answer::AnswerRecord};
+use ont_core::{
+    Error, Query, Response,
+    answer::{AnswerRecord, Version},
+};
 use std::{
     ffi::OsString,
     io::{Read, Write},
@@ -13,10 +16,20 @@ fn output_failure() -> ! {
     );
     std::process::exit(1);
 }
-fn execute(args: &[OsString], answer_record: bool) -> Result<(String, i32), Error> {
+fn execute(args: &[OsString], answer_record: Option<Version>) -> Result<(String, i32), Error> {
     let valid = args == ["--synthetic"]
-        || args == ["--synthetic", "--answer-record"]
-        || args == ["--answer-record", "--synthetic"];
+        || (args.len() == 2
+            && args.iter().filter(|a| *a == "--synthetic").count() == 1
+            && args
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a.to_str(),
+                        Some("--answer-record" | "--answer-record=v1" | "--answer-record=v2")
+                    )
+                })
+                .count()
+                == 1);
     if !valid {
         return Err(Error::InvalidRequest);
     }
@@ -30,9 +43,13 @@ fn execute(args: &[OsString], answer_record: bool) -> Result<(String, i32), Erro
     }
     let query: Query = serde_json::from_slice(&input).map_err(|_| Error::InvalidRequest)?;
     let (mut service, session) = ontd::synthetic::setup()?;
-    if answer_record {
-        let (line, refused) =
-            service.render_answer_record_with_status(&session, query, ontd::synthetic::NOW)?;
+    if let Some(version) = answer_record {
+        let (line, refused) = service.render_answer_record_version_with_status(
+            &session,
+            query,
+            ontd::synthetic::NOW,
+            version,
+        )?;
         Ok((line, if refused { 2 } else { 0 }))
     } else {
         Ok((service.render(&session, query, ontd::synthetic::NOW)?, 0))
@@ -48,7 +65,16 @@ fn main() {
         }
         return;
     }
-    let answer_record = args.iter().any(|arg| arg == "--answer-record");
+    let answer_record = if args.iter().any(|arg| arg == "--answer-record=v2") {
+        Some(Version::V2)
+    } else if args
+        .iter()
+        .any(|arg| arg == "--answer-record" || arg == "--answer-record=v1")
+    {
+        Some(Version::V1)
+    } else {
+        None
+    };
     // Lead-approved compatibility exception: default non-UTF-8 argv also
     // refuses without the legacy std::env::args panic and caller-byte echo.
     let result = if non_utf8 {
@@ -58,10 +84,13 @@ fn main() {
     };
     let (line, status) = match result {
         Ok(result) => result,
-        Err(e) if answer_record || non_utf8 => match AnswerRecord::from_error(e).render() {
-            Ok(line) => (line, 2),
-            Err(_) => std::process::exit(1),
-        },
+        Err(e) if answer_record.is_some() || non_utf8 => {
+            match AnswerRecord::from_error_version(e, answer_record.unwrap_or(Version::V1)).render()
+            {
+                Ok(line) => (line, 2),
+                Err(_) => std::process::exit(1),
+            }
+        }
         Err(e @ (Error::StoreFailure | Error::AuthorityFailure | Error::InvalidEvidence)) => {
             // Diagnostic locations are part of the default CLI byte contract.
             let _ = writeln!(

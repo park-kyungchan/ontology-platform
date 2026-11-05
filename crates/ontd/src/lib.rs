@@ -48,6 +48,21 @@ impl Service {
         query: Query,
         now: u64,
     ) -> Result<(String, bool), Error> {
+        self.render_answer_record_version_with_status(
+            session,
+            query,
+            now,
+            ont_core::answer::Version::V1,
+        )
+    }
+    /// Select a publication schema while retaining the same admission/snapshot.
+    pub fn render_answer_record_version_with_status(
+        &mut self,
+        session: &Session,
+        query: Query,
+        now: u64,
+        version: ont_core::answer::Version,
+    ) -> Result<(String, bool), Error> {
         use ont_core::answer::AnswerRecord;
         let serialize = |record: AnswerRecord| {
             let refused = record.is_refused();
@@ -55,18 +70,18 @@ impl Service {
         };
         let admission = match self.authority.admit(session) {
             Ok(admission) => admission,
-            Err(error) => return serialize(AnswerRecord::from_error(error)),
+            Err(error) => return serialize(AnswerRecord::from_error_version(error, version)),
         };
         let rendered = self.store.snapshot(|snapshot| {
             let record = match admission.query(snapshot, query, now) {
-                Ok(response) => AnswerRecord::from_response(&response)?,
-                Err(error) => AnswerRecord::from_error(error),
+                Ok(response) => AnswerRecord::from_response_version(&response, version)?,
+                Err(error) => AnswerRecord::from_error_version(error, version),
             };
             serialize(record)
         });
         match rendered {
             Ok(record) => Ok(record),
-            Err(error) => serialize(AnswerRecord::from_error(error)),
+            Err(error) => serialize(AnswerRecord::from_error_version(error, version)),
         }
     }
 }

@@ -1053,3 +1053,60 @@ fn answer_record_pilot_carries_native_refusal_separately_from_serialization() {
     let output = render_output(base(), config().policy().unwrap(), query(), NOW, true).unwrap();
     assert!(!output.refused);
 }
+
+#[test]
+fn answer_v2_pilot_both_sources_withheld_component_invariance_and_v1_stability() {
+    for v2 in [false, true] {
+        let graph = || if v2 { v2_base() } else { base() };
+        let policy = config().policy().unwrap();
+        let original = render_selected(graph(), policy.clone(), query(), NOW, true)
+            .unwrap()
+            .0;
+        let selected =
+            render_output_version(graph(), policy.clone(), query(), NOW, Some(Version::V1))
+                .unwrap()
+                .answer;
+        assert_eq!(original, selected);
+        let v2_answer =
+            render_output_version(graph(), policy.clone(), query(), NOW, Some(Version::V2))
+                .unwrap()
+                .answer;
+        let parsed: Value = serde_json::from_str(&v2_answer).unwrap();
+        assert_eq!(parsed["response"]["schema"], "ontology-answer/v2");
+        let mut denied = policy;
+        denied
+            .principals
+            .get_mut(PRINCIPAL)
+            .unwrap()
+            .retain(|g| !g.object_types.contains("guardrail"));
+        let expected =
+            render_output_version(graph(), denied.clone(), query(), NOW, Some(Version::V2))
+                .unwrap()
+                .answer;
+        for recording in [
+            None,
+            Some(disk_bytes(14 << 30)),
+            Some(disk_bytes(16 << 30)),
+            Some(b"invalid".to_vec()),
+        ] {
+            let mut full = graph();
+            full.merge(disk(recording.as_deref(), NOW).unwrap())
+                .unwrap();
+            assert_eq!(
+                expected,
+                render_output_version(full, denied.clone(), query(), NOW, Some(Version::V2))
+                    .unwrap()
+                    .answer
+            );
+        }
+        denied.principals.get_mut(PRINCIPAL).unwrap().clear();
+        assert_eq!(
+            render_output_version(graph(), denied.clone(), query(), NOW, Some(Version::V2))
+                .unwrap()
+                .answer,
+            render_output_version(Graph::default(), denied, query(), NOW, Some(Version::V2))
+                .unwrap()
+                .answer
+        );
+    }
+}

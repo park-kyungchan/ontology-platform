@@ -126,3 +126,64 @@ Any failed output write exits 1 without invoking the panic printer. A failed
 stdout write attempts the static output-failure diagnostic; failure writing that
 diagnostic is ignored. Working output channels retain their existing bytes and
 exit status (help/success 0, refusal 2, operational/output error 1).
+
+### Answer record v2 (explicit selector)
+
+`ontd --synthetic --answer-record=v2` and `ont-program-pilot --answer-record=v2`
+select `ontology-answer/v2`. `--answer-record` and `--answer-record=v1` select
+v1; omitting the flag keeps native output. Existing help/native/v1 bytes stay
+unchanged. The pilot retains the same selected bytes it publishes. Source
+acquisition still requires its separately released owner authority.
+
+Library callers select `ont_core::answer::Version::V2` through
+`AnswerRecord::from_response_version`, `from_action_version`,
+`from_error_version`, `from_outcome_version`, or
+`Service::render_answer_record_version_with_status`. Existing entrypoints stay
+v1. The returned boolean preserves native refusal exit status (0 success,
+2 refused; failed output writes exit 1 with no panic).
+
+V2 preserves the complete native record and adds these publication fields:
+
+| Location | Added values |
+| --- | --- |
+| Every typed report fraction | `native` numerator/denominator, `rounding_mode`, `decimal_renderings` |
+| `report.metrics[].aggregate` | `population`, `start_count`, `end_count`, `start_ratio`, `end_ratio`, `count_change`, `ratio_change`, `percentage_point_change`, `source_qualified` |
+| `report.attributions[].aggregate` | `population`, `endpoints`, `count_change`, `ratio_change`, `percentage_point_change`, `component_contribution_sum`, `reconciliation_residual`, `reconciliation_residual_percentage_points` |
+
+Counts remain exact integer strings and population is an integer. Each rational
+keeps its exact numerator string and denominator integer. `decimal_renderings`
+has string keys `2`, `3`, `4`, `6`, with exactly that many fractional digits.
+`rounding_mode` is `half_away_from_zero`: round to nearest, with an exact halfway
+value rounded away from zero. For example, 1/200 at precision 2 is `0.01`,
+-1/200 is `-0.01`, and values rounded to zero have no minus sign. Decimal long
+division uses only integer quotient/remainder operations, never float. Native
+integer strings are preserved even beyond machine-integer range. Opaque
+`Knowledge::Value` payloads remain opaque, including fraction-shaped user data.
+
+A metric is a native aggregate time series: its population and endpoint counts
+come from its admitted fractions and its native comparability decision. Samples
+are endpoints over time, not components to add together. Different KPIs,
+populations, recorded/exact algorithms and overlapping definitions are never
+summed. An undefined aggregate has `status:not_available` with a closed reason:
+`missing_endpoints`, `missing_endpoint_values`, `empty_denominator`,
+`incomparable_components`, `invalid_rational` or `arithmetic_overflow`.
+
+An attribution aggregate uses the native `delta_bound` count and denominator.
+`component_contribution_sum` is the exact sum of newly absent minus restored
+counts divided by that denominator. `reconciliation_residual` is aggregate
+ratio change minus that sum (ratio units); the explicitly named percentage-point
+residual multiplies it by 100. Exact zero is present as numerator `"0"`, never
+silently omitted. Unbound change gives `unbound_aggregate_change`, not zero.
+`endpoints` requires a unique metric with matching definition identity/revision,
+manifest, algorithm and denominator; otherwise it gives `unbound_endpoints`.
+Native source qualification and reconciliation gaps remain visible and are never
+strengthened by decimal formatting or arithmetic.
+
+Every contribution's repository and change references must occur in the admitted
+basis before its attribution aggregate is published. When any reference is
+absent, the aggregate is omitted without a hidden inventory/count/reason.
+Metric aggregates use only their separately authorized native aggregate samples;
+unknown totals are never reconstructed from a partially disclosed repository
+population. No second Store pass occurs. Refusals remain code-only. Prose may
+only restate fields present in the selected record; the new fields do not assert
+operational acceptance, complete source qualification, or human authentication.

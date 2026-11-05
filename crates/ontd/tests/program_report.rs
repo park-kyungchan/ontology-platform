@@ -1137,3 +1137,109 @@ fn answer_record_stale_and_foreign_admission_errors_have_no_query_data() {
         );
     }
 }
+
+fn record_v2(objects: &[Object], links: &[Link], p: Policy) -> String {
+    let authority = Authority::new(p);
+    let session = authority.bind_trusted("reader").unwrap();
+    Service::new(store(objects, links), authority)
+        .render_answer_record_version_with_status(
+            &session,
+            query(),
+            50,
+            ont_core::answer::Version::V2,
+        )
+        .unwrap()
+        .0
+}
+#[test]
+fn v2_aggregate_uses_only_authorized_samples_and_preserves_qualified_native_values() {
+    let (objects, links) = graph();
+    let p = policy(&objects);
+    let expected = record_v2(&objects, &links, p.clone());
+    let parsed: Value = serde_json::from_str(&expected).unwrap();
+    let aggregate = &parsed["result"]["report"]["metrics"][0]["aggregate"];
+    assert_eq!(aggregate["population"], 4);
+    assert_eq!(aggregate["start_count"], "1");
+    assert_eq!(aggregate["end_count"], "3");
+    assert_eq!(
+        aggregate["percentage_point_change"]["decimal_renderings"]["6"],
+        "50.000000"
+    );
+    for n in [0, 1, 999] {
+        let mut full = objects.clone();
+        let mut edges = links.clone();
+        let mut hidden = obj(
+            "measurement",
+            "withheld-component",
+            15,
+            json!({"removed":n,"total":999,"private":"withheld"}),
+        );
+        hidden.id.namespace.account = "private".into();
+        hidden.scope = Scope::program(hidden.id.namespace.clone(), "program-A").unwrap();
+        edges.push(edge(
+            id("metric", "legacy"),
+            "has_measurement",
+            hidden.id.clone(),
+        ));
+        edges.push(edge(
+            id("program", "root"),
+            "has_measurement",
+            hidden.id.clone(),
+        ));
+        full.push(hidden);
+        assert_eq!(expected, record_v2(&full, &edges, p.clone()));
+    }
+    let mut denied = p;
+    denied.principals.get_mut("reader").unwrap().clear();
+    assert_eq!(
+        record_v2(&objects, &links, denied.clone()),
+        record_v2(&[], &[], denied)
+    );
+}
+
+#[test]
+fn v2_withheld_attribution_repository_cannot_change_an_aggregate_or_residual() {
+    let (mut objects, mut links) = graph();
+    let mut hidden = obj("repository", "hidden", 0, json!({"private":1}));
+    hidden.id.namespace.account = "private".into();
+    hidden.scope = Scope::program(hidden.id.namespace.clone(), "program-A").unwrap();
+    let attribution = obj(
+        "measurement",
+        "attribution",
+        20,
+        json!({"attribution":{
+        "rule":"attribution-v1","adapter":"synthetic","definition":{"id":id("metric","legacy"),"revision":"d1"},
+        "manifest_sha256":"c".repeat(64),"population_adapter_revision":"synthetic","algorithm":"exact_utf8_paths_v1",
+        "denominator":4,"delta_bound":"2","residual":"1","qualification":"qualified","gaps":[],
+        "contributions":[{"repository":hidden.id,"commit":"a","first_parent":"b","newly_absent_count":1,"restored_count":0,
+            "path_set_sha256":"c","paths":"sha256_only","association":"missing","changes":[]}]}}),
+    );
+    links.push(edge(
+        id("program", "root"),
+        "has_measurement",
+        attribution.id.clone(),
+    ));
+    links.push(edge(id("program", "root"), "repository", hidden.id.clone()));
+    objects.push(attribution);
+    let p = policy(&objects);
+    let reduced_links: Vec<_> = links
+        .iter()
+        .filter(|l| l.target != hidden.id)
+        .cloned()
+        .collect();
+    let expected = record_v2(&objects, &reduced_links, p.clone());
+    let parsed: Value = serde_json::from_str(&expected).unwrap();
+    assert!(
+        parsed["result"]["report"]["attributions"][0]
+            .get("aggregate")
+            .is_none()
+    );
+    for n in [0, 10000] {
+        hidden.observations[0]
+            .fields
+            .insert("private".into(), Knowledge::Value(n.into()));
+        let mut full = objects.clone();
+        full.push(hidden.clone());
+        assert_eq!(expected, record_v2(&full, &links, p.clone()));
+    }
+}
