@@ -1,9 +1,13 @@
 //! Explicitly synthetic stdin demonstration; no production credentials or paths.
-use ont_core::{Error, Query, Response};
+use ont_core::{Error, Query, Response, answer::AnswerRecord};
 use std::io::{Read, Write};
 const LIMIT: u64 = 65_536;
-fn execute() -> Result<(String, i32), Error> {
-    if std::env::args().skip(1).collect::<Vec<_>>() != ["--synthetic"] {
+const HELP: &str = "Usage: ontd --synthetic [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.";
+fn execute(args: &[String], answer_record: bool) -> Result<(String, i32), Error> {
+    let valid = args == ["--synthetic"]
+        || args == ["--synthetic", "--answer-record"]
+        || args == ["--answer-record", "--synthetic"];
+    if !valid {
         return Err(Error::InvalidRequest);
     }
     let mut input = Vec::new();
@@ -16,11 +20,26 @@ fn execute() -> Result<(String, i32), Error> {
     }
     let query: Query = serde_json::from_slice(&input).map_err(|_| Error::InvalidRequest)?;
     let (mut service, session) = ontd::synthetic::setup()?;
-    Ok((service.render(&session, query, ontd::synthetic::NOW)?, 0))
+    let line = if answer_record {
+        service.render_answer_record(&session, query, ontd::synthetic::NOW)?
+    } else {
+        service.render(&session, query, ontd::synthetic::NOW)?
+    };
+    Ok((line, 0))
 }
 fn main() {
-    let (line, status) = match execute() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["--help"] {
+        println!("{HELP}");
+        return;
+    }
+    let answer_record = args.iter().any(|arg| arg == "--answer-record");
+    let (line, status) = match execute(&args, answer_record) {
         Ok(result) => result,
+        Err(e) if answer_record => match AnswerRecord::from_error(e).render() {
+            Ok(line) => (line, 2),
+            Err(_) => std::process::exit(1),
+        },
         Err(e @ (Error::StoreFailure | Error::AuthorityFailure | Error::InvalidEvidence)) => {
             eprintln!("{}@{}:{}", e.code(), file!(), line!());
             std::process::exit(1);

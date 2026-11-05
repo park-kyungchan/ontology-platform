@@ -71,3 +71,39 @@ the executable route and additive composition, preserving all retained sources,
 answers and existing S06/S07 stores. Step 2 runs only synthetic internal seams and
 invalid-input process controls; live acquisition/presentation requires a later
 Lead release.
+
+## Typed answer records
+
+`ontd --synthetic --answer-record` and `ont-program-pilot --answer-record`
+explicitly select `ontology-answer/v1`. `--help` describes the contract: **prose
+answers may only restate record fields**. Defaults retain native output bytes.
+The pilot option has the same fixed identity, source acquisition, live-run release
+requirement and evidence retention as its default mode. Successful pilot output
+keeps its trust/binding/attribution metadata and places the record in `response`;
+its refused output is the bare record. Retention hashes the selected output bytes.
+
+The fixed record envelope is `schema`, `outcome`, `authorization_revision`,
+`result`. `outcome` is `{status:ok}` or `{status:refused,code:<native enum>}`.
+All native Objects, Decision and ProgramReport fields are emitted, including the
+complete authorized observation history, native exact numerator/denominator,
+counts, booleans, native decimals, qualifications, limitations and attribution.
+Object keys inside result are lexical; native array order is retained. Rationals
+are not rounded, normalized or inferred; decimals appear only if native supplied
+them. Empty arrays remain empty. A native optional null is
+`{status:not_available,reason:native_null,native:null}`. Native Knowledge states
+missing/null/blank/unknown/not_performed have explicit unavailable cells with that
+reason and the original Knowledge in `native`. Known Knowledge payloads, including
+null or Knowledge-shaped application JSON, remain verbatim. No more specific
+reason is invented where native supplied none.
+
+`ont_core::answer::AnswerRecord::from_response`, `from_error`, `from_action` and
+`render` are the typed library entry. `Service::render_answer_record` holds the
+existing admission and snapshot through serialization. `from_action` publishes
+an already authorized native ActionOutput, including `observed` post-condition;
+it never executes/retries an action. `from_outcome` accepts only the fixed native
+code vocabulary; an unknown String code publishes only `refused`. Refusals never
+include caller IDs, names, namespaces, roots, requests or arbitrary diagnostics.
+A failed append's `revision_conflict` is a refused record; an authorized Get or
+ProgramReport retains the actual post-attempt head and complete native history.
+No record creates extra permissions, source facts, availability counts, decimal
+renderings, human authentication or operational acceptance.

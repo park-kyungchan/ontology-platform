@@ -630,3 +630,36 @@ fn additive_extension_keeps_existing_s06_graph_and_serialized_reads_unchanged() 
         .unwrap();
     assert_eq!(before, after);
 }
+
+#[test]
+fn answer_record_contains_actual_dispatch_postcondition_without_reexecuting() {
+    use ont_core::{action::ActionOutput, answer::AnswerRecord};
+    let temp = Temp::new();
+    let (mut service, _, session, mut target) = temp.service();
+    review(&mut service, &session, &mut target);
+    let native = call(
+        &mut service,
+        &session,
+        &mut target,
+        ActionCommand::Dispatch { key: key() },
+    )
+    .unwrap();
+    let action: ActionOutput = serde_json::from_value(native.clone()).unwrap();
+    let record = serde_json::to_value(AnswerRecord::from_action(&action).unwrap()).unwrap();
+    assert_eq!(record["result"]["action"], native);
+    assert_eq!(record["result"]["action"]["state"], "persisted");
+    assert_eq!(
+        record["result"]["action"]["observed"],
+        record["result"]["action"]["desired"]
+    );
+    assert_eq!(
+        call(
+            &mut service,
+            &session,
+            &mut target,
+            ActionCommand::Inspect { key: key() }
+        )
+        .unwrap(),
+        native
+    );
+}

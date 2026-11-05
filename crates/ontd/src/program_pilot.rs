@@ -667,19 +667,49 @@ struct Answer {
     response: Response,
 }
 fn render(
+    graph: Graph,
+    policy: Policy,
+    query: Query,
+    now: u64,
+) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
+    render_selected(graph, policy, query, now, false)
+}
+fn render_selected(
     mut graph: Graph,
     policy: Policy,
     query: Query,
     now: u64,
+    answer_record: bool,
 ) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
     canonical_root(&mut graph)?;
     let (store, artifacts) = graph.seed()?;
     let authority = Authority::new(policy);
     let session = authority.bind_trusted(PRINCIPAL).map_err(core)?;
-    let bytes = Service::new(store, authority)
-        .render(&session, query, now)
-        .map_err(core)?;
-    let response = serde_json::from_str(&bytes).map_err(|_| err("pilot_serialization_failure"))?;
+    let mut service = Service::new(store, authority);
+    let bytes = if answer_record {
+        service.render_answer_record(&session, query, now)
+    } else {
+        service.render(&session, query, now)
+    }
+    .map_err(core)?;
+    // Keep the native response path and metadata field order byte-stable.
+    if answer_record {
+        let response: Value =
+            serde_json::from_str(&bytes).map_err(|_| err("pilot_serialization_failure"))?;
+        if response["outcome"]["status"] == "refused" {
+            return Ok((bytes, artifacts));
+        }
+        // Embed the already serialized admitted record verbatim. Parsing and
+        // reserializing it as Value would reorder its fixed envelope fields.
+        let trust =
+            serde_json::to_string(TRUST_LIMIT).map_err(|_| err("pilot_serialization_failure"))?;
+        let answer = format!(
+            "{{\"trust_limit\":{trust},\"real_user_session_binding\":\"SCOPED-DEVIATION\",\"attribution\":\"qualified merge contributions + unresolved reconciliation\",\"response\":{bytes}}}"
+        );
+        return Ok((answer, artifacts));
+    }
+    let response: Response =
+        serde_json::from_str(&bytes).map_err(|_| err("pilot_serialization_failure"))?;
     let answer = Answer {
         trust_limit: TRUST_LIMIT,
         real_user_session_binding: "SCOPED-DEVIATION",
@@ -785,6 +815,7 @@ fn execute_v2(
     policy: Policy,
     query: Query,
     window: ReportWindow,
+    answer_record: bool,
 ) -> Result<String> {
     let mut previous = clock()?;
     let mut failed = false;
@@ -826,7 +857,11 @@ fn execute_v2(
     }
     let mut graph = snapshots_v2(&capture, window, now)?;
     graph.merge(git)?;
-    let (answer, artifacts) = render(graph, policy, query, now)?;
+    let (answer, artifacts) = if answer_record {
+        render_selected(graph, policy, query, now, true)
+    } else {
+        render(graph, policy, query, now)
+    }?;
     retain(artifacts, &answer, input, config_bytes, now)?;
     Ok(answer)
 }
@@ -835,6 +870,16 @@ fn execute_v2(
 /// run. Unit tests use internal synthetic seams and never invoke this acquisition.
 #[cfg(target_os = "linux")]
 pub fn execute(input: &[u8]) -> Result<String> {
+    execute_selected(input, false)
+}
+/// Same fixed acquisition/retention boundary; selects ontology-answer/v1 only.
+/// Calling this still requires the separately released live-run authority.
+#[cfg(target_os = "linux")]
+pub fn execute_answer_record(input: &[u8]) -> Result<String> {
+    execute_selected(input, true)
+}
+#[cfg(target_os = "linux")]
+fn execute_selected(input: &[u8], answer_record: bool) -> Result<String> {
     check_uid(
         rustix::process::getuid().as_raw(),
         rustix::process::geteuid().as_raw(),
@@ -844,7 +889,15 @@ pub fn execute(input: &[u8]) -> Result<String> {
     let config = OwnerConfig::parse(&config_bytes)?;
     let policy = config.policy()?;
     if matches!(config.snapshot_input, Some(SnapshotInput::V2 { .. })) {
-        return execute_v2(input, &config_bytes, &config, policy, query, window);
+        return execute_v2(
+            input,
+            &config_bytes,
+            &config,
+            policy,
+            query,
+            window,
+            answer_record,
+        );
     }
     let contract = config.contract()?;
     // Checked fallible clock around fixed source capture; callback is a trusted
@@ -909,12 +962,21 @@ pub fn execute(input: &[u8]) -> Result<String> {
     ] {
         g.merge(not_performed(kind, unit, now)?)?;
     }
-    let (answer, artifacts) = render(g, policy, query, now)?;
+    let (answer, artifacts) = if answer_record {
+        render_selected(g, policy, query, now, true)
+    } else {
+        render(g, policy, query, now)
+    }?;
     retain(artifacts, &answer, input, &config_bytes, now)?;
     Ok(answer)
 }
 #[cfg(not(target_os = "linux"))]
 pub fn execute(_: &[u8]) -> Result<String> {
+    Err(err("pilot_platform_unavailable"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_answer_record(_: &[u8]) -> Result<String> {
     Err(err("pilot_platform_unavailable"))
 }
 

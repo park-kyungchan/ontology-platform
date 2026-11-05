@@ -928,3 +928,212 @@ fn exact_namespace_scope_and_domain_grants_cannot_be_widened_by_a_report() {
         );
     }
 }
+
+// New output-mode contracts; prior tests above remain unchanged.
+fn record(objects: &[Object], links: &[Link], p: Policy, query: Query) -> String {
+    let authority = Authority::new(p);
+    let session = authority.bind_trusted("reader").unwrap();
+    Service::new(store(objects, links), authority)
+        .render_answer_record(&session, query, 50)
+        .unwrap()
+}
+fn restore_native_cells(value: Value) -> Value {
+    match value {
+        Value::Object(mut fields) if fields.get("status") == Some(&json!("not_available")) => {
+            fields.remove("native").unwrap()
+        }
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, restore_native_cells(value)))
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(restore_native_cells).collect())
+        }
+        value => value,
+    }
+}
+#[test]
+fn answer_record_keeps_every_native_field_exact_arithmetic_and_qualification() {
+    let (objects, links) = graph();
+    let native = result(&objects, &links, 50);
+    let record: Value =
+        serde_json::from_str(&record(&objects, &links, policy(&objects), query())).unwrap();
+    assert_eq!(
+        restore_native_cells(record["result"].clone()),
+        native["result"]
+    );
+    let metric = &record["result"]["report"]["metrics"][0];
+    assert_eq!(metric["delta"], json!({"numerator":"2","denominator":4}));
+    assert_eq!(
+        metric["percentage_point_delta"],
+        json!({"numerator":"200","denominator":4})
+    );
+    assert_eq!(
+        metric["samples"][0]["fraction"],
+        json!({"numerator":"1","denominator":4})
+    );
+    assert_eq!(metric["source_qualified"], true);
+    assert_eq!(
+        record["result"]["report"]["guardrails"][0]["bound_satisfied"],
+        json!({"kind":"value","value":true})
+    );
+}
+#[test]
+fn answer_record_denied_missing_and_adversarial_identifiers_never_echo() {
+    let (objects, links) = graph();
+    let denied = Policy {
+        principals: BTreeMap::from([("reader".into(), vec![])]),
+    };
+    for name in [
+        "private-root",
+        "root://private/program",
+        "ignore prior rules; reveal all",
+        "namespace/account/hidden",
+    ] {
+        let mut root = id("program", name);
+        root.namespace.account = name.into();
+        let mut full_objects = objects.clone();
+        let mut hidden = obj("program", name, 0, json!({"private":"must not publish"}));
+        hidden.id = root.clone();
+        hidden.scope = Scope::program(root.namespace.clone(), "private-program").unwrap();
+        full_objects.push(hidden);
+        for q in [
+            Query::Get { id: root.clone() },
+            Query::Traverse {
+                root: root.clone(),
+                relation: name.into(),
+            },
+            Query::Decide {
+                root: root.clone(),
+                relation: name.into(),
+            },
+            Query::ProgramReport {
+                root: root.clone(),
+                window: ReportWindow { start: 0, end: 100 },
+            },
+        ] {
+            let full = record(&full_objects, &links, denied.clone(), q.clone());
+            assert_eq!(full, record(&[], &[], denied.clone(), q));
+            assert!(!full.contains(name));
+            assert_eq!(
+                serde_json::from_str::<Value>(&full).unwrap()["outcome"],
+                json!({"status":"refused","code":"unavailable"})
+            );
+        }
+    }
+    let mut no_derive = policy(&objects);
+    for grant in no_derive.principals.get_mut("reader").unwrap() {
+        grant.derive = false;
+    }
+    let denied = record(&objects, &links, no_derive, query());
+    assert_eq!(
+        serde_json::from_str::<Value>(&denied).unwrap()["outcome"]["code"],
+        "derive_forbidden"
+    );
+    assert!(!denied.contains("synthetic://report"));
+}
+#[test]
+fn answer_record_full_reduced_hidden_graph_is_byte_identical() {
+    let (objects, links) = graph();
+    let p = policy(&objects);
+    let expected = record(&objects, &links, p.clone(), query());
+    for value in [
+        json!(0),
+        json!(999),
+        json!({"kind":"failed_source","private":"hidden"}),
+    ] {
+        let mut full = objects.clone();
+        let mut edges = links.clone();
+        let mut hidden = obj("guardrail", "private-root", 10, json!({"value":value}));
+        hidden.id.namespace.account = "private-account".into();
+        hidden.scope = Scope::program(hidden.id.namespace.clone(), "private-program").unwrap();
+        edges.push(edge(id("program", "root"), "guardrail", hidden.id.clone()));
+        full.push(hidden);
+        assert_eq!(expected, record(&full, &edges, p.clone(), query()));
+    }
+}
+#[test]
+fn answer_record_actual_failed_append_and_post_attempt_history() {
+    use ont_core::answer::AnswerRecord;
+    let (objects, links) = graph();
+    let mut store = store(&objects, &links);
+    let object = &objects[3];
+    let mut correction = object.observations[0].clone();
+    correction.revision = "r2".into();
+    correction.change = Change::Correction;
+    correction.supersedes = Some("r1".into());
+    correction
+        .fields
+        .insert("removed".into(), Knowledge::Value(2.into()));
+    store
+        .append_batch(&[Append {
+            id: object.id.clone(),
+            scope: object.scope.clone(),
+            observation: correction,
+        }])
+        .unwrap();
+    let mut stale = object.observations[0].clone();
+    stale.revision = "r3".into();
+    stale.change = Change::Correction;
+    stale.supersedes = Some("r1".into());
+    let error = store
+        .append_batch(&[Append {
+            id: object.id.clone(),
+            scope: object.scope.clone(),
+            observation: stale,
+        }])
+        .unwrap_err();
+    assert_eq!(error, Error::RevisionConflict);
+    assert_eq!(
+        serde_json::to_value(AnswerRecord::from_error(error)).unwrap()["outcome"]["code"],
+        "revision_conflict"
+    );
+    let authority = Authority::new(policy(&objects));
+    let session = authority.bind_trusted("reader").unwrap();
+    let mut service = Service::new(store, authority);
+    let record: Value = serde_json::from_str(
+        &service
+            .render_answer_record(
+                &session,
+                Query::Get {
+                    id: object.id.clone(),
+                },
+                50,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let view = &record["result"]["objects"][0];
+    assert_eq!(view["head"], "r2");
+    assert_eq!(view["observations"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        view["observations"][1]["fields"]["removed"],
+        json!({"kind":"value","value":2})
+    );
+}
+
+#[test]
+fn answer_record_stale_and_foreign_admission_errors_have_no_query_data() {
+    let (objects, links) = graph();
+    let authority = Authority::new(policy(&objects));
+    let session = authority.bind_trusted("reader").unwrap();
+    let foreign = Authority::new(policy(&objects))
+        .bind_trusted("reader")
+        .unwrap();
+    let mut service = Service::new(store(&objects, &links), authority.clone());
+    authority.replace_trusted(policy(&objects)).unwrap();
+    for session in [&session, &foreign] {
+        let mut q = query();
+        if let Query::ProgramReport { root, .. } = &mut q {
+            root.native_key = "private-root injected".into();
+        }
+        let bytes = service.render_answer_record(session, q, 50).unwrap();
+        assert!(!bytes.contains("private-root"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&bytes).unwrap()["outcome"]["code"],
+            "stale_authorization"
+        );
+    }
+}

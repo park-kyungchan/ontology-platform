@@ -28,4 +28,29 @@ impl Service {
             serde_json::to_string(&response).map_err(|_| Error::StoreFailure)
         })
     }
+    /// Explicit ontology-answer/v1 mode. Admission and the snapshot remain held
+    /// through record construction and serialization, just as in native mode.
+    /// Refused/error outcomes carry only an enumerated code, never the query.
+    pub fn render_answer_record(
+        &mut self,
+        session: &Session,
+        query: Query,
+        now: u64,
+    ) -> Result<String, Error> {
+        use ont_core::answer::AnswerRecord;
+        let admission = match self.authority.admit(session) {
+            Ok(admission) => admission,
+            Err(error) => return AnswerRecord::from_error(error).render(),
+        };
+        let rendered =
+            self.store
+                .snapshot(|snapshot| match admission.query(snapshot, query, now) {
+                    Ok(response) => AnswerRecord::from_response(&response)?.render(),
+                    Err(error) => AnswerRecord::from_error(error).render(),
+                });
+        match rendered {
+            Ok(record) => Ok(record),
+            Err(error) => AnswerRecord::from_error(error).render(),
+        }
+    }
 }
