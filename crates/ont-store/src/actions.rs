@@ -1,6 +1,6 @@
 //! Durable action journal for the closed fake target. No replay loop or expiration.
 use crate::fake::{FakeTarget, Outcome, Proof};
-use crate::{ReadSnapshot, Store, db, decode};
+use crate::{ReadSnapshot, Store, db, decode, v1_scope};
 use ont_core::action::{
     ActionInput, ActionOutput, PhysicalField, RequestKey, Review, State, physical,
 };
@@ -67,15 +67,28 @@ fn json<T: Serialize>(value: &T) -> Result<String, Error> {
 fn snapshot<'a>(tx: &'a Transaction<'_>) -> ReadSnapshot<'a> {
     ReadSnapshot { connection: tx }
 }
+pub(crate) fn decode_v1_review(raw: &str) -> Result<Review, Error> {
+    let review: Review = decode(raw)?;
+    v1_scope(&review.basis.scope, &review.basis.id.namespace)?;
+    v1_scope(&review.target.scope, &review.target.physical.namespace)?;
+    if review.input.object != review.basis.id || review.target.scope != review.basis.scope {
+        return Err(Error::StoreFailure);
+    }
+    Ok(review)
+}
 fn load(tx: &Transaction<'_>, key: &RequestKey) -> Result<Option<Saved>, Error> {
     let row: Option<(String,String,String,Option<String>)> = db(tx.query_row(
         "SELECT token,review,state,observed FROM local_actions WHERE instance=?1 AND account=?2 AND request_id=?3",
         params![key.namespace.instance,key.namespace.account,key.request_id],
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
     row.map(|(token, review, state, observed)| {
+        let review = decode_v1_review(&review)?;
+        if review.input.key() != *key {
+            return Err(Error::StoreFailure);
+        }
         Ok(Saved {
             token,
-            review: decode(&review)?,
+            review,
             state: decode(&json(&state)?)?,
             observed,
         })

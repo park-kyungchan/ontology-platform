@@ -1,6 +1,6 @@
 //! Contract-level challenges, separate from the literal process oracle.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use ont_core::{Authority, Change, Error, Knowledge, Policy, Query, Snapshot};
+use ont_core::{Authority, Change, Error, Knowledge, Policy, Query, Scope, Snapshot};
 use ont_store::{Append, Store};
 use ontd::{Service, synthetic as fixture};
 use std::collections::BTreeMap;
@@ -123,10 +123,13 @@ fn forbidden_link_data_cannot_affect_full_derived_output() {
     let permitted: Vec<_> = objects
         .into_iter()
         .filter(|o| {
-            (o.scope.namespace == fixture::namespace()
-                && o.scope.class_key == "C1"
-                && o.scope.student_key == "001")
-                || o.scope.namespace == fixture::recorded_namespace()
+            (o.scope
+                == Scope::Education {
+                    namespace: fixture::namespace(),
+                    class_key: "C1".into(),
+                    student_key: "001".into(),
+                })
+                || o.scope.namespace() == &fixture::recorded_namespace()
         })
         .collect();
     let links: Vec<_> = links
@@ -190,7 +193,10 @@ fn revisions_are_atomic_and_scope_is_immutable() {
     );
     assert_eq!(store.snapshot(|s| s.get(&id)).unwrap().unwrap(), original);
     let mut changed_scope = good.clone();
-    changed_scope.scope.student_key = "002".into();
+    let Scope::Education { student_key, .. } = &mut changed_scope.scope else {
+        panic!("Education fixture required");
+    };
+    *student_key = "002".into();
     assert_eq!(
         store.append_batch(&[changed_scope]),
         Err(Error::ScopeConflict)
@@ -274,4 +280,68 @@ fn reopen_preserves_full_views_and_snapshot_blocks_a_writer_commit() {
         .unwrap();
     assert_eq!(after.head, "s2");
     assert_eq!(after.observations.len(), 2);
+}
+
+#[test]
+fn v1_memory_and_file_store_refuse_program_intake_atomically() {
+    let temp = Disposable::new();
+    for mut store in [Store::memory().unwrap(), Store::open(&temp.db()).unwrap()] {
+        let (education, links) = fixture::graph().unwrap();
+        let original = education
+            .iter()
+            .find(|o| o.id == fixture::student())
+            .unwrap()
+            .clone();
+        let mut program = original.clone();
+        program.id.native_key = "synthetic-program".into();
+        program.scope = Scope::program(program.id.namespace.clone(), "ws-replan").unwrap();
+        // A preceding valid object must roll back with the refused Program row.
+        assert_eq!(
+            store.seed(&[original.clone(), program.clone()], &[]),
+            Err(Error::InvalidEvidence)
+        );
+        assert!(store.snapshot(|s| s.get(&original.id)).unwrap().is_none());
+        assert!(store.snapshot(|s| s.get(&program.id)).unwrap().is_none());
+        store.seed(&education, &links).unwrap();
+        let mut correction = original.observations[0].clone();
+        correction.revision = "s2".into();
+        correction.change = Change::Correction;
+        correction.supersedes = Some(original.head.clone());
+        let good = Append {
+            id: original.id.clone(),
+            scope: original.scope.clone(),
+            observation: correction.clone(),
+        };
+        let refused = Append {
+            id: original.id.clone(),
+            scope: program.scope.clone(),
+            observation: correction,
+        };
+        assert_eq!(
+            store.append_batch(&[good, refused]),
+            Err(Error::InvalidEvidence)
+        );
+        assert_eq!(
+            store.snapshot(|s| s.get(&original.id)).unwrap().unwrap(),
+            original
+        );
+        assert_eq!(
+            store.append_batch(&[Append {
+                id: program.id.clone(),
+                scope: program.scope,
+                observation: program.observations[0].clone(),
+            }]),
+            Err(Error::InvalidEvidence)
+        );
+        assert!(store.snapshot(|s| s.get(&program.id)).unwrap().is_none());
+    }
+    let mut reopened = Store::open(&temp.db()).unwrap();
+    assert_eq!(
+        reopened
+            .snapshot(|s| s.get(&fixture::student()))
+            .unwrap()
+            .unwrap()
+            .head,
+        "s1"
+    );
 }

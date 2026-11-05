@@ -1,6 +1,7 @@
 //! Closed LOCAL FAKE target with transactional idempotency AND durable absence sealing.
 //! This capability is not a claim about Academy or any HTTP adapter.
-use crate::{db, decode};
+use crate::actions::decode_v1_review;
+use crate::{db, decode, decode_v1_scope};
 use ont_core::action::{PhysicalField, Review, TargetSnapshot};
 use ont_core::{Error, Scope};
 use rusqlite::{
@@ -71,7 +72,10 @@ impl FakeTarget {
             [journal_id],
         ))?;
         for cell in cells {
-            if cell.scope.namespace != cell.physical.namespace {
+            if !matches!(cell.scope, Scope::Education { .. })
+                || cell.scope.validate().is_err()
+                || cell.scope.namespace() != &cell.physical.namespace
+            {
                 return Err(Error::InvalidEvidence);
             }
             db(tx.execute(
@@ -90,7 +94,9 @@ impl FakeTarget {
                 params![cell.physical.namespace.instance,cell.physical.namespace.account,cell.physical.record,cell.physical.field],
                 |r| Ok((r.get(0)?,r.get(1)?)),
             ))?;
-            if decode::<Scope>(&saved_scope)? != cell.scope || saved_value != cell.value {
+            if decode_v1_scope(&saved_scope, &cell.physical.namespace)? != cell.scope
+                || saved_value != cell.value
+            {
                 return Err(Error::ScopeConflict);
             }
         }
@@ -172,7 +178,7 @@ impl FakeTransaction<'_> {
             identity: self.identity.into(),
             canonical_path: self.path.into(),
             physical: p.clone(),
-            scope: decode(&scope)?,
+            scope: decode_v1_scope(&scope, &p.namespace)?,
             value,
             version,
         })
@@ -197,7 +203,7 @@ impl FakeTransaction<'_> {
             )
             .optional())?;
         row.map(|(saved, outcome, version, value)| {
-            if decode::<Review>(&saved)? != *review {
+            if decode_v1_review(&saved)? != *review {
                 return Err(Error::TargetIdentity);
             }
             Ok(Proof {
@@ -306,7 +312,7 @@ mod tests {
             instance: "synthetic://target-unit".into(),
             account: "001|A".into(),
         };
-        let scope = Scope {
+        let scope = Scope::Education {
             namespace: namespace.clone(),
             class_key: "C1".into(),
             student_key: "001".into(),
@@ -403,5 +409,53 @@ mod tests {
             .execute("UPDATE meta SET identity='replaced'", [])
             .unwrap();
         assert!(matches!(target.transaction(), Err(Error::TargetIdentity)));
+    }
+    #[test]
+    fn persisted_dispatch_proofs_refuse_program_and_foreign_namespace_scopes() {
+        let (temp, mut target, review) = setup();
+        let tx = target.transaction().unwrap();
+        tx.apply("token", &review).unwrap();
+        tx.commit().unwrap();
+        drop(target);
+        let path = temp.0.join("target.sqlite");
+        for member in ["basis", "target"] {
+            let mut foreign = review.basis.id.namespace.clone();
+            foreign.account = "foreign-account".into();
+            for scope in [
+                Scope::program(review.basis.id.namespace.clone(), "program").unwrap(),
+                Scope::education(foreign, "C1", "001").unwrap(),
+            ] {
+                let mut saved = review.clone();
+                if member == "basis" {
+                    saved.basis.scope = scope;
+                } else {
+                    saved.target.scope = scope;
+                }
+                Connection::open(&path)
+                    .unwrap()
+                    .execute("UPDATE dispatches SET review=?1", [json(&saved).unwrap()])
+                    .unwrap();
+                let mut reopened = FakeTarget::open(&path, "unit-journal").unwrap();
+                assert_eq!(
+                    reopened.transaction().unwrap().proof("token", &review),
+                    Err(Error::StoreFailure)
+                );
+            }
+        }
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE dispatches SET review=?1", [json(&review).unwrap()])
+            .unwrap();
+        let mut reopened = FakeTarget::open(&path, "unit-journal").unwrap();
+        assert_eq!(
+            reopened
+                .transaction()
+                .unwrap()
+                .proof("token", &review)
+                .unwrap()
+                .unwrap()
+                .outcome,
+            Outcome::Applied
+        );
     }
 }
