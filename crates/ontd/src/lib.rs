@@ -28,4 +28,45 @@ impl Service {
             serde_json::to_string(&response).map_err(|_| Error::StoreFailure)
         })
     }
+    /// Explicit ontology-answer/v1 mode. Admission and the snapshot remain held
+    /// through record construction and serialization, just as in native mode.
+    /// Refused/error outcomes carry only an enumerated code, never the query.
+    pub fn render_answer_record(
+        &mut self,
+        session: &Session,
+        query: Query,
+        now: u64,
+    ) -> Result<String, Error> {
+        self.render_answer_record_with_status(session, query, now)
+            .map(|(bytes, _)| bytes)
+    }
+    /// The boolean is the native refusal class, not serialization failure.
+    /// CLI owners use it to retain nonzero refused-outcome exit status.
+    pub fn render_answer_record_with_status(
+        &mut self,
+        session: &Session,
+        query: Query,
+        now: u64,
+    ) -> Result<(String, bool), Error> {
+        use ont_core::answer::AnswerRecord;
+        let serialize = |record: AnswerRecord| {
+            let refused = record.is_refused();
+            record.render().map(|bytes| (bytes, refused))
+        };
+        let admission = match self.authority.admit(session) {
+            Ok(admission) => admission,
+            Err(error) => return serialize(AnswerRecord::from_error(error)),
+        };
+        let rendered = self.store.snapshot(|snapshot| {
+            let record = match admission.query(snapshot, query, now) {
+                Ok(response) => AnswerRecord::from_response(&response)?,
+                Err(error) => AnswerRecord::from_error(error),
+            };
+            serialize(record)
+        });
+        match rendered {
+            Ok(record) => Ok(record),
+            Err(error) => serialize(AnswerRecord::from_error(error)),
+        }
+    }
 }
