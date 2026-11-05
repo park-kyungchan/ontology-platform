@@ -322,7 +322,8 @@ impl Admission<'_> {
         let mut unresolved = false;
         for object in selected.values() {
             let h = head(object)?;
-            if !qualify(h, now, &mut limitations)? {
+            let head_qualified = qualify(h, now, &mut limitations)?;
+            if !head_qualified {
                 unresolved = true;
             }
             if object.id.object_type == "metric" {
@@ -355,7 +356,8 @@ impl Admission<'_> {
                 samples.sort_by(|a, b| (a.observed_at, &a.id).cmp(&(b.observed_at, &b.id)));
                 let mut delta = None;
                 let mut pp = None;
-                let mut qualified = parsed.is_some()
+                let mut qualified = head_qualified
+                    && parsed.is_some()
                     && !samples.is_empty()
                     && samples.iter().all(|s| s.source_qualified);
                 if let (Some(first), Some(last)) = (samples.first(), samples.last()) {
@@ -463,9 +465,25 @@ impl Admission<'_> {
                 });
             }
             if object.id.object_type == "guardrail" {
-                let qualified = qualify(h, now, &mut limitations)?
-                    && value(h, "source_qualified") == Some(&Value::Bool(true));
-                let bound = if qualified {
+                let qualified =
+                    head_qualified && value(h, "source_qualified") == Some(&Value::Bool(true));
+                // PR5 can qualify the disk measurement while the GB/GiB bound
+                // meaning remains unresolved (Partial with Unknown bound_value).
+                // Retain its exact comparison without qualifying the statement
+                // or recomputing the adapter's candidate thresholds here.
+                let temporal =
+                    program::qualify_basis(h, now).map_err(|_| Error::InvalidEvidence)?;
+                let unresolved_disk_unit = !temporal.future
+                    && !temporal.stale
+                    && value(h, "source_qualified") == Some(&Value::Bool(true))
+                    && value(h, "guardrail").and_then(Value::as_str) == Some("disk")
+                    && value(h, "qualification").and_then(Value::as_str)
+                        == Some("unresolved_disk_unit")
+                    && value(h, "value").and_then(Value::as_u64).is_some();
+                if unresolved_disk_unit {
+                    review = true;
+                }
+                let bound = if qualified || unresolved_disk_unit {
                     field(h, "bound_satisfied")
                 } else if matches!(field(h, "value"), Knowledge::NotPerformed) {
                     Knowledge::NotPerformed
@@ -483,7 +501,7 @@ impl Admission<'_> {
                     revision: h.revision.clone(),
                     guardrail: field(h, "guardrail"),
                     unit: field(h, "unit"),
-                    value: if qualified {
+                    value: if qualified || unresolved_disk_unit {
                         field(h, "value")
                     } else if matches!(bound, Knowledge::NotPerformed) {
                         Knowledge::NotPerformed

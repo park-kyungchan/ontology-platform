@@ -350,6 +350,183 @@ fn partial_stale_future_and_missing_values_cannot_strengthen_assessment() {
 }
 
 #[test]
+fn metric_definition_head_qualification_applies_to_recorded_arithmetic() {
+    for variant in 0..5 {
+        let (mut objects, links) = graph();
+        let h = mutate(&mut objects, "metric", "legacy");
+        match variant {
+            0 => h.coverage = Coverage::Partial,
+            1 => h.fresh_until = 49,
+            2 => h.observed_at = 51,
+            3 => {
+                h.fields
+                    .insert("source_qualified".into(), Knowledge::Value(json!(false)));
+            }
+            _ => {
+                h.fields.insert(
+                    "qualification".into(),
+                    Knowledge::Value(json!("failed_source")),
+                );
+            }
+        }
+        let v = result(&objects, &links, 50);
+        let metric = &report(&v)["metrics"][0];
+        assert_eq!(
+            report(&v)["assessment"],
+            "insufficient_evidence",
+            "variant {variant}"
+        );
+        assert_eq!(metric["source_qualified"], false, "variant {variant}");
+        assert_eq!(metric["delta"], json!({"numerator":"2", "denominator":4}));
+        assert_eq!(
+            metric["percentage_point_delta"],
+            json!({"numerator":"200", "denominator":4})
+        );
+        assert!(
+            metric["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["source_qualified"] == true)
+        );
+    }
+}
+
+fn pr5_disk_object(outcome: Option<Value>, now: u64) -> Object {
+    use ontd::program_guardrails::{Contract, DiskMinimum, qualify_recording};
+    let bytes = outcome.map(|outcome| serde_json::to_vec(&json!({
+        "source_revision":"synthetic-disk-v1", "capture_start":20, "capture_end":20, "outcome":outcome
+    })).unwrap());
+    let capture = qualify_recording(
+        bytes.as_deref(),
+        &Contract::Disk {
+            minimum: DiskMinimum::UnresolvedGbOrGib { quantity: 15 },
+        },
+        now,
+    )
+    .unwrap();
+    let id = id("guardrail", "disk");
+    capture
+        .object(
+            id.clone(),
+            Scope::program(id.namespace, "program-A").unwrap(),
+        )
+        .unwrap()
+}
+
+fn disk_outcome(bytes: u64) -> Value {
+    json!({"kind":"disk", "observed_at":20, "numerator":bytes, "denominator":1, "unit":"bytes"})
+}
+
+#[test]
+fn pr5_unresolved_disk_meaning_preserves_proven_bounds_and_requires_review() {
+    for (bytes, bound) in [
+        (14_000_000_000_u64, Knowledge::Value(json!(false))),
+        (15_500_000_000, Knowledge::Unknown),
+        (17_000_000_000, Knowledge::Value(json!(true))),
+    ] {
+        let (mut objects, links) = graph();
+        objects[4] = pr5_disk_object(Some(disk_outcome(bytes)), 50);
+        let h = &objects[4].observations[0];
+        assert_eq!(h.coverage, Coverage::Partial);
+        assert_eq!(h.fields["source_qualified"], Knowledge::Value(json!(true)));
+        assert_eq!(
+            h.fields["qualification"],
+            Knowledge::Value(json!("unresolved_disk_unit"))
+        );
+        assert_eq!(h.fields["bound_value"], Knowledge::Unknown);
+        assert_eq!(h.fields["bound_satisfied"], bound);
+        // Recheck the source clock at render, including expiry equality.
+        for now in [50, 920] {
+            let v = result(&objects, &links, now);
+            let guardrail = &report(&v)["guardrails"][0];
+            assert_eq!(
+                report(&v)["assessment"],
+                "review_required",
+                "bytes {bytes}, now {now}"
+            );
+            assert_eq!(
+                guardrail["bound_satisfied"],
+                serde_json::to_value(&bound).unwrap()
+            );
+            assert_eq!(guardrail["value"], json!({"kind":"value", "value":bytes}));
+            assert_eq!(guardrail["source_qualified"], false);
+            assert_eq!(
+                guardrail["qualification"],
+                json!({"kind":"value", "value":"unresolved_disk_unit"})
+            );
+        }
+        // Hidden adapter observations still have no effect on admitted bytes.
+        let mut denied = policy(&objects);
+        denied
+            .principals
+            .get_mut("reader")
+            .unwrap()
+            .retain(|g| !g.object_types.contains("guardrail"));
+        let full = render(&objects, &links, denied.clone(), 50).unwrap();
+        objects.pop();
+        let reduced: Vec<_> = links
+            .into_iter()
+            .filter(|l| l.target != id("guardrail", "disk"))
+            .collect();
+        assert_eq!(full, render(&objects, &reduced, denied, 50).unwrap());
+    }
+}
+
+#[test]
+fn pr5_disk_failures_and_report_time_expiry_do_not_acquire_known_bounds() {
+    for (outcome, now, expected) in [
+        (None, 50, Knowledge::Unknown),
+        (Some(json!({"kind":"failed"})), 50, Knowledge::Unknown),
+        (
+            Some(
+                json!({"kind":"baseline", "observed_at":20, "value":14_000_000_000_u64, "total":null}),
+            ),
+            50,
+            Knowledge::Unknown,
+        ),
+        (
+            Some(json!({"kind":"not_performed"})),
+            50,
+            Knowledge::NotPerformed,
+        ),
+        (Some(disk_outcome(14_000_000_000)), 921, Knowledge::Unknown),
+        (Some(disk_outcome(14_000_000_000)), 19, Knowledge::Unknown),
+    ] {
+        let (mut objects, links) = graph();
+        // Capture at 50; the report must independently reject a now-stale/future source.
+        objects[4] = pr5_disk_object(outcome, 50);
+        let a = Authority::new(policy(&objects));
+        let s = a.bind_trusted("reader").unwrap();
+        let v: Value = serde_json::from_str(
+            &Service::new(store(&objects, &links), a)
+                .render(
+                    &s,
+                    Query::ProgramReport {
+                        root: id("program", "root"),
+                        window: ReportWindow { start: 0, end: 20 },
+                    },
+                    now,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let guardrail = &report(&v)["guardrails"][0];
+        assert_eq!(
+            report(&v)["assessment"],
+            "insufficient_evidence",
+            "now {now}"
+        );
+        assert_eq!(guardrail["value"], serde_json::to_value(&expected).unwrap());
+        assert_eq!(
+            guardrail["bound_satisfied"],
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(guardrail["source_qualified"], false);
+    }
+}
+
+#[test]
 fn incompatible_definitions_population_units_and_middle_samples_have_no_delta() {
     for field in [
         "definition_revision",
