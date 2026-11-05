@@ -329,3 +329,572 @@ fn pr4_validated_collector_joins_pr3_pr5_and_preserves_unbound_reconciliation() 
     assert!(!text.contains("a.ts"));
     assert!(text.contains("unresolved_reconciliation"));
 }
+
+#[test]
+fn v2_owner_selection_is_explicit_and_never_mixes_v1() {
+    let mut v=serde_json::to_value(json!({"schema":"ont-program-pilot/v1","adopted_uid":0,"snapshot_input":{"version":"v2","producer":{"source_commit":"1".repeat(40),"source_tree":"2".repeat(40),"binary_sha256":"3".repeat(64),"build_evidence_sha256":"4".repeat(64)},"definition_sha256":"a".repeat(64),"repositories":{},"guardrails":{}},"producer_sha256":"b".repeat(64),"legacy_definition":null,"exact_definition":null,"manifest_sha256":"a".repeat(64),"repositories":[]})).unwrap();
+    assert!(matches!(
+        OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()),
+        Err(PilotError("pilot_ambiguous_snapshot_input"))
+    ));
+    v["producer_sha256"] = Value::Null;
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_ok());
+    v["snapshot_input"]["version"] = json!("both");
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_err());
+    // Existing owner configurations still select the original v1 branch.
+    assert!(config().snapshot_input.is_none());
+}
+fn v2_base() -> Graph {
+    let c = program::v2::tests::fixture().capture().unwrap();
+    snapshots_v2(
+        &c,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW,
+    )
+    .unwrap()
+}
+#[test]
+fn v2_real_intake_through_pilot_is_partial_with_exact_guardrail_contract() {
+    let (answer, _) = render(
+        v2_base(),
+        config().policy().unwrap(),
+        Query::ProgramReport {
+            root: id("program", PROGRAM, false),
+            window: ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+        },
+        NOW,
+    )
+    .unwrap();
+    let v: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(v["trust_limit"], TRUST_LIMIT);
+    assert_eq!(
+        v["response"]["result"]["report"]["assessment"],
+        "insufficient_evidence"
+    );
+    let guards = v["response"]["result"]["report"]["guardrails"]
+        .as_array()
+        .unwrap();
+    assert_eq!(guards.len(), 4);
+    let disk = guards
+        .iter()
+        .find(|g| g["guardrail"]["value"] == "disk")
+        .unwrap();
+    assert_eq!(disk["value"]["value"], 20_u64 << 30);
+    assert_eq!(disk["bound_satisfied"]["value"], true);
+    let basis = v["response"]["result"]["report"]["basis"]
+        .as_array()
+        .unwrap();
+    let disk_basis = basis.iter().find(|o| o["id"] == disk["id"]).unwrap();
+    assert_eq!(
+        disk_basis["observations"][0]["fields"]["bound_value"]["value"],
+        16106127360_u64
+    );
+}
+
+#[test]
+fn review_v2_diagnostic_guardrails_survive_nonzero_report_windows() {
+    for (status, reason, outcome) in [
+        (
+            "not_performed",
+            "not_performed",
+            json!({"kind":"not_performed"}),
+        ),
+        ("failed", "failed_source", json!({"kind":"failed"})),
+        ("missing", "missing_source", Value::Null),
+        ("invalid", "invalid_source", json!({})),
+    ] {
+        let mut f = program::v2::tests::fixture();
+        if status != "not_performed" {
+            let mut request: Value =
+                serde_json::from_slice(&f.evidence["synthetic-test"]["request.json"]).unwrap();
+            request["billing_recording_path"] = json!("/synthetic/billing.json");
+            f.replace_artifact("request.json", request);
+            if status != "missing" {
+                let recording = if status == "invalid" {
+                    outcome
+                } else {
+                    json!({"source_revision":"synthetic-failed/v2","capture_start":NOW-1,"capture_end":NOW,"outcome":outcome})
+                };
+                f.replace_artifact("billing-recording.json", recording);
+            }
+            let g = &mut f.row["guard_ci_minutes_month"];
+            g["value"] = json!({"kind":"unknown"});
+            g["qualification"] = json!(reason);
+            g["source"]["status"] = json!(status);
+            g["source"]["reason"] = json!(reason);
+            g["source"]["exit_code"] = json!({"kind":"unknown"});
+            g["source"]["signal"] = json!({"kind":"unknown"});
+            if status == "missing" {
+                g["recording"] = json!({"kind":"unknown"});
+                g["source"]["artifact"] = json!({"kind":"unknown"});
+            }
+        }
+        let capture = f.capture().unwrap();
+        let w = ReportWindow {
+            start: NOW - 1,
+            end: NOW,
+        };
+        let graph = snapshots_v2(&capture, w, NOW).unwrap();
+        for object in graph
+            .objects
+            .iter()
+            .filter(|o| o.id.object_type == "guardrail")
+        {
+            let observation = &object.observations[0];
+            let envelope = &graph.artifacts[&observation.lineage.artifact_sha256];
+            assert_eq!(digest(envelope), observation.revision);
+            let envelope: Value = serde_json::from_slice(envelope).unwrap();
+            assert_eq!(
+                envelope["qualification"],
+                serde_json::to_value(&observation.fields).unwrap()
+            );
+            if !object.id.native_key.ends_with(":disk") {
+                assert_eq!(observation.fresh_until, NOW);
+                assert_eq!(envelope["v2_reporting_time"]["observed_at"], NOW);
+                assert_eq!(envelope["v2_reporting_time"]["source_capture"]["end"], NOW);
+            } else {
+                assert!(envelope.get("v2_reporting_time").is_none());
+                assert_eq!(envelope["source"]["outcome"]["observed_at"], NOW - 1);
+            }
+        }
+        let answer = render(
+            graph,
+            config().policy().unwrap(),
+            Query::ProgramReport {
+                root: id("program", PROGRAM, false),
+                window: w,
+            },
+            NOW,
+        )
+        .unwrap()
+        .0;
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        let report = &v["response"]["result"]["report"];
+        let guards = report["guardrails"].as_array().unwrap();
+        assert_eq!(
+            guards.len(),
+            4,
+            "diagnostic state {status} must survive both window filters"
+        );
+        for guard in guards {
+            let kind = guard["guardrail"]["value"].as_str().unwrap();
+            let expected = if kind == "disk" {
+                "qualified"
+            } else if kind == "billing" {
+                reason
+            } else {
+                "not_performed"
+            };
+            assert_eq!(guard["qualification"]["value"], expected);
+            let basis = report["basis"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["id"] == guard["id"])
+                .unwrap();
+            assert_eq!(
+                basis["observations"][0]["observed_at"],
+                if kind == "disk" { NOW - 1 } else { NOW }
+            );
+            if kind != "disk" {
+                assert_eq!(guard["source_qualified"], false);
+            }
+        }
+        let outside = snapshots_v2(
+            &capture,
+            ReportWindow {
+                start: NOW + 1,
+                end: NOW + 2,
+            },
+            NOW,
+        )
+        .unwrap();
+        assert!(
+            outside
+                .objects
+                .iter()
+                .all(|o| o.id.object_type != "guardrail")
+        );
+    }
+}
+#[test]
+fn v2_full_and_reduced_store_match_through_pilot_with_hidden_sources() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let full = v2_base();
+    let mut reduced = v2_base();
+    let visible = BTreeSet::from(["program", "metric", "measurement", "target"]);
+    reduced.objects.retain(|o| {
+        o.id.namespace == namespace(false) && visible.contains(o.id.object_type.as_str())
+    });
+    let ids: BTreeSet<_> = reduced.objects.iter().map(|o| o.id.clone()).collect();
+    reduced
+        .links
+        .retain(|l| ids.contains(&l.source) && ids.contains(&l.target));
+    let query = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let a = render(full, policy.clone(), query(), NOW).unwrap().0;
+    assert_eq!(a, render(reduced, policy.clone(), query(), NOW).unwrap().0);
+    // Identity disclosure does not depend on any intake/evidence being present.
+    policy.principals.get_mut(PRINCIPAL).unwrap()[0].object_types =
+        BTreeSet::from(["program".into()]);
+    assert_eq!(
+        render(v2_base(), policy.clone(), query(), NOW).unwrap().0,
+        render(Graph::default(), policy, query(), NOW).unwrap().0
+    );
+}
+
+#[test]
+fn v2_hidden_guardrail_changes_do_not_change_visible_metric_or_identity_bytes() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let q = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let expected = render(v2_base(), policy.clone(), q(), NOW).unwrap().0;
+    for free in [14_u64 << 30, 30_u64 << 30] {
+        let mut f = program::v2::tests::fixture();
+        let mut recording: Value =
+            serde_json::from_slice(&f.evidence["synthetic-test"]["disk-recording.json"]).unwrap();
+        recording["outcome"]["numerator"] = json!(free);
+        f.replace_artifact("disk-recording.json", recording);
+        f.row["guard_disk_free_gib"]["value"]["value"] = json!(free);
+        f.row["guard_disk_free_gib"]["free_gib"]["value"]["numerator"] = json!(free);
+        let c = f.capture().unwrap();
+        let graph = snapshots_v2(
+            &c,
+            ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(expected, render(graph, policy.clone(), q(), NOW).unwrap().0);
+    }
+}
+
+#[test]
+fn review_hidden_repository_diagnostics_do_not_change_public_aggregate_bytes() {
+    let mut policy = config().policy().unwrap();
+    policy
+        .principals
+        .get_mut(PRINCIPAL)
+        .unwrap()
+        .retain(|g| g.object_types.contains("program"));
+    let q = || Query::ProgramReport {
+        root: id("program", PROGRAM, false),
+        window: ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+    };
+    let f = program::v2::tests::failed_repository_fixture();
+    let c = f.capture().unwrap();
+    let expected = render(
+        snapshots_v2(
+            &c,
+            ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+            NOW,
+        )
+        .unwrap(),
+        policy.clone(),
+        q(),
+        NOW,
+    )
+    .unwrap()
+    .0;
+    let mut changed = program::v2::tests::failed_repository_fixture();
+    changed.row["repositories"][1]["tree_read"]["reason"] = json!("tree_deadline");
+    changed.row["repositories"][1]["tree_read"]["exit_code"] = json!({"kind":"value","value":124});
+    changed.row["repositories"][1]["tree_read"]["capture"]["end"] = json!(NOW - 1);
+    let c = changed.capture().unwrap();
+    assert_eq!(
+        expected,
+        render(
+            snapshots_v2(
+                &c,
+                ReportWindow {
+                    start: 0,
+                    end: u64::MAX
+                },
+                NOW
+            )
+            .unwrap(),
+            policy,
+            q(),
+            NOW
+        )
+        .unwrap()
+        .0
+    );
+}
+
+#[test]
+fn fix1_surviving_v2_component_reaches_authorized_pilot_basis() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let graph = snapshots_v2(&f.capture().unwrap(), window(), NOW).unwrap();
+    let component = graph
+        .objects
+        .iter()
+        .find(|o| o.id.object_type == "measurement" && o.id.namespace != namespace(false))
+        .unwrap();
+    let component_id = component.id.clone();
+    assert_eq!(component.observations[0].coverage, Coverage::Complete);
+    let owner = v2_disclosure_config(&f, Some(json!([41])));
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&owner).unwrap()).unwrap();
+    let adopted = v2::Capture::recorded(
+        &f.journal(),
+        &f.manifest,
+        f.evidence.clone(),
+        NOW + 1,
+        NOW + 2,
+        owner.v2_contract().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        adopted.envelope_bytes(),
+        f.capture().unwrap().envelope_bytes()
+    );
+    let v: Value = serde_json::from_str(&answer(graph, owner.policy().unwrap())).unwrap();
+    let report = &v["response"]["result"]["report"];
+    let basis = report["basis"].as_array().unwrap();
+    let shown = basis
+        .iter()
+        .find(|o| o["id"] == serde_json::to_value(&component_id).unwrap())
+        .unwrap();
+    let fields = &shown["observations"][0]["fields"];
+    assert_eq!(fields["removed"], json!({"kind":"value","value":1}));
+    assert_eq!(fields["total"], json!({"kind":"value","value":2}));
+    assert_eq!(
+        fields["source_qualified"],
+        json!({"kind":"value","value":true})
+    );
+    let aggregate = basis
+        .iter()
+        .find(|o| {
+            o["id"]["object_type"] == "measurement"
+                && o["id"]["namespace"] == serde_json::to_value(namespace(false)).unwrap()
+                && o["observations"][0]["fields"].get("removed").is_some()
+        })
+        .unwrap();
+    assert_eq!(
+        aggregate["observations"][0]["fields"]["removed"],
+        json!({"kind":"unknown"})
+    );
+    assert_eq!(aggregate["observations"][0]["coverage"], "partial");
+    assert_eq!(report["assessment"], "insufficient_evidence");
+}
+
+fn v2_disclosure_config(f: &program::v2::tests::Fixture, disclosure: Option<Value>) -> Value {
+    let c = &f.contract;
+    let mut v = json!({
+        "schema":"ont-program-pilot/v1", "adopted_uid":0,
+        "snapshot_input": {
+            "version":"v2", "producer":c.producer,
+            "definition_sha256":c.definition_sha256,
+            "repositories":c.repositories, "guardrails":c.guardrails
+        },
+        "manifest_sha256":c.manifest_sha256,
+        "exact_definition": {
+            "id":c.definition.reference.id, "revision":c.definition.reference.revision,
+            "formula":c.definition.formula, "population":c.definition.population,
+            "adoption":null
+        },
+        "repositories":[]
+    });
+    if let Some(disclosure) = disclosure {
+        v["snapshot_input"]["repository_measurement_disclosure"] = disclosure;
+    }
+    v
+}
+
+#[test]
+fn fix1_v2_disclosure_is_opt_in_identity_bound_and_does_not_grant_source_records() {
+    let f = program::v2::tests::fixture();
+    for (disclosure, expected) in [
+        (None, vec![]),
+        (Some(json!([])), vec![]),
+        (Some(json!([41])), vec![41]),
+        (Some(json!([41, 42])), vec![41, 42]),
+    ] {
+        let v = v2_disclosure_config(&f, disclosure);
+        let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let policy = owner.policy().unwrap();
+        let baseline = config().policy().unwrap();
+        let grants = &policy.principals[PRINCIPAL];
+        assert_eq!(
+            grant_frames(&grants[..2]),
+            grant_frames(&baseline.principals[PRINCIPAL])
+        );
+        assert_eq!(grants.len(), 2 + expected.len());
+        for (grant, github_id) in grants[2..].iter().zip(expected) {
+            let identity = f
+                .contract
+                .repositories
+                .values()
+                .find(|r| r.github_id == github_id)
+                .unwrap();
+            let (owner, name) = identity.full_name.split_once('/').unwrap();
+            let repo = program_git::Repository::github(owner, name, github_id).unwrap();
+            assert_eq!(grant.scope, scope(repo.id().namespace.clone()).unwrap());
+            assert_eq!(grant.object_types, BTreeSet::from(["measurement".into()]));
+            assert!(grant.read && grant.derive && grant.actions.is_empty());
+        }
+    }
+    let mut v = v2_disclosure_config(&f, Some(json!([999])));
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(matches!(
+        owner.policy(),
+        Err(PilotError("pilot_invalid_config"))
+    ));
+    v["snapshot_input"]["repository_measurement_disclosure"] = json!([41]);
+    v["snapshot_input"]["repositories"]["alias"] = v["snapshot_input"]["repositories"]["a"].clone();
+    let owner = OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(matches!(
+        owner.policy(),
+        Err(PilotError("pilot_invalid_config"))
+    ));
+    v["snapshot_input"] = json!({"version":"v1","repository_measurement_disclosure":[41]});
+    assert!(OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).is_err());
+}
+
+#[test]
+fn fix1_denied_v2_components_are_byte_invariant_through_pilot() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let owner =
+        OwnerConfig::parse(&serde_json::to_vec(&v2_disclosure_config(&f, None)).unwrap()).unwrap();
+    let policy = owner.policy().unwrap();
+    let full = snapshots_v2(&f.capture().unwrap(), window(), NOW).unwrap();
+    let mut reduced = full.clone();
+    let hidden: BTreeSet<_> = reduced
+        .objects
+        .iter()
+        .filter(|o| o.id.object_type == "measurement" && o.id.namespace != namespace(false))
+        .map(|o| o.id.clone())
+        .collect();
+    assert_eq!(hidden.len(), 1);
+    assert!(
+        full.links
+            .iter()
+            .any(|l| l.relation == "has_measurement" && hidden.contains(&l.target))
+    );
+    reduced.objects.retain(|o| !hidden.contains(&o.id));
+    reduced
+        .links
+        .retain(|l| !hidden.contains(&l.target) && !hidden.contains(&l.source));
+    let expected = answer(full, policy.clone());
+    assert_eq!(expected, answer(reduced, policy.clone()));
+    let report: Value = serde_json::from_str(&expected).unwrap();
+    assert!(
+        report["response"]["result"]["report"]["basis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| !hidden.contains(&serde_json::from_value(o["id"].clone()).unwrap()))
+    );
+    // Change a hidden qualified component and its evidence without changing the
+    // unavailable aggregate. Its source-only digest must not leak into output.
+    let mut changed = program::v2::tests::failed_repository_fixture();
+    changed.row["repositories"][0]["ref_read"]["capture"]["start"] = json!(NOW - 5);
+    let mut ref_evidence: Value =
+        serde_json::from_slice(&changed.evidence["synthetic-test"]["repo-0-ref.json"]).unwrap();
+    ref_evidence["capture"]["start"] = json!(NOW - 5);
+    changed.replace_artifact("repo-0-ref.json", ref_evidence);
+    assert_eq!(
+        expected,
+        answer(
+            snapshots_v2(&changed.capture().unwrap(), window(), NOW).unwrap(),
+            policy
+        )
+    );
+}
+
+#[test]
+fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
+    // SHA-256 of the independent review's 203,958-byte v1-base.json at
+    // 17de548816bd26bafcf0e5c4236fff5ba89cff38; synthetic sources only.
+    let c = capture();
+    let mut frames = Vec::new();
+    for (start, end) in [
+        (0, u64::MAX),
+        (1793838060, 1793838060),
+        (1793842980, 1793842980),
+        (NOW, NOW),
+    ] {
+        let w = ReportWindow { start, end };
+        let g = snapshots(&c, w).unwrap();
+        let objects = serde_json::to_value(&g.objects).unwrap();
+        let links = serde_json::to_value(&g.links).unwrap();
+        let answer = render(
+            g,
+            config().policy().unwrap(),
+            Query::ProgramReport {
+                root: id("program", PROGRAM, false),
+                window: w,
+            },
+            NOW,
+        )
+        .unwrap()
+        .0;
+        frames.push(json!({"window":w,"objects":objects,"links":links,"answer":answer}));
+    }
+    let mut g = base();
+    g.merge(disk(Some(&disk_bytes(16 << 30)), NOW).unwrap())
+        .unwrap();
+    for (kind, unit) in [
+        ("billing", "linux_minutes"),
+        ("recall", "fraction"),
+        ("defects", "count"),
+    ] {
+        g.merge(not_performed(kind, unit, NOW).unwrap()).unwrap();
+    }
+    let full = answer(g, config().policy().unwrap());
+    let payload = json!({"envelope":String::from_utf8(c.envelope_bytes().to_vec()).unwrap(),"frames":frames,"full_answer":full});
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    assert_eq!(bytes.len(), 203958);
+    assert_eq!(
+        digest(&bytes),
+        "133ee7f01653b740a7376a68fda09ee2eb1101838a7e09fb3b500d0134096bc2"
+    );
+    let mut explicit = config();
+    explicit.snapshot_input = Some(SnapshotInput::V1 {});
+    assert_eq!(
+        grant_frames(&explicit.policy().unwrap().principals[PRINCIPAL]),
+        grant_frames(&config().policy().unwrap().principals[PRINCIPAL])
+    );
+    assert_eq!(
+        answer(base(), explicit.policy().unwrap()),
+        answer(base(), config().policy().unwrap())
+    );
+}
+
+fn grant_frames(grants: &[Grant]) -> Value {
+    json!(grants.iter().map(|g| json!({"scope":g.scope,"object_types":g.object_types,"read":g.read,"derive":g.derive,"actions":g.actions})).collect::<Vec<_>>())
+}

@@ -23,6 +23,7 @@ mod source_tests;
 pub(crate) mod strict;
 #[cfg(test)]
 mod tests;
+pub mod v2;
 
 pub const SNAPSHOTS_PATH: &str = "/home/palantirkc/work/ws-replan/preparation/kpi/snapshots.jsonl";
 pub const MANIFEST_PATH: &str =
