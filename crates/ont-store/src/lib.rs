@@ -17,26 +17,51 @@ fn db<T>(result: rusqlite::Result<T>) -> Result<T, Error> {
 fn decode<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Error> {
     serde_json::from_str(s).map_err(|_| Error::StoreFailure)
 }
+/// A store's domain and version are selected explicitly, never inferred from rows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StoreMode {
+    Education,
+    Program,
+}
+impl StoreMode {
+    fn version(self) -> i64 {
+        match self {
+            Self::Education => 1,
+            Self::Program => 2,
+        }
+    }
+    fn accepts(self, scope: &Scope, namespace: &Namespace) -> bool {
+        matches!(
+            (self, scope),
+            (Self::Education, Scope::Education { .. }) | (Self::Program, Scope::Program { .. })
+        ) && scope.validate().is_ok()
+            && scope.namespace() == namespace
+    }
+    fn decode_scope(self, raw: &str, namespace: &Namespace) -> Result<Scope, Error> {
+        let scope = decode(raw)?;
+        if !self.accepts(&scope, namespace) {
+            return Err(Error::StoreFailure);
+        }
+        Ok(scope)
+    }
+}
 /// Every persisted v1 scope must remain readable by the Education-only reader.
 fn v1_scope(scope: &Scope, namespace: &Namespace) -> Result<(), Error> {
-    if !matches!(scope, Scope::Education { .. })
-        || scope.validate().is_err()
-        || scope.namespace() != namespace
-    {
+    if !StoreMode::Education.accepts(scope, namespace) {
         return Err(Error::StoreFailure);
     }
     Ok(())
 }
 fn decode_v1_scope(s: &str, namespace: &Namespace) -> Result<Scope, Error> {
-    let scope = decode(s)?;
-    v1_scope(&scope, namespace)?;
-    Ok(scope)
+    StoreMode::Education.decode_scope(s, namespace)
 }
 pub struct Store {
     connection: Connection,
+    mode: StoreMode,
 }
 pub struct ReadSnapshot<'a> {
     connection: &'a Connection,
+    mode: StoreMode,
 }
 /// Trusted ingestion input: not exposed by ontd stdin.
 #[derive(Clone)]
@@ -47,18 +72,33 @@ pub struct Append {
 }
 impl Store {
     pub fn memory() -> Result<Self, Error> {
-        Self::configure(db(Connection::open_in_memory())?)
+        Self::configure(db(Connection::open_in_memory())?, StoreMode::Education)
     }
     /// Only task-owned synthetic files in S06. No live DB opening or migration.
     pub fn open(path: &Path) -> Result<Self, Error> {
-        Self::configure(db(Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ))?)
+        Self::open_mode(path, StoreMode::Education)
     }
-    fn configure(mut connection: Connection) -> Result<Self, Error> {
+    /// Separate task-owned Program projection; schema v2, without action tables.
+    /// Existing v1 or unknown databases refuse without conversion or row reads.
+    pub fn open_program(path: &Path) -> Result<Self, Error> {
+        Self::open_mode(path, StoreMode::Program)
+    }
+    /// Disposable Program projection with the same v2 contract as open_program.
+    pub fn memory_program() -> Result<Self, Error> {
+        Self::configure(db(Connection::open_in_memory())?, StoreMode::Program)
+    }
+    fn open_mode(path: &Path, mode: StoreMode) -> Result<Self, Error> {
+        Self::configure(
+            db(Connection::open_with_flags(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | OpenFlags::SQLITE_OPEN_CREATE
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ))?,
+            mode,
+        )
+    }
+    fn configure(mut connection: Connection, mode: StoreMode) -> Result<Self, Error> {
         db(connection.busy_timeout(Duration::from_millis(250)))?;
         let app: i64 = db(connection.query_row("PRAGMA application_id", [], |r| r.get(0)))?;
         let version: i64 = db(connection.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
@@ -71,12 +111,13 @@ impl Store {
             let transaction =
                 db(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             db(transaction.execute_batch(SCHEMA))?;
+            db(transaction.pragma_update(None, "user_version", mode.version()))?;
             db(transaction.commit())?;
-        } else if app != APPLICATION_ID || version != 1 {
+        } else if app != APPLICATION_ID || version != mode.version() {
             return Err(Error::StoreFailure);
         }
         db(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"))?;
-        Ok(Self { connection })
+        Ok(Self { connection, mode })
     }
     /// Atomic graph initialization, preserving explicit observation append order.
     pub fn seed(&mut self, objects: &[Object], links: &[Link]) -> Result<(), Error> {
@@ -90,6 +131,7 @@ impl Store {
             for observation in &object.observations {
                 append_in(
                     &transaction,
+                    self.mode,
                     &Append {
                         id: object.id.clone(),
                         scope: object.scope.clone(),
@@ -104,6 +146,12 @@ impl Store {
             if link.relation.is_empty() || link.relation.len() > 64 {
                 return Err(Error::InvalidEvidence);
             }
+            let snapshot = ReadSnapshot {
+                connection: &transaction,
+                mode: self.mode,
+            };
+            snapshot.get(&link.source)?.ok_or(Error::StoreFailure)?;
+            snapshot.get(&link.target)?.ok_or(Error::StoreFailure)?;
             db(transaction.execute(
                 "INSERT INTO links VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![
@@ -126,7 +174,7 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate))?;
         for item in items {
-            append_in(&transaction, item)?;
+            append_in(&transaction, self.mode, item)?;
         }
         db(transaction.commit())
     }
@@ -140,12 +188,13 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Deferred))?;
         let result = read(&ReadSnapshot {
             connection: &transaction,
+            mode: self.mode,
         })?;
         db(transaction.commit())?;
         Ok(result)
     }
 }
-fn append_in(transaction: &Transaction<'_>, item: &Append) -> Result<(), Error> {
+fn append_in(transaction: &Transaction<'_>, mode: StoreMode, item: &Append) -> Result<(), Error> {
     let Append {
         id,
         scope,
@@ -153,15 +202,12 @@ fn append_in(transaction: &Transaction<'_>, item: &Append) -> Result<(), Error> 
     } = item;
     id.validate()?;
     observation.validate()?;
-    if !matches!(scope, Scope::Education { .. })
-        || scope.validate().is_err()
-        || scope.namespace() != &id.namespace
-    {
+    if !mode.accepts(scope, &id.namespace) {
         return Err(Error::InvalidEvidence);
     }
     let existing: Option<(String, String)> = db(transaction.query_row("SELECT scope,head FROM objects WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key], |r| Ok((r.get(0)?, r.get(1)?))).optional())?;
     if let Some((old_scope, head)) = existing {
-        if decode_v1_scope(&old_scope, &id.namespace)? != *scope {
+        if mode.decode_scope(&old_scope, &id.namespace)? != *scope {
             return Err(Error::ScopeConflict);
         }
         if observation.change == Change::Initial || observation.supersedes.as_ref() != Some(&head) {
@@ -199,7 +245,7 @@ impl Snapshot for ReadSnapshot<'_> {
         let Some((scope, head)) = row else {
             return Ok(None);
         };
-        let scope = decode_v1_scope(&scope, &id.namespace)?;
+        let scope = self.mode.decode_scope(&scope, &id.namespace)?;
         let mut statement = db(self.connection.prepare("SELECT payload FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 ORDER BY ordinal"))?;
         let rows = db(statement.query_map(
             params![
@@ -256,3 +302,6 @@ impl Snapshot for ReadSnapshot<'_> {
         Ok(targets)
     }
 }
+
+#[cfg(test)]
+mod tests;
