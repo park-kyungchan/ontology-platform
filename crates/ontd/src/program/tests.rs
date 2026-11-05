@@ -450,3 +450,49 @@ fn explicit_adoption_contract_is_bound_and_field_names_never_adopt_kpis() {
         })
         .unwrap();
 }
+
+#[test]
+fn known_manifest_bounds_numerator_even_when_source_total_is_unresolved() {
+    let unresolved = [
+        None,
+        Some(Value::Null),
+        Some(json!("")),
+        Some(json!({"kind":"unknown"})),
+        Some(json!({"kind":"not_performed"})),
+    ];
+    let expected = [
+        Knowledge::Missing,
+        Knowledge::Null,
+        Knowledge::Blank,
+        Knowledge::Unknown,
+        Knowledge::NotPerformed,
+    ];
+    for (total, state) in unresolved.into_iter().zip(expected) {
+        let mut source = row();
+        source["kpi_legacy_removal"]
+            .as_object_mut()
+            .unwrap()
+            .remove("per_repo");
+        let group = source["kpi_legacy_removal"].as_object_mut().unwrap();
+        match total {
+            Some(value) => {
+                group.insert("total".into(), value);
+            }
+            None => {
+                group.remove("total");
+            }
+        }
+        group.insert("removed".into(), json!(4));
+        assert_eq!(
+            admit_bytes(&lines(&[source.clone()]), &manifest()).err(),
+            Some(IntakeError::InvalidData)
+        );
+        source["kpi_legacy_removal"]["removed"] = json!(3);
+        let admitted = capture(&[source]);
+        let objects = admitted.objects().unwrap();
+        let observation = &find(&objects, "kpi_legacy_removal").observations[0];
+        assert_eq!(observation.fields["removed"], Knowledge::Value(3.into()));
+        assert_eq!(observation.fields["total"], state);
+        assert_eq!(observation.coverage, Coverage::Partial);
+    }
+}

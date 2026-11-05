@@ -748,6 +748,16 @@ fn validate_row(value: &Value, population: &PathPopulation) -> Result<u64> {
         .get("kpi_legacy_removal")
         .filter(|v| v.get("kind").is_none() && v.is_object())
     {
+        // The adopted population remains known even when the source row's
+        // own total is Missing/Null/Blank/Unknown/NotPerformed. Preserve that
+        // state, but never admit a numeric removal beyond the known population.
+        if legacy
+            .get("removed")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > population.basis.denominator)
+        {
+            return Err(IntakeError::InvalidData);
+        }
         if legacy
             .get("total")
             .and_then(Value::as_u64)
