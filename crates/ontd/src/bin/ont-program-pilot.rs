@@ -6,6 +6,13 @@ use std::{
     io::{Read, Write},
 };
 const HELP: &str = "Usage: ont-program-pilot [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.\nOS-account principal only; this CLI does not authenticate a human.";
+fn output_failure() -> ! {
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19"
+    );
+    std::process::exit(1);
+}
 fn run(args: &[OsString], answer_record: bool) -> Result<(String, bool), &'static str> {
     if !args.is_empty() && args != ["--answer-record"] {
         return Err("invalid_request");
@@ -27,7 +34,9 @@ fn main() {
     let args = argv.get(1..).unwrap_or_default();
     let non_utf8 = argv.iter().any(|arg| arg.to_str().is_none());
     if !non_utf8 && args == ["--help"] {
-        println!("{HELP}");
+        if writeln!(std::io::stdout().lock(), "{HELP}").is_err() {
+            output_failure();
+        }
         return;
     }
     let answer_record = args.iter().any(|arg| arg == "--answer-record");
@@ -44,14 +53,19 @@ fn main() {
         },
         Err(code) => {
             // Preserve base stderr bytes when the new mode is not selected.
-            eprintln!("{code}@crates/ontd/src/bin/ont-program-pilot.rs:24");
-            eprintln!("{TRUST_LIMIT}");
+            if writeln!(
+                std::io::stderr().lock(),
+                "{code}@crates/ontd/src/bin/ont-program-pilot.rs:24\n{TRUST_LIMIT}"
+            )
+            .is_err()
+            {
+                std::process::exit(1);
+            }
             std::process::exit(2);
         }
     };
     if writeln!(std::io::stdout().lock(), "{answer}").is_err() {
-        eprintln!("pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19");
-        std::process::exit(1);
+        output_failure();
     }
     std::process::exit(status);
 }

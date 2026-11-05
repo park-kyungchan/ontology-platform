@@ -120,3 +120,9 @@ regardless of argument/help order. Default pilot invalid arguments preserve the
 base static diagnostic and exit 2. One explicit compatibility exception removes
 a legacy leak: default ontd non-UTF-8 arguments now also yield the code-only
 `invalid_request` record and exit 2 instead of a panic containing argument bytes.
+
+Both CLIs use fallible stdout/stderr writes for help, results and diagnostics.
+Any failed output write exits 1 without invoking the panic printer. A failed
+stdout write attempts the static output-failure diagnostic; failure writing that
+diagnostic is ignored. Working output channels retain their existing bytes and
+exit status (help/success 0, refusal 2, operational/output error 1).

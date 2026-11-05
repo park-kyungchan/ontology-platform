@@ -348,3 +348,143 @@ fn stdin_read_failures_publish_static_codes_without_os_diagnostics() {
         assert_eq!(record["outcome"], json!({"status":"refused","code":code}));
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_output_writes_exit_one_without_panics_or_process_byte_echo() {
+    use std::{
+        ffi::OsString,
+        fs::File,
+        os::unix::{ffi::OsStringExt, fs::symlink, process::CommandExt},
+    };
+    let marker = OsString::from_vec(b"private-output-\xff".to_vec());
+    let root = std::env::temp_dir().join(format!("ont-answer-output-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let cwd = root.join(&marker);
+    std::fs::create_dir(&cwd).unwrap();
+    for (index, binary) in [
+        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-program-pilot"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = cwd.join(OsString::from_vec(vec![b'0' + index as u8, 0xff]));
+        symlink(binary, &path).unwrap();
+        let output_diagnostic = if index == 0 {
+            b"output_failure@crates/ontd/src/main.rs:37\n".as_slice()
+        } else {
+            b"pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19\n".as_slice()
+        };
+        let selected = if index == 0 {
+            vec![OsString::from("--synthetic"), "--answer-record".into()]
+        } else {
+            vec![OsString::from("--answer-record")]
+        };
+        let mut bad_args = selected.clone();
+        bad_args.push(marker.clone());
+        // Help, refused records, invalid byte arguments and native result output.
+        // Empty stdin refuses before any pilot configuration/source acquisition.
+        let mut cases = vec![vec![OsString::from("--help")], selected.clone(), bad_args];
+        if index == 0 {
+            cases.push(vec!["--synthetic".into()]);
+        }
+        for hostile in [false, true] {
+            for bad_arg0 in [false, true] {
+                for args in &cases {
+                    // Invalid argv[0] without the opt-in follows the pilot's
+                    // default stderr-only parser path, covered separately below.
+                    if index == 1 && bad_arg0 && args == &[OsString::from("--help")] {
+                        continue;
+                    }
+                    for failed_stderr in [false, true] {
+                        let mut command = Command::new(if hostile {
+                            path.as_path()
+                        } else {
+                            std::path::Path::new(binary)
+                        });
+                        command.arg0(if bad_arg0 {
+                            marker.as_os_str()
+                        } else {
+                            std::ffi::OsStr::new("ont-output-test")
+                        });
+                        if hostile {
+                            command.current_dir(&cwd);
+                            for key in [
+                                "USER",
+                                "LOGNAME",
+                                "TMPDIR",
+                                "RUST_BACKTRACE",
+                                "RUST_LIB_BACKTRACE",
+                            ] {
+                                command.env(key, &marker);
+                            }
+                            command.env(&marker, &marker);
+                        }
+                        command
+                            .args(args)
+                            .stdin(Stdio::null())
+                            .stdout(File::options().write(true).open("/dev/full").unwrap());
+                        if failed_stderr {
+                            command.stderr(File::options().write(true).open("/dev/full").unwrap());
+                        }
+                        let out = command.output().unwrap();
+                        assert_eq!(
+                            out.status.code(),
+                            Some(1),
+                            "binary={index} args={args:?} hostile={hostile} bad_arg0={bad_arg0} stderr_full={failed_stderr}"
+                        );
+                        assert!(out.stdout.is_empty());
+                        assert_eq!(
+                            out.stderr,
+                            if failed_stderr {
+                                b"".as_slice()
+                            } else {
+                                output_diagnostic
+                            }
+                        );
+                    }
+                }
+            }
+        }
+        // A default diagnostic can itself fail, independently of stdout.
+        for hostile in [false, true] {
+            let mut command = Command::new(if hostile {
+                path.as_path()
+            } else {
+                std::path::Path::new(binary)
+            });
+            command.arg0("ont-output-test");
+            if hostile {
+                command
+                    .current_dir(&cwd)
+                    .env("RUST_BACKTRACE", &marker)
+                    .env("USER", &marker);
+            }
+            command.stderr(File::options().write(true).open("/dev/full").unwrap());
+            if index == 0 {
+                command.arg("--synthetic").stdin(File::open("/").unwrap());
+            } else {
+                command.arg("private-invalid-option").stdin(Stdio::null());
+            }
+            let out = command.output().unwrap();
+            assert_eq!(out.status.code(), Some(1));
+            assert!(out.stdout.is_empty() && out.stderr.is_empty());
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cli_sources_have_no_infallible_output_macros() {
+    for source in [
+        include_str!("../src/main.rs"),
+        include_str!("../src/bin/ont-program-pilot.rs"),
+    ] {
+        // Whitespace and qualification do not evade the grep-style guard.
+        let compact: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
+        for name in ["print!", "println!", "eprint!", "eprintln!"] {
+            assert!(!compact.contains(name), "unchecked output macro: {name}");
+        }
+    }
+}
