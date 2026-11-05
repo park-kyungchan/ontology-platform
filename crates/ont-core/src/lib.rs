@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 pub mod action;
 pub mod program;
+pub mod report;
 mod scope;
 pub use scope::Scope;
 
@@ -207,15 +208,28 @@ impl Object {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Query {
-    Get { id: Id },
-    Traverse { root: Id, relation: String },
-    Decide { root: Id, relation: String },
+    Get {
+        id: Id,
+    },
+    Traverse {
+        root: Id,
+        relation: String,
+    },
+    Decide {
+        root: Id,
+        relation: String,
+    },
+    ProgramReport {
+        root: Id,
+        window: report::ReportWindow,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Output {
     Objects { objects: Vec<View> },
     Decision { decision: String, basis: Vec<View> },
+    ProgramReport { report: report::ProgramReport },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -346,10 +360,19 @@ impl Admission<'_> {
         query: Query,
         now: u64,
     ) -> Result<Response, Error> {
+        if let Query::ProgramReport { root, window } = query {
+            return Ok(Response::Ok {
+                authorization_revision: self.guard.generation,
+                result: Output::ProgramReport {
+                    report: self.program_report(snapshot, root, window, now)?,
+                },
+            });
+        }
         let (root, relation, derived) = match &query {
             Query::Get { id } => (id, None, false),
             Query::Traverse { root, relation } => (root, Some(relation), false),
             Query::Decide { root, relation } => (root, Some(relation), true),
+            Query::ProgramReport { .. } => return Err(Error::InvalidRequest),
         };
         root.validate()?;
         if relation.is_some_and(|r| r.is_empty() || r.len() > 64) {
