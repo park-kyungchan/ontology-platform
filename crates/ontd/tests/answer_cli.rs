@@ -259,7 +259,7 @@ fn caller_process_bytes_stdin_and_file_names_never_enter_selected_errors() {
 fn non_utf8_environment_executable_and_cwd_preserve_code_only_refusals() {
     use std::{
         ffi::OsString,
-        os::unix::{ffi::OsStringExt, fs::symlink},
+        os::unix::{ffi::OsStringExt, fs::symlink, process::CommandExt},
     };
     let marker = OsString::from_vec(b"private-filesystem-\xff".to_vec());
     let root =
@@ -289,6 +289,8 @@ fn non_utf8_environment_executable_and_cwd_preserve_code_only_refusals() {
         };
         let expected = run(binary, &args, b"private-invalid-input");
         let mut child = Command::new(&path)
+            // Isolate environment/path bytes from the separately tested argv[0] rejection.
+            .arg0("ont-answer-byte-test")
             .args(&args)
             .current_dir(&cwd)
             .env("USER", &marker)
