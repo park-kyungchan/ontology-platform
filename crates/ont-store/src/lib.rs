@@ -17,6 +17,21 @@ fn db<T>(result: rusqlite::Result<T>) -> Result<T, Error> {
 fn decode<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Error> {
     serde_json::from_str(s).map_err(|_| Error::StoreFailure)
 }
+/// Every persisted v1 scope must remain readable by the Education-only reader.
+fn v1_scope(scope: &Scope, namespace: &Namespace) -> Result<(), Error> {
+    if !matches!(scope, Scope::Education { .. })
+        || scope.validate().is_err()
+        || scope.namespace() != namespace
+    {
+        return Err(Error::StoreFailure);
+    }
+    Ok(())
+}
+fn decode_v1_scope(s: &str, namespace: &Namespace) -> Result<Scope, Error> {
+    let scope = decode(s)?;
+    v1_scope(&scope, namespace)?;
+    Ok(scope)
+}
 pub struct Store {
     connection: Connection,
 }
@@ -146,7 +161,7 @@ fn append_in(transaction: &Transaction<'_>, item: &Append) -> Result<(), Error> 
     }
     let existing: Option<(String, String)> = db(transaction.query_row("SELECT scope,head FROM objects WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key], |r| Ok((r.get(0)?, r.get(1)?))).optional())?;
     if let Some((old_scope, head)) = existing {
-        if decode::<Scope>(&old_scope)? != *scope {
+        if decode_v1_scope(&old_scope, &id.namespace)? != *scope {
             return Err(Error::ScopeConflict);
         }
         if observation.change == Change::Initial || observation.supersedes.as_ref() != Some(&head) {
@@ -184,6 +199,7 @@ impl Snapshot for ReadSnapshot<'_> {
         let Some((scope, head)) = row else {
             return Ok(None);
         };
+        let scope = decode_v1_scope(&scope, &id.namespace)?;
         let mut statement = db(self.connection.prepare("SELECT payload FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 ORDER BY ordinal"))?;
         let rows = db(statement.query_map(
             params![
@@ -203,12 +219,14 @@ impl Snapshot for ReadSnapshot<'_> {
         }
         Ok(Some(Object {
             id: id.clone(),
-            scope: decode(&scope)?,
+            scope,
             head,
             observations,
         }))
     }
     fn targets(&self, root: &Id, relation: &str) -> Result<Vec<Id>, Error> {
+        // Links resolve scopes through their objects, including the source.
+        self.get(root)?;
         let mut statement = db(self.connection.prepare("SELECT target_type,target_instance,target_account,target_key FROM links WHERE source_type=?1 AND source_instance=?2 AND source_account=?3 AND source_key=?4 AND relation=?5 ORDER BY target_type,target_instance,target_account,target_key"))?;
         let rows = db(statement.query_map(
             params![
@@ -229,6 +247,12 @@ impl Snapshot for ReadSnapshot<'_> {
                 })
             },
         ))?;
-        rows.map(db).collect()
+        let mut targets = Vec::new();
+        for row in rows {
+            let id = db(row)?;
+            self.get(&id)?.ok_or(Error::StoreFailure)?;
+            targets.push(id);
+        }
+        Ok(targets)
     }
 }
