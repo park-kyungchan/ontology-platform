@@ -1147,3 +1147,70 @@ fn fix1_complete_check_pagination_keeps_complete_status_and_attribution() {
         Coverage::Complete
     );
 }
+
+#[test]
+fn program_report_publishes_native_attribution_without_reassigning_missing_pins() {
+    for bound in [false, true] {
+        let projected = projection(collect(ordinary(), 1, 2, bound, Limits::default()).unwrap());
+        let grants = projected
+            .objects
+            .iter()
+            .map(|o| Grant {
+                scope: o.scope.clone(),
+                object_types: BTreeSet::from([o.id.object_type.clone()]),
+                read: true,
+                derive: true,
+                actions: BTreeSet::new(),
+            })
+            .collect();
+        let authority = Authority::new(Policy {
+            principals: BTreeMap::from([("reader".into(), grants)]),
+        });
+        let session = authority.bind_trusted("reader").unwrap();
+        let mut service = ontd::Service::new(projected.memory_store().unwrap(), authority);
+        let wire = service
+            .render(
+                &session,
+                Query::ProgramReport {
+                    root: spec().program,
+                    window: ont_core::report::ReportWindow {
+                        start: 90,
+                        end: 100,
+                    },
+                },
+                100,
+            )
+            .unwrap();
+        let response: ont_core::Response = serde_json::from_str(&wire).unwrap();
+        let ont_core::Response::Ok {
+            result: ont_core::Output::ProgramReport { report },
+            ..
+        } = response
+        else {
+            panic!("report required")
+        };
+        assert_eq!(report.attributions.len(), 1);
+        let input = &report.attributions[0].attribution;
+        assert_eq!(input.qualification, projected.attribution.qualification());
+        assert_eq!(
+            input.delta_bound,
+            projected.attribution.delta_bound.map(|n| n.to_string())
+        );
+        assert_eq!(
+            input.residual,
+            projected.attribution.residual.map(|n| n.to_string())
+        );
+        assert_eq!(input.contributions[0].paths, "1");
+        assert_eq!(input.contributions[0].commit, pin(2));
+        assert_eq!(input.contributions[0].association, "unique");
+        assert_eq!(
+            report.assessment,
+            ont_core::report::Assessment::InsufficientEvidence
+        );
+        if !bound {
+            assert!(!report.attributions[0].source_qualified);
+            assert!(input.gaps.contains(&"endpoint_binding".into()));
+        }
+        assert!(!wire.contains("SECRET_MARKER_OMITTED"));
+    }
+}
