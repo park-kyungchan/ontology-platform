@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 pub mod action;
+pub mod program;
 mod scope;
 pub use scope::Scope;
 
