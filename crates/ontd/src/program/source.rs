@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::path::{Component, Path};
 
-pub(super) fn open_file(path: &str) -> Result<File> {
+pub(crate) fn open_file(path: &str) -> Result<File> {
     walk(path, |_| {})
 }
 

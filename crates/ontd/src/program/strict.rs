@@ -62,7 +62,7 @@ impl<'de> Deserialize<'de> for Strict {
         deserializer.deserialize_any(Json)
     }
 }
-pub(super) fn parse(bytes: &[u8]) -> Result<Value> {
+pub(crate) fn parse(bytes: &[u8]) -> Result<Value> {
     serde_json::from_slice::<Strict>(bytes)
         .map(|s| s.0)
         .map_err(|_| IntakeError::InvalidData)

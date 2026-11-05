@@ -17,10 +17,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 #[cfg(target_os = "linux")]
-mod source;
+pub(crate) mod source;
 #[cfg(all(test, target_os = "linux"))]
 mod source_tests;
-mod strict;
+pub(crate) mod strict;
 #[cfg(test)]
 mod tests;
 
@@ -380,96 +380,128 @@ impl Projection {
         if !added {
             return Ok(Replay::Unchanged);
         }
-        let observation = Observation {
-            revision: ADAPTER_REVISION.into(),
-            source_revision: self.contract.producer_sha256.clone(),
-            observed_at: 0,
-            fresh_until: 0,
-            change: Change::Initial,
-            supersedes: None,
-            coverage: Coverage::Partial,
-            fields: BTreeMap::from([(
-                "source_contract".into(),
-                Knowledge::Value(ADAPTER_REVISION.into()),
-            )]),
-            lineage: Lineage {
-                artifact_sha256: capture.envelope_sha256.clone(),
-                pointer: "/schema".into(),
-            },
-        };
-        let root = Object {
-            id: self.root.clone(),
-            scope: Scope::program(
-                self.contract.namespace.clone(),
-                self.contract.program_key.clone(),
-            )
-            .map_err(|_| IntakeError::InvalidContract)?,
-            head: observation.revision.clone(),
-            observations: vec![observation],
-        };
-        let mut links = Vec::new();
-        let mut graph: Vec<_> = objects.values().cloned().collect();
-        // Only an explicitly adopted definition can create an adopts_kpi edge.
-        // Source field names beginning with kpi_ do not grant that status.
-        for selector in SELECTORS {
-            let adopted = selector == "kpi_legacy_removal"
-                && matches!(
-                    self.contract.legacy_definition.role,
-                    ont_core::program::MetricRole::Kpi { .. }
-                );
-            let mut metric = root.clone();
-            metric.id = Id {
-                object_type: "metric".into(),
-                namespace: self.contract.namespace.clone(),
-                native_key: selector.into(),
-            };
-            metric.observations[0].fields = BTreeMap::from([
-                ("selector".into(), Knowledge::Value(selector.into())),
-                (
-                    "role".into(),
-                    Knowledge::Value(if adopted { "kpi" } else { "indicator" }.into()),
-                ),
-                (
-                    "source_unit".into(),
-                    Knowledge::Value(unit(selector).into()),
-                ),
-            ]);
-            if selector == "kpi_legacy_removal" {
-                metric.observations[0].fields.insert(
-                    "definition".into(),
-                    Knowledge::Value(definition_metadata(&self.contract.legacy_definition)),
-                );
-                metric.observations[0].lineage.pointer = "/definition".into();
-            }
-            links.push(Link {
-                source: self.root.clone(),
-                relation: if adopted {
-                    "adopts_kpi"
-                } else {
-                    "tracks_indicator"
-                }
-                .into(),
-                target: metric.id.clone(),
-            });
-            for id in objects
-                .keys()
-                .filter(|id| id.native_key.ends_with(&format!(":{selector}")))
-            {
-                links.push(Link {
-                    source: metric.id.clone(),
-                    relation: "has_measurement".into(),
-                    target: id.clone(),
-                });
-            }
-            graph.push(metric);
-        }
-        graph.push(root);
+        let (graph, links) = projection_graph(capture, &self.root, &objects)?;
         let mut store = Store::memory_program().map_err(|_| IntakeError::Store)?;
         store.seed(&graph, &links).map_err(|_| IntakeError::Store)?;
         self.store = store;
         self.objects = objects;
         Ok(Replay::Added)
     }
+}
+
+/// Crate-internal graph composition. Selected samples retain their exact v1
+/// IDs, revisions, source time and original full-envelope lineage.
+pub(crate) fn selected_graph(
+    capture: &Capture,
+    window: ont_core::report::ReportWindow,
+) -> Result<(Vec<Object>, Vec<Link>)> {
+    if window.start > window.end {
+        return Err(IntakeError::InvalidData);
+    }
+    let objects = capture
+        .objects()?
+        .into_iter()
+        .filter(|o| (window.start..=window.end).contains(&o.observations[0].observed_at))
+        .map(|o| (o.id.clone(), o))
+        .collect();
+    let root = Id {
+        object_type: "program".into(),
+        namespace: capture.contract.namespace.clone(),
+        native_key: capture.contract.program_key.clone(),
+    };
+    projection_graph(capture, &root, &objects)
+}
+
+fn projection_graph(
+    capture: &Capture,
+    root: &Id,
+    objects: &BTreeMap<Id, Object>,
+) -> Result<(Vec<Object>, Vec<Link>)> {
+    let observation = Observation {
+        revision: ADAPTER_REVISION.into(),
+        source_revision: capture.contract.producer_sha256.clone(),
+        observed_at: 0,
+        fresh_until: 0,
+        change: Change::Initial,
+        supersedes: None,
+        coverage: Coverage::Partial,
+        fields: BTreeMap::from([(
+            "source_contract".into(),
+            Knowledge::Value(ADAPTER_REVISION.into()),
+        )]),
+        lineage: Lineage {
+            artifact_sha256: capture.envelope_sha256.clone(),
+            pointer: "/schema".into(),
+        },
+    };
+    let root = Object {
+        id: root.clone(),
+        scope: Scope::program(
+            capture.contract.namespace.clone(),
+            capture.contract.program_key.clone(),
+        )
+        .map_err(|_| IntakeError::InvalidContract)?,
+        head: observation.revision.clone(),
+        observations: vec![observation],
+    };
+    let mut links = Vec::new();
+    let mut graph: Vec<_> = objects.values().cloned().collect();
+    // Only an explicitly adopted definition can create an adopts_kpi edge.
+    // Source field names beginning with kpi_ do not grant that status.
+    for selector in SELECTORS {
+        let adopted = selector == "kpi_legacy_removal"
+            && matches!(
+                capture.contract.legacy_definition.role,
+                ont_core::program::MetricRole::Kpi { .. }
+            );
+        let mut metric = root.clone();
+        metric.id = Id {
+            object_type: "metric".into(),
+            namespace: capture.contract.namespace.clone(),
+            native_key: selector.into(),
+        };
+        metric.observations[0].fields = BTreeMap::from([
+            ("selector".into(), Knowledge::Value(selector.into())),
+            (
+                "role".into(),
+                Knowledge::Value(if adopted { "kpi" } else { "indicator" }.into()),
+            ),
+            (
+                "source_unit".into(),
+                Knowledge::Value(unit(selector).into()),
+            ),
+        ]);
+        if selector == "kpi_legacy_removal" {
+            metric.observations[0].fields.insert(
+                "definition".into(),
+                Knowledge::Value(definition_metadata(&capture.contract.legacy_definition)),
+            );
+            metric.observations[0].lineage.pointer = "/definition".into();
+        }
+        links.push(Link {
+            source: root.id.clone(),
+            relation: if adopted {
+                "adopts_kpi"
+            } else {
+                "tracks_indicator"
+            }
+            .into(),
+            target: metric.id.clone(),
+        });
+        for id in objects
+            .keys()
+            .filter(|id| id.native_key.ends_with(&format!(":{selector}")))
+        {
+            links.push(Link {
+                source: metric.id.clone(),
+                relation: "has_measurement".into(),
+                target: id.clone(),
+            });
+        }
+        graph.push(metric);
+    }
+    graph.push(root);
+    Ok((graph, links))
 }
 
 fn digest(bytes: &[u8]) -> String {
