@@ -16,19 +16,26 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "s07-rust-fake-{}-{}",
-            std::process::id(),
+        Self::with_nonce(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+        )
+    }
+    fn with_nonce(nonce: u128) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "s07-rust-fake-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fixture::initialize(&root).unwrap();
         Self(root)
@@ -52,6 +59,32 @@ impl Drop for Temp {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+#[test]
+fn concurrent_temp_roots_are_distinct_even_with_identical_timestamps() {
+    const COUNT: usize = 64;
+    let barrier = std::sync::Barrier::new(COUNT);
+    let roots = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..COUNT)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    Temp::with_nonce(0)
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let paths: BTreeSet<_> = roots.iter().map(|root| &root.0).collect();
+    assert_eq!(paths.len(), COUNT);
+    for path in paths {
+        assert!(path.is_dir(), "fixture root was not created: {path:?}");
+    }
+}
+
 fn input() -> ActionInput {
     ActionInput {
         request_id: "test-r1".into(),

@@ -284,18 +284,21 @@ mod tests {
     use ont_core::action::{ActionInput, Basis};
     use ont_core::{Id, Namespace, Object};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
-                "s07-target-unit-{}-{}",
+                "s07-target-unit-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             std::fs::create_dir(&root).unwrap();
             Self(root)
