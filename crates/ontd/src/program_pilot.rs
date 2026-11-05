@@ -666,6 +666,7 @@ struct Answer {
     attribution: &'static str,
     response: Response,
 }
+#[cfg(test)]
 fn render(
     graph: Graph,
     policy: Policy,
@@ -674,30 +675,50 @@ fn render(
 ) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
     render_selected(graph, policy, query, now, false)
 }
+struct Rendered {
+    answer: String,
+    artifacts: BTreeMap<String, Vec<u8>>,
+    refused: bool,
+}
+#[cfg(test)]
 fn render_selected(
-    mut graph: Graph,
+    graph: Graph,
     policy: Policy,
     query: Query,
     now: u64,
     answer_record: bool,
 ) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
+    render_output(graph, policy, query, now, answer_record)
+        .map(|output| (output.answer, output.artifacts))
+}
+fn render_output(
+    mut graph: Graph,
+    policy: Policy,
+    query: Query,
+    now: u64,
+    answer_record: bool,
+) -> Result<Rendered> {
     canonical_root(&mut graph)?;
     let (store, artifacts) = graph.seed()?;
     let authority = Authority::new(policy);
     let session = authority.bind_trusted(PRINCIPAL).map_err(core)?;
     let mut service = Service::new(store, authority);
-    let bytes = if answer_record {
-        service.render_answer_record(&session, query, now)
+    let (bytes, refused) = if answer_record {
+        service.render_answer_record_with_status(&session, query, now)
     } else {
-        service.render(&session, query, now)
+        service
+            .render(&session, query, now)
+            .map(|bytes| (bytes, false))
     }
     .map_err(core)?;
     // Keep the native response path and metadata field order byte-stable.
     if answer_record {
-        let response: Value =
-            serde_json::from_str(&bytes).map_err(|_| err("pilot_serialization_failure"))?;
-        if response["outcome"]["status"] == "refused" {
-            return Ok((bytes, artifacts));
+        if refused {
+            return Ok(Rendered {
+                answer: bytes,
+                artifacts,
+                refused,
+            });
         }
         // Embed the already serialized admitted record verbatim. Parsing and
         // reserializing it as Value would reorder its fixed envelope fields.
@@ -706,7 +727,11 @@ fn render_selected(
         let answer = format!(
             "{{\"trust_limit\":{trust},\"real_user_session_binding\":\"SCOPED-DEVIATION\",\"attribution\":\"qualified merge contributions + unresolved reconciliation\",\"response\":{bytes}}}"
         );
-        return Ok((answer, artifacts));
+        return Ok(Rendered {
+            answer,
+            artifacts,
+            refused,
+        });
     }
     let response: Response =
         serde_json::from_str(&bytes).map_err(|_| err("pilot_serialization_failure"))?;
@@ -716,10 +741,11 @@ fn render_selected(
         attribution: "qualified merge contributions + unresolved reconciliation",
         response,
     };
-    Ok((
-        serde_json::to_string(&answer).map_err(|_| err("pilot_serialization_failure"))?,
+    Ok(Rendered {
+        answer: serde_json::to_string(&answer).map_err(|_| err("pilot_serialization_failure"))?,
         artifacts,
-    ))
+        refused,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -816,7 +842,7 @@ fn execute_v2(
     query: Query,
     window: ReportWindow,
     answer_record: bool,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     let mut previous = clock()?;
     let mut failed = false;
     let capture = v2::capture_fixed(config.v2_contract()?, || match clock() {
@@ -857,29 +883,30 @@ fn execute_v2(
     }
     let mut graph = snapshots_v2(&capture, window, now)?;
     graph.merge(git)?;
-    let (answer, artifacts) = if answer_record {
-        render_selected(graph, policy, query, now, true)
-    } else {
-        render(graph, policy, query, now)
-    }?;
-    retain(artifacts, &answer, input, config_bytes, now)?;
-    Ok(answer)
+    let output = render_output(graph, policy, query, now, answer_record)?;
+    retain(output.artifacts, &output.answer, input, config_bytes, now)?;
+    Ok((output.answer, output.refused))
 }
 
 /// Fixed host UID/config/source boundary. Call only in a separately released live
 /// run. Unit tests use internal synthetic seams and never invoke this acquisition.
 #[cfg(target_os = "linux")]
 pub fn execute(input: &[u8]) -> Result<String> {
-    execute_selected(input, false)
+    execute_selected(input, false).map(|(answer, _)| answer)
 }
 /// Same fixed acquisition/retention boundary; selects ontology-answer/v1 only.
 /// Calling this still requires the separately released live-run authority.
 #[cfg(target_os = "linux")]
 pub fn execute_answer_record(input: &[u8]) -> Result<String> {
+    execute_answer_record_with_status(input).map(|(answer, _)| answer)
+}
+/// Same publication with the native refusal flag for process exit status.
+#[cfg(target_os = "linux")]
+pub fn execute_answer_record_with_status(input: &[u8]) -> Result<(String, bool)> {
     execute_selected(input, true)
 }
 #[cfg(target_os = "linux")]
-fn execute_selected(input: &[u8], answer_record: bool) -> Result<String> {
+fn execute_selected(input: &[u8], answer_record: bool) -> Result<(String, bool)> {
     check_uid(
         rustix::process::getuid().as_raw(),
         rustix::process::geteuid().as_raw(),
@@ -962,13 +989,9 @@ fn execute_selected(input: &[u8], answer_record: bool) -> Result<String> {
     ] {
         g.merge(not_performed(kind, unit, now)?)?;
     }
-    let (answer, artifacts) = if answer_record {
-        render_selected(g, policy, query, now, true)
-    } else {
-        render(g, policy, query, now)
-    }?;
-    retain(artifacts, &answer, input, &config_bytes, now)?;
-    Ok(answer)
+    let output = render_output(g, policy, query, now, answer_record)?;
+    retain(output.artifacts, &output.answer, input, &config_bytes, now)?;
+    Ok((output.answer, output.refused))
 }
 #[cfg(not(target_os = "linux"))]
 pub fn execute(_: &[u8]) -> Result<String> {
@@ -977,6 +1000,11 @@ pub fn execute(_: &[u8]) -> Result<String> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn execute_answer_record(_: &[u8]) -> Result<String> {
+    Err(err("pilot_platform_unavailable"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn execute_answer_record_with_status(_: &[u8]) -> Result<(String, bool)> {
     Err(err("pilot_platform_unavailable"))
 }
 

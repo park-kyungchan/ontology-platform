@@ -37,20 +37,36 @@ impl Service {
         query: Query,
         now: u64,
     ) -> Result<String, Error> {
+        self.render_answer_record_with_status(session, query, now)
+            .map(|(bytes, _)| bytes)
+    }
+    /// The boolean is the native refusal class, not serialization failure.
+    /// CLI owners use it to retain nonzero refused-outcome exit status.
+    pub fn render_answer_record_with_status(
+        &mut self,
+        session: &Session,
+        query: Query,
+        now: u64,
+    ) -> Result<(String, bool), Error> {
         use ont_core::answer::AnswerRecord;
+        let serialize = |record: AnswerRecord| {
+            let refused = record.is_refused();
+            record.render().map(|bytes| (bytes, refused))
+        };
         let admission = match self.authority.admit(session) {
             Ok(admission) => admission,
-            Err(error) => return AnswerRecord::from_error(error).render(),
+            Err(error) => return serialize(AnswerRecord::from_error(error)),
         };
-        let rendered =
-            self.store
-                .snapshot(|snapshot| match admission.query(snapshot, query, now) {
-                    Ok(response) => AnswerRecord::from_response(&response)?.render(),
-                    Err(error) => AnswerRecord::from_error(error).render(),
-                });
+        let rendered = self.store.snapshot(|snapshot| {
+            let record = match admission.query(snapshot, query, now) {
+                Ok(response) => AnswerRecord::from_response(&response)?,
+                Err(error) => AnswerRecord::from_error(error),
+            };
+            serialize(record)
+        });
         match rendered {
             Ok(record) => Ok(record),
-            Err(error) => AnswerRecord::from_error(error).render(),
+            Err(error) => serialize(AnswerRecord::from_error(error)),
         }
     }
 }

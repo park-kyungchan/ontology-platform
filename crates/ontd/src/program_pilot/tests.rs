@@ -1039,3 +1039,17 @@ fn answer_record_default_v1_v2_frames_equal_independent_base() {
         .0;
     assert!(selected.contains("\"response\":{\"schema\":\"ontology-answer/v1\""));
 }
+
+#[test]
+fn answer_record_pilot_carries_native_refusal_separately_from_serialization() {
+    let mut denied = config().policy().unwrap();
+    denied.principals.get_mut(PRINCIPAL).unwrap().clear();
+    let output = render_output(base(), denied, query(), NOW, true).unwrap();
+    assert!(output.refused);
+    assert_eq!(
+        serde_json::from_str::<Value>(&output.answer).unwrap()["outcome"]["code"],
+        "unavailable"
+    );
+    let output = render_output(base(), config().policy().unwrap(), query(), NOW, true).unwrap();
+    assert!(!output.refused);
+}

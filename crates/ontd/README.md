@@ -107,3 +107,9 @@ A failed append's `revision_conflict` is a refused record; an authorized Get or
 ProgramReport retains the actual post-attempt head and complete native history.
 No record creates extra permissions, source facts, availability counts, decimal
 renderings, human authentication or operational acceptance.
+
+New-mode CLI success exits 0; native refused/error outcomes exit 2 even when
+record serialization succeeds. `Service::render_answer_record_with_status` and
+pilot `execute_answer_record_with_status` carry the native refusal boolean with
+the serialized bytes; callers need not parse record text to determine outcome.
+The pilot retains those same bytes before publication for either outcome.

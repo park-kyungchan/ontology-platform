@@ -20,12 +20,13 @@ fn execute(args: &[String], answer_record: bool) -> Result<(String, i32), Error>
     }
     let query: Query = serde_json::from_slice(&input).map_err(|_| Error::InvalidRequest)?;
     let (mut service, session) = ontd::synthetic::setup()?;
-    let line = if answer_record {
-        service.render_answer_record(&session, query, ontd::synthetic::NOW)?
+    if answer_record {
+        let (line, refused) =
+            service.render_answer_record_with_status(&session, query, ontd::synthetic::NOW)?;
+        Ok((line, if refused { 2 } else { 0 }))
     } else {
-        service.render(&session, query, ontd::synthetic::NOW)?
-    };
-    Ok((line, 0))
+        Ok((service.render(&session, query, ontd::synthetic::NOW)?, 0))
+    }
 }
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

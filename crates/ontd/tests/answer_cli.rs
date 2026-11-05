@@ -75,3 +75,29 @@ fn malformed_and_adversarial_cli_inputs_have_only_native_codes() {
         );
     }
 }
+
+#[test]
+fn valid_query_refusal_retains_native_nonzero_exit_and_success_stays_zero() {
+    for (key, status) in [("private-root-injected", 2), ("001", 0)] {
+        let input = serde_json::to_vec(&json!({"op":"get","id":{"object_type":"student","namespace":{"instance":"synthetic://same-host","account":"A"},"native_key":key}})).unwrap();
+        let native = run(env!("CARGO_BIN_EXE_ontd"), &["--synthetic"], &input);
+        let selected = run(
+            env!("CARGO_BIN_EXE_ontd"),
+            &["--synthetic", "--answer-record"],
+            &input,
+        );
+        assert_eq!(native.status.code(), Some(status));
+        assert_eq!(selected.status.code(), Some(status));
+        assert!(selected.stderr.is_empty());
+        let record: Value = serde_json::from_slice(&selected.stdout).unwrap();
+        if status == 2 {
+            assert_eq!(
+                record["outcome"],
+                json!({"status":"refused","code":"unavailable"})
+            );
+            assert!(!String::from_utf8(selected.stdout).unwrap().contains(key));
+        } else {
+            assert_eq!(record["outcome"], json!({"status":"ok"}));
+        }
+    }
+}

@@ -133,6 +133,10 @@ impl AnswerRecord {
             result: Cell::unavailable(code, Value::Null),
         }
     }
+    /// Native refusal classification, independent of serialization success.
+    pub fn is_refused(&self) -> bool {
+        matches!(self.outcome, Outcome::Refused { .. })
+    }
     pub fn render(&self) -> Result<String, Error> {
         serde_json::to_string(self).map_err(|_| Error::StoreFailure)
     }
