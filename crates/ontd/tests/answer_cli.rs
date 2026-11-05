@@ -53,10 +53,17 @@ fn malformed_and_adversarial_cli_inputs_have_only_native_codes() {
             assert!(!bytes.contains(name));
             let record: Value = serde_json::from_str(&bytes).unwrap();
             assert_eq!(record["schema"], "ontology-answer/v1");
-            assert_eq!(
-                record["outcome"],
-                json!({"status":"refused","code":"invalid_request"})
-            );
+            // Pilot authenticates the fixed OS account before parsing input.
+            // CI runs unprivileged; local synthetic checks may run as UID 0.
+            let code = if binary == env!("CARGO_BIN_EXE_ont-program-pilot")
+                && (rustix::process::getuid().as_raw() != 0
+                    || rustix::process::geteuid().as_raw() != 0)
+            {
+                "pilot_uid_refused"
+            } else {
+                "invalid_request"
+            };
+            assert_eq!(record["outcome"], json!({"status":"refused","code":code}));
         }
         let out = run(binary, &["--answer-record", "private-root"], b"");
         assert_eq!(out.status.code(), Some(2));
