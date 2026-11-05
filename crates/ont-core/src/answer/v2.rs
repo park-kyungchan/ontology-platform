@@ -1,6 +1,6 @@
 //! Publication-only arithmetic over already admitted typed report statements.
-use crate::report::{AttributionInput, ExactFraction, MetricStatement, ProgramReport};
-use crate::{Knowledge, Output};
+use crate::Output;
+use crate::report::{AttributionInput, ExactFraction, MetricStatement};
 use serde_json::{Value, json};
 
 const ROUNDING: &str = "half_away_from_zero";
@@ -99,12 +99,6 @@ fn exact(f: &ExactFraction) -> Value {
     }
     result
 }
-fn known(k: &Knowledge) -> Option<&Value> {
-    match k {
-        Knowledge::Value(v) => Some(v),
-        _ => None,
-    }
-}
 fn metric_aggregate(m: &MetricStatement) -> Value {
     let (Some(first), Some(last)) = (m.samples.first(), m.samples.last()) else {
         return unavailable("missing_endpoints");
@@ -136,33 +130,15 @@ fn metric_aggregate(m: &MetricStatement) -> Value {
         "ratio_change":rational(change,a.denominator),"percentage_point_change":rational(pp,a.denominator),
         "source_qualified":m.source_qualified})
 }
-fn matching_metric<'a>(r: &'a ProgramReport, a: &AttributionInput) -> Option<&'a MetricStatement> {
-    let mut matches = r.metrics.iter().filter(|m| {
-        known(&m.definition).is_some_and(|d| {
-            d.get("id") == serde_json::to_value(&a.definition.id).ok().as_ref()
-                && d.get("revision").and_then(Value::as_str) == Some(&a.definition.revision)
-        }) && m.samples.iter().all(|s| {
-            known(&s.manifest_sha256).and_then(Value::as_str) == Some(&a.manifest_sha256)
-                && known(&s.algorithm).and_then(Value::as_str) == Some(&a.algorithm)
-                && s.fraction
-                    .as_ref()
-                    .is_some_and(|f| f.denominator == a.denominator)
-        })
-    });
-    let first = matches.next()?;
-    if matches.next().is_some() {
-        None
-    } else {
-        Some(first)
-    }
-}
-fn attribution_aggregate(r: &ProgramReport, a: &AttributionInput) -> Value {
+fn attribution_aggregate(a: &AttributionInput) -> Value {
     if a.denominator == 0 {
         return unavailable("empty_denominator");
     }
-    let endpoints = matching_metric(r, a)
-        .map(metric_aggregate)
-        .unwrap_or_else(|| unavailable("unbound_endpoints"));
+    // AttributionInput does not project native source endpoint identities or
+    // their interval. Matching population pins, observation/query times or even
+    // equal deltas cannot prove that selected metric samples are those endpoints.
+    // Retain the independently bound change/sum/residual without inventing a join.
+    let endpoints = unavailable("unbound_endpoints");
     let Some(change) = a.delta_bound.as_ref().and_then(|n| n.parse::<i128>().ok()) else {
         return json!({"population":a.denominator,"endpoints":endpoints,
             "ratio_change":unavailable("unbound_aggregate_change"),
@@ -241,7 +217,7 @@ pub(super) fn enrich(output: &Output, result: &mut Value) {
                     .iter()
                     .all(|id| report.basis.iter().any(|v| &v.id == id))
         }) {
-            cell["aggregate"] = attribution_aggregate(report, &a.attribution);
+            cell["aggregate"] = attribution_aggregate(&a.attribution);
         }
     }
 }

@@ -103,7 +103,11 @@ fn complete_aggregate_endpoints_and_explicit_zero_residual() {
         "percentage_point_change":frac("300",10,["30.00","30.000","30.0000","30.000000"]),"source_qualified":true});
     assert_eq!(report["metrics"][0]["aggregate"], expected);
     let a = &report["attributions"][0]["aggregate"];
-    assert_eq!(a["endpoints"], expected);
+    // Population pins do not prove the attribution's source endpoint identities.
+    assert_eq!(
+        a["endpoints"],
+        json!({"status":"not_available","reason":"unbound_endpoints","native":null})
+    );
     assert_eq!(
         a["component_contribution_sum"],
         frac("3", 10, ["0.30", "0.300", "0.3000", "0.300000"])

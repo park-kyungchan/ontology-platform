@@ -174,8 +174,13 @@ counts divided by that denominator. `reconciliation_residual` is aggregate
 ratio change minus that sum (ratio units); the explicitly named percentage-point
 residual multiplies it by 100. Exact zero is present as numerator `"0"`, never
 silently omitted. Unbound change gives `unbound_aggregate_change`, not zero.
-`endpoints` requires a unique metric with matching definition identity/revision,
-manifest, algorithm and denominator; otherwise it gives `unbound_endpoints`.
+`endpoints` requires proof of the attribution's native source endpoint identities
+and interval matching the selected metric samples. The current native attribution
+projection does not carry that binding, so `endpoints` is always typed
+`not_available` with reason `unbound_endpoints`. Matching population/definition
+pins, query/observation times or numeric changes cannot establish it. Metric
+endpoint aggregates and attribution change, component sum and residual remain
+independently available.
 Native source qualification and reconciliation gaps remain visible and are never
 strengthened by decimal formatting or arithmetic.
 
