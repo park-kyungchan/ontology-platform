@@ -13,8 +13,13 @@ use ont_store::Store;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(target_os = "linux", test))]
 use std::io::Read;
 
+#[cfg(target_os = "linux")]
+mod source;
+#[cfg(all(test, target_os = "linux"))]
+mod source_tests;
 mod strict;
 #[cfg(test)]
 mod tests;
@@ -275,8 +280,9 @@ impl Capture {
     }
 }
 
-/// The production reader has exactly three fixed paths; recording input is
-/// separate. Limits apply during the read, including files that grow while read.
+/// This Linux host reader has exactly three fixed paths; recording input is
+/// separate and portable. Other platforms refuse fixed-path capture. Limits
+/// apply during the read, including files that grow while read.
 pub fn capture_fixed(contract: IntakeContract, mut clock: impl FnMut() -> u64) -> Result<Capture> {
     let start = clock();
     let snapshots = bounded_file(SNAPSHOTS_PATH, MAX_SNAPSHOTS)?;
@@ -284,17 +290,16 @@ pub fn capture_fixed(contract: IntakeContract, mut clock: impl FnMut() -> u64) -
     let producer = bounded_file(PRODUCER_PATH, MAX_PRODUCER)?;
     Capture::recorded(&snapshots, &manifest, &producer, start, clock(), contract)
 }
+#[cfg(target_os = "linux")]
 fn bounded_file(path: &str, limit: usize) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path).map_err(|_| IntakeError::SourceUnavailable)?;
-    if !file
-        .metadata()
-        .map_err(|_| IntakeError::SourceUnavailable)?
-        .is_file()
-    {
-        return Err(IntakeError::SourceUnavailable);
-    }
+    let file = source::open_file(path)?;
     bounded_read(file, limit)
 }
+#[cfg(not(target_os = "linux"))]
+fn bounded_file(_path: &str, _limit: usize) -> Result<Vec<u8>> {
+    Err(IntakeError::SourceUnavailable)
+}
+#[cfg(any(target_os = "linux", test))]
 fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
