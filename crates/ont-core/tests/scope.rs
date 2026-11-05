@@ -61,6 +61,8 @@ fn rejects_duplicate_mixed_unknown_missing_null_and_invalid_fields() {
         invalid.push(format!("{{{ns},{fields},\"unknown\":null}}"));
         for bad_ns in [
             "null".into(),
+            "[]".into(),
+            r#"["s","A"]"#.into(),
             r#"{"instance":"","account":"A"}"#.into(),
             r#"{"instance":"s","account":""}"#.into(),
             r#"{"instance":"s"}"#.into(),

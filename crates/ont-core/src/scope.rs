@@ -104,6 +104,27 @@ const FIELDS: &[&str] = &[
     "program_key",
 ];
 
+// Derived struct readers also accept positional sequences. Scope's namespace
+// wire contract requires an object; delegate its fields only after that check.
+struct NamespaceMap(Namespace);
+impl<'de> Deserialize<'de> for NamespaceMap {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct NamespaceVisitor;
+        impl<'de> Visitor<'de> for NamespaceVisitor {
+            type Value = NamespaceMap;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a namespace object with instance and account")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                Namespace::deserialize(de::value::MapAccessDeserializer::new(map)).map(NamespaceMap)
+            }
+        }
+        deserializer.deserialize_map(NamespaceVisitor)
+    }
+}
+
 impl<'de> Deserialize<'de> for Scope {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct ScopeVisitor;
@@ -126,7 +147,7 @@ impl<'de> Deserialize<'de> for Scope {
                             if namespace.is_some() {
                                 return Err(de::Error::duplicate_field("namespace"));
                             }
-                            namespace = Some(map.next_value::<Namespace>()?);
+                            namespace = Some(map.next_value::<NamespaceMap>()?.0);
                         }
                         "class_key" => {
                             if class_key.is_some() {
