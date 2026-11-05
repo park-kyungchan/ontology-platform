@@ -6,6 +6,7 @@ pub mod local_fake;
 pub mod program;
 pub mod program_git;
 pub mod program_guardrails;
+pub mod program_pilot;
 pub mod synthetic;
 
 /// Public restricted read entrypoint. The embedding owner authenticates and binds
