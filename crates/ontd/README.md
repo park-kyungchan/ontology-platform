@@ -228,3 +228,16 @@ attribution with a bound zero retains exact zero sum/residual; absent evidence
 does not become zero. If any referenced repository/change is withheld, the entire
 derived attribution is omitted without hidden counts or reasons. No new source,
 Store pass, authorization rule, action or operational acceptance is introduced.
+
+Report derivation v1 binds fraction meaning once per series. The accepted formulas
+are `removed / total`, `qualified / total`, and `supported / total`; the parity
+and recall selectors bind qualified/total and supported/total respectively.
+A conflicting selector, unsupported formula, missing bound field or ambiguous
+flat-row numerator produces typed unavailable values instead of field precedence.
+Billing samples and series require explicit boolean `source_qualified: true`;
+recorded arithmetic can remain available when qualification is false.
+Attribution `source_qualified` preserves source evidence independently of the
+`qualification` reconciliation result. Qualified native PR and empty-interval
+labels share the producer constants; the legacy projected `qualified` label
+remains accepted. Nonzero residuals stay unresolved, and measurement endpoints
+remain `unbound_endpoints` even when reconciliation succeeds.

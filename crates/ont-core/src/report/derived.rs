@@ -33,6 +33,9 @@ impl<T> Available<T> {
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     MissingValue,
+    MissingFractionBinding,
+    ConflictingFractionBinding,
+    UnsupportedFractionBinding,
     InvalidValue,
     MissingDefinition,
     MissingEndpoints,
@@ -163,27 +166,55 @@ fn number(v: &Value) -> Option<ExactFraction> {
         denominator: 1,
     })
 }
-fn sample(v: &View, unit: &str, now: u64) -> Sample {
-    let value = if let Some(o) = head(v) {
-        let pair = [
-            ("removed", "total"),
-            ("qualified", "total"),
-            ("supported", "total"),
-        ]
+// This closed rule binds meaning once per series, never by field precedence.
+fn fraction_binding(definition: &Available<Value>, kind: &str) -> Result<&'static str, Reason> {
+    if let Available::NotAvailable { reason } = definition {
+        return Err(*reason);
+    }
+    let formula = definition
+        .get()
+        .and_then(|d| d.get("formula"))
+        .and_then(Value::as_str)
+        .ok_or(Reason::MissingFractionBinding)?;
+    let numerator = match formula {
+        "removed / total" => "removed",
+        "qualified / total" | "qualified / total adopted tools" => "qualified",
+        "supported / total" | "supported / total evaluated answers" => "supported",
+        _ => return Err(Reason::UnsupportedFractionBinding),
+    };
+    let selector_numerator = match kind {
+        "kpi_mcp_parity" => Some("qualified"),
+        "guard_recall_regression" => Some("supported"),
+        _ => None,
+    };
+    if selector_numerator.is_some_and(|n| n != numerator) {
+        return Err(Reason::ConflictingFractionBinding);
+    }
+    Ok(numerator)
+}
+fn flat_numerator(o: &Observation) -> Result<&'static str, Reason> {
+    let mut names = ["removed", "qualified", "supported"]
         .into_iter()
-        .find(|(n, _)| o.fields.contains_key(*n));
+        .filter(|k| o.fields.contains_key(*k));
+    let first = names.next().ok_or(Reason::MissingFractionBinding)?;
+    if names.next().is_some() {
+        return Err(Reason::ConflictingFractionBinding);
+    }
+    Ok(first)
+}
+fn sample(v: &View, unit: &str, binding: Result<&str, Reason>, billing: bool, now: u64) -> Sample {
+    let value = if let Some(o) = head(v) {
         if unit == "fraction" {
-            if let Some((n, d)) = pair {
-                match (
+            match binding {
+                Ok(n) => match (
                     val(o, n).and_then(Value::as_u64),
-                    val(o, d).and_then(Value::as_u64),
+                    val(o, "total").and_then(Value::as_u64),
                 ) {
                     (Some(n), Some(d)) if n <= d => rational(i128::from(n), d),
                     (Some(_), Some(0)) => Available::missing(Reason::EmptyDenominator),
                     _ => Available::missing(Reason::MissingValue),
-                }
-            } else {
-                Available::missing(Reason::MissingValue)
+                },
+                Err(reason) => Available::missing(reason),
             }
         } else if let Some(n) = val(o, "value") {
             number(n)
@@ -198,7 +229,10 @@ fn sample(v: &View, unit: &str, now: u64) -> Sample {
     Sample {
         basis: pin(v),
         value,
-        source_qualified: head(v).is_some_and(|o| qualified(o, now)),
+        source_qualified: head(v).is_some_and(|o| {
+            qualified(o, now)
+                && (!billing || val(o, "source_qualified") == Some(&Value::Bool(true)))
+        }),
     }
 }
 fn subtract(a: &ExactFraction, b: &ExactFraction) -> Available<ExactFraction> {
@@ -250,9 +284,19 @@ fn metric(
 ) -> Metric {
     let mut inputs = inputs;
     inputs.sort_by(|a, b| (pin(a).observed_at, &a.id).cmp(&(pin(b).observed_at, &b.id)));
-    let samples: Vec<_> = inputs.iter().map(|v| sample(v, unit, now)).collect();
-    let mut reason = None;
-    if samples.len() < 2 {
+    let binding = fraction_binding(&definition, kind);
+    let samples: Vec<_> = inputs
+        .iter()
+        .map(|v| sample(v, unit, binding, kind == "billing", now))
+        .collect();
+    let mut reason = if unit == "fraction" {
+        binding.err()
+    } else {
+        None
+    };
+    if reason.is_some() {
+        // Preserve the semantic binding failure across every sample and aggregate.
+    } else if samples.len() < 2 {
         reason = Some(Reason::MissingEndpoints);
     } else if samples
         .windows(2)
@@ -464,17 +508,11 @@ pub(super) fn derive(report: ProgramReport, now: u64) -> DerivedReport {
             ]
             .iter()
             .all(|k| val(o, k).is_some());
-            let kind = if o.fields.contains_key("removed") {
-                "removed"
-            } else if o.fields.contains_key("qualified") {
-                "qualified"
-            } else {
-                "supported"
-            };
-            let key = if complete {
+            let kind = flat_numerator(o);
+            let key = if complete && kind.is_ok() {
                 serde_json::json!([
                     v.scope,
-                    kind,
+                    kind.ok(),
                     val(o, "definition_revision"),
                     val(o, "manifest_sha256"),
                     val(o, "algorithm"),
@@ -489,7 +527,12 @@ pub(super) fn derive(report: ProgramReport, now: u64) -> DerivedReport {
     }
     for inputs in direct.into_values() {
         let view = inputs[0];
-        let definition = head(view).filter(|o|["definition_revision","manifest_sha256","algorithm","source_unit"].iter().all(|k|val(o,k).is_some())).map(|o| Available::known(serde_json::json!({"rule":RULE,"formula":if o.fields.contains_key("removed"){"removed / total"}else if o.fields.contains_key("qualified"){"qualified / total"}else{"supported / total"},"unit":"fraction","role":"indicator","definition_revision":val(o,"definition_revision"),"manifest_sha256":val(o,"manifest_sha256"),"algorithm":val(o,"algorithm")}))).unwrap_or_else(||Available::missing(Reason::MissingDefinition));
+        let definition = head(view).filter(|o|["definition_revision","manifest_sha256","algorithm","source_unit"].iter().all(|k|val(o,k).is_some())).map(|o| {
+            match flat_numerator(o) {
+                Ok(n) => Available::known(serde_json::json!({"rule":RULE,"formula":format!("{n} / total"),"unit":"fraction","role":"indicator","definition_revision":val(o,"definition_revision"),"manifest_sha256":val(o,"manifest_sha256"),"algorithm":val(o,"algorithm")})),
+                Err(reason) => Available::missing(reason),
+            }
+        }).unwrap_or_else(||Available::missing(Reason::MissingDefinition));
         metrics.push(metric(
             view,
             inputs,
@@ -563,12 +606,19 @@ pub(super) fn derive(report: ProgramReport, now: u64) -> DerivedReport {
         }
         let associations_resolved = contributions.iter().all(|c| c.assignment.get().is_some());
         let missing = || Available::missing(Reason::InvalidAttribution);
-        let source_qualified = a.source_qualified
-            && valid
+        let producer_qualified = matches!(
+            input.qualification.as_str(),
+            crate::program::QUALIFIED_PR_ATTRIBUTION
+                | crate::program::QUALIFIED_EMPTY_INTERVAL
+                | "qualified"
+        );
+        let source_qualified =
+            a.source_qualified && valid && input.denominator > 0 && producer_qualified;
+        let reconciled = valid
             && associations_resolved
             && residual == Some(0)
             && input.gaps.is_empty()
-            && input.qualification == "qualified";
+            && producer_qualified;
         attributions.push(Attribution {
             basis: pin(v),
             definition: Available::known(serde_json::json!({
@@ -603,7 +653,7 @@ pub(super) fn derive(report: ProgramReport, now: u64) -> DerivedReport {
                     .unwrap_or_else(|| Available::missing(Reason::UnboundAggregateChange))
             },
             source_qualified,
-            qualification: if source_qualified {
+            qualification: if reconciled {
                 "qualified".into()
             } else {
                 "unresolved_reconciliation".into()

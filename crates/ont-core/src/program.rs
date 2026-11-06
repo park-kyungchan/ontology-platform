@@ -538,6 +538,8 @@ pub enum ReconciliationGap {
     PrAssociation,
     FutureEndpoint,
 }
+pub const QUALIFIED_PR_ATTRIBUTION: &str = "qualified PR attribution";
+pub const QUALIFIED_EMPTY_INTERVAL: &str = "qualified empty interval; no PR attribution";
 pub const UNRESOLVED_RECONCILIATION: &str =
     "qualified merge contributions + unresolved reconciliation";
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -554,9 +556,9 @@ impl Attribution {
     }
     pub fn qualification(&self) -> &'static str {
         if self.gaps.is_empty() && self.contributions.is_empty() {
-            "qualified empty interval; no PR attribution"
+            QUALIFIED_EMPTY_INTERVAL
         } else if self.has_unique_pr_explanation() {
-            "qualified PR attribution"
+            QUALIFIED_PR_ATTRIBUTION
         } else {
             UNRESOLVED_RECONCILIATION
         }

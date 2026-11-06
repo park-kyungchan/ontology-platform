@@ -619,3 +619,180 @@ fn complete_native_report_serialization_has_literal_forward_goldens() {
         assert_eq!(actual, expected);
     }
 }
+
+fn set_field(objects: &mut [Object], key: &str, field: &str, value: Value) {
+    objects
+        .iter_mut()
+        .find(|o| o.id.native_key == key)
+        .unwrap()
+        .observations[0]
+        .fields
+        .insert(field.into(), Knowledge::Value(value));
+}
+
+#[test]
+fn two_numerators_bind_supported_definition_across_the_whole_series() {
+    let (mut o, l) = graph(2);
+    let Knowledge::Value(d) = o[1].observations[0].fields.get_mut("definition").unwrap() else {
+        panic!()
+    };
+    d["formula"] = "supported / total".into();
+    for (key, n) in [("start", 10), ("middle", 11), ("end", 12)] {
+        set_field(&mut o, key, "supported", json!(n));
+    }
+    let r = report(&o, &l, 10, 20);
+    let m = &r["metrics"][0];
+    assert_eq!(m["samples"][0]["value"], rational("10", 17));
+    assert_eq!(m["samples"][2]["value"], rational("12", 17));
+    assert_eq!(m["change"], rational("2", 17));
+    assert_eq!(m["source_qualified"], true);
+    // The v3 Service selector must use the same binding.
+    let v: Value = serde_json::from_str(&render(
+        &o,
+        &l,
+        policy(&o, &[], true),
+        10,
+        20,
+        Some(Version::V3),
+    ))
+    .unwrap();
+    assert_eq!(
+        v["result"]["report"]["metrics"][0]["change"]["value"]["numerator"],
+        "2"
+    );
+}
+
+#[test]
+fn numerator_kind_missing_conflicting_and_unsupported_bindings_are_unavailable() {
+    let (mut o, l) = graph(2);
+    o.iter_mut()
+        .find(|o| o.id.native_key == "end")
+        .unwrap()
+        .observations[0]
+        .fields
+        .remove("removed");
+    set_field(&mut o, "end", "supported", json!(7));
+    let r = report(&o, &l, 10, 20);
+    assert_eq!(r["metrics"][0]["change"], unavailable("missing_value"));
+    assert_eq!(
+        r["metrics"][0]["samples"][2]["value"],
+        unavailable("missing_value")
+    );
+    assert_eq!(r["metrics"][0]["source_qualified"], false);
+    for (formula, selector, reason) in [
+        ("unsupported / total", None, "unsupported_fraction_binding"),
+        (
+            "removed / total",
+            Some("kpi_mcp_parity"),
+            "conflicting_fraction_binding",
+        ),
+    ] {
+        let (mut o, l) = graph(2);
+        let Knowledge::Value(d) = o[1].observations[0].fields.get_mut("definition").unwrap() else {
+            panic!()
+        };
+        d["formula"] = formula.into();
+        if let Some(selector) = selector {
+            set_field(&mut o, "legacy", "selector", json!(selector));
+        }
+        let r = report(&o, &l, 10, 20);
+        assert_eq!(r["metrics"][0]["change"], unavailable(reason));
+        assert_eq!(r["metrics"][0]["source_qualified"], false);
+    }
+    // No explicit definition or recognized selector establishes no binding.
+    let (mut o, l) = graph(2);
+    o[1].observations[0].fields.remove("definition");
+    assert_eq!(
+        report(&o, &l, 10, 20)["metrics"][0]["change"],
+        unavailable("missing_definition")
+    );
+    // Flat rows with several candidate fields cannot establish a unique rule.
+    let (mut o, _) = graph(0);
+    o.retain(|o| o.id.object_type != "metric" && o.id.native_key != "attribution");
+    let mut links = vec![];
+    for key in ["start", "middle", "end"] {
+        set_field(&mut o, key, "supported", json!(10));
+        links.push(edge(
+            o[0].id.clone(),
+            "has_measurement",
+            id("measurement", key, "owner"),
+        ));
+    }
+    for m in report(&o, &links, 10, 20)["metrics"].as_array().unwrap() {
+        assert_eq!(m["change"], unavailable("conflicting_fraction_binding"));
+        assert_eq!(m["source_qualified"], false);
+    }
+}
+
+#[test]
+fn billing_requires_explicit_true_marker_on_every_sample() {
+    for marker in [
+        None,
+        Some(Value::Null),
+        Some(json!("true")),
+        Some(json!(1)),
+        Some(json!({})),
+        Some(json!(false)),
+        Some(json!(true)),
+    ] {
+        for marker_key in ["bill-a", "bill-b"] {
+            let (mut o, mut l) = graph(0);
+            for (key, at, n) in [("bill-a", 10, 302), ("bill-b", 20, 335)] {
+                let b = object(
+                    "guardrail",
+                    key,
+                    "billing",
+                    at,
+                    json!({"guardrail":"billing","unit":"linux_minutes","account":"test-account","window_start":0,"window_end":100,"value":n,"source_qualified":true,"qualification":"qualified","bound_satisfied":true}),
+                );
+                l.push(edge(o[0].id.clone(), "guardrail", b.id.clone()));
+                o.push(b);
+            }
+            let fields = &mut o
+                .iter_mut()
+                .find(|o| o.id.native_key == marker_key)
+                .unwrap()
+                .observations[0]
+                .fields;
+            fields.remove("source_qualified");
+            if let Some(v) = &marker {
+                fields.insert("source_qualified".into(), Knowledge::Value(v.clone()));
+            }
+            let r = report(&o, &l, 10, 20);
+            let m = r["metrics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["kind"] == "billing")
+                .unwrap();
+            assert_eq!(m["change"], rational("33", 1));
+            let expected = marker == Some(json!(true));
+            assert_eq!(m["source_qualified"], expected);
+            let sample = m["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["basis"]["id"]["native_key"] == marker_key)
+                .unwrap();
+            assert_eq!(sample["source_qualified"], expected);
+            let native = r["guardrails"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["id"]["native_key"] == marker_key)
+                .unwrap();
+            assert_eq!(sample["source_qualified"], native["source_qualified"]);
+        }
+    }
+}
+
+#[test]
+fn attribution_source_qualification_does_not_claim_reconciliation() {
+    let (o, l) = graph(1);
+    let r = report(&o, &l, 10, 20);
+    let a = &r["attributions"][0];
+    assert_eq!(a["source_qualified"], true);
+    assert_eq!(a["qualification"], "unresolved_reconciliation");
+    assert_eq!(a["reconciliation_residual"], rational("3", 17));
+    assert_eq!(a["endpoints"], unavailable("unbound_endpoints"));
+}
