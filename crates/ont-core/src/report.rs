@@ -1,6 +1,7 @@
 //! One admitted snapshot, finite Program navigation, and source-qualified reporting.
 //! Projection fields are trusted intake contracts, never request payloads. Native
 //! program rules own arithmetic/qualification; adapters own attribution and bounds.
+pub mod derived;
 use crate::program::{self, Fraction};
 use crate::{Admission, Error, Id, Knowledge, Object, Observation, Scope, Snapshot, View};
 use serde::{Deserialize, Serialize};
@@ -539,5 +540,18 @@ impl Admission<'_> {
             guardrail_availability,
             limitations,
         })
+    }
+}
+
+impl Admission<'_> {
+    pub(crate) fn program_report_v2(
+        &self,
+        snapshot: &impl Snapshot,
+        root: Id,
+        window: ReportWindow,
+        now: u64,
+    ) -> Result<derived::DerivedReport, Error> {
+        self.program_report(snapshot, root, window, now)
+            .map(|report| derived::derive(report, now))
     }
 }

@@ -72,6 +72,12 @@ impl Service {
             Ok(admission) => admission,
             Err(error) => return serialize(AnswerRecord::from_error_version(error, version)),
         };
+        let query = match (version, query) {
+            (ont_core::answer::Version::V3, Query::ProgramReport { root, window }) => {
+                Query::ProgramReportV2 { root, window }
+            }
+            (_, query) => query,
+        };
         let rendered = self.store.snapshot(|snapshot| {
             let record = match admission.query(snapshot, query, now) {
                 Ok(response) => AnswerRecord::from_response_version(&response, version)?,

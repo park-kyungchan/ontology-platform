@@ -224,13 +224,27 @@ pub enum Query {
         root: Id,
         window: report::ReportWindow,
     },
+    ProgramReportV2 {
+        root: Id,
+        window: report::ReportWindow,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Output {
-    Objects { objects: Vec<View> },
-    Decision { decision: String, basis: Vec<View> },
-    ProgramReport { report: report::ProgramReport },
+    Objects {
+        objects: Vec<View>,
+    },
+    Decision {
+        decision: String,
+        basis: Vec<View>,
+    },
+    ProgramReport {
+        report: report::ProgramReport,
+    },
+    ProgramReportV2 {
+        report: Box<report::derived::DerivedReport>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -369,11 +383,21 @@ impl Admission<'_> {
                 },
             });
         }
+        if let Query::ProgramReportV2 { root, window } = query {
+            return Ok(Response::Ok {
+                authorization_revision: self.guard.generation,
+                result: Output::ProgramReportV2 {
+                    report: Box::new(self.program_report_v2(snapshot, root, window, now)?),
+                },
+            });
+        }
         let (root, relation, derived) = match &query {
             Query::Get { id } => (id, None, false),
             Query::Traverse { root, relation } => (root, Some(relation), false),
             Query::Decide { root, relation } => (root, Some(relation), true),
-            Query::ProgramReport { .. } => return Err(Error::InvalidRequest),
+            Query::ProgramReport { .. } | Query::ProgramReportV2 { .. } => {
+                return Err(Error::InvalidRequest);
+            }
         };
         root.validate()?;
         if relation.is_some_and(|r| r.is_empty() || r.len() > 64) {

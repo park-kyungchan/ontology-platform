@@ -1110,3 +1110,66 @@ fn answer_v2_pilot_both_sources_withheld_component_invariance_and_v1_stability()
         );
     }
 }
+
+#[test]
+fn v3_pilot_retains_selected_native_derivation_in_both_source_versions() {
+    for v2 in [false, true] {
+        let graph = || if v2 { v2_base() } else { base() };
+        let p = config().policy().unwrap();
+        let output =
+            render_output_version(graph(), p.clone(), query(), NOW, Some(Version::V3)).unwrap();
+        assert!(!output.refused);
+        let v: Value = serde_json::from_str(&output.answer).unwrap();
+        assert_eq!(v["response"]["schema"], "ontology-answer/v3");
+        assert_eq!(
+            v["response"]["result"]["report"]["schema"],
+            "ontology-program-report/v2"
+        );
+        assert!(
+            !v["response"]["result"]["report"]["metrics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let mut denied = p;
+        denied
+            .principals
+            .get_mut(PRINCIPAL)
+            .unwrap()
+            .retain(|g| !g.object_types.contains("guardrail"));
+        let expected =
+            render_output_version(graph(), denied.clone(), query(), NOW, Some(Version::V3))
+                .unwrap()
+                .answer;
+        let mut full = graph();
+        full.merge(disk(Some(&disk_bytes(14 << 30)), NOW).unwrap())
+            .unwrap();
+        assert_eq!(
+            expected,
+            render_output_version(full, denied, query(), NOW, Some(Version::V3))
+                .unwrap()
+                .answer
+        );
+    }
+}
+
+#[test]
+fn native_report_v2_request_selector_keeps_owner_root_and_window_constraints() {
+    let input = serde_json::to_vec(&json!({"op":"program_report_v2","root":id("program",PROGRAM,false),"window":{"start":10,"end":20}})).unwrap();
+    assert!(matches!(
+        request(&input).unwrap().0,
+        Query::ProgramReportV2 { .. }
+    ));
+    for root in [
+        id("program", "foreign", false),
+        id("measurement", PROGRAM, false),
+    ] {
+        let input = serde_json::to_vec(
+            &json!({"op":"program_report_v2","root":root,"window":{"start":10,"end":20}}),
+        )
+        .unwrap();
+        assert!(request(&input).is_err());
+    }
+    let input = serde_json::to_vec(&json!({"op":"program_report_v2","root":id("program",PROGRAM,false),"window":{"start":20,"end":10}})).unwrap();
+    assert!(request(&input).is_err());
+}

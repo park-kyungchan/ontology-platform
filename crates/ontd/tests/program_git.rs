@@ -1214,3 +1214,97 @@ fn program_report_publishes_native_attribution_without_reassigning_missing_pins(
         assert!(!wire.contains("SECRET_MARKER_OMITTED"));
     }
 }
+
+#[test]
+fn producer_to_service_preserves_qualified_unique_and_empty_attributions() {
+    use ont_core::{answer::Version, report::ReportWindow};
+    for (first, last, contribution) in [(1, 2, "1"), (1, 1, "0")] {
+        // Real Collector -> build_projection -> attribute_v1, synthetic Transport only.
+        let projected =
+            projection(collect(ordinary(), first, last, true, Limits::default()).unwrap());
+        let label = if first == last {
+            ont_core::program::QUALIFIED_EMPTY_INTERVAL
+        } else {
+            ont_core::program::QUALIFIED_PR_ATTRIBUTION
+        };
+        assert_eq!(projected.attribution.qualification(), label);
+        let grants = projected
+            .objects
+            .iter()
+            .map(|o| Grant {
+                scope: o.scope.clone(),
+                object_types: BTreeSet::from([o.id.object_type.clone()]),
+                read: true,
+                derive: true,
+                actions: BTreeSet::new(),
+            })
+            .collect();
+        let authority = Authority::new(Policy {
+            principals: BTreeMap::from([("reader".into(), grants)]),
+        });
+        let session = authority.bind_trusted("reader").unwrap();
+        let mut service = ontd::Service::new(projected.memory_store().unwrap(), authority);
+        let window = ReportWindow { start: 0, end: 100 };
+        let native: Value = serde_json::from_str(
+            &service
+                .render(
+                    &session,
+                    Query::ProgramReport {
+                        root: spec().program,
+                        window,
+                    },
+                    100,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            native["result"]["report"]["attributions"][0]["source_qualified"],
+            true
+        );
+        for v3 in [false, true] {
+            let bytes = if v3 {
+                service
+                    .render_answer_record_version_with_status(
+                        &session,
+                        Query::ProgramReport {
+                            root: spec().program,
+                            window,
+                        },
+                        100,
+                        Version::V3,
+                    )
+                    .unwrap()
+                    .0
+            } else {
+                service
+                    .render(
+                        &session,
+                        Query::ProgramReportV2 {
+                            root: spec().program,
+                            window,
+                        },
+                        100,
+                    )
+                    .unwrap()
+            };
+            let v: Value = serde_json::from_str(&bytes).unwrap();
+            let a = &v["result"]["report"]["attributions"][0];
+            assert_eq!(a["source_qualified"], true);
+            assert_eq!(a["qualification"], "qualified");
+            for field in ["change", "component_contribution_sum"] {
+                assert_eq!(a[field]["value"]["numerator"], contribution);
+                assert_eq!(a[field]["value"]["denominator"], 1);
+            }
+            assert_eq!(a["reconciliation_residual"]["value"]["numerator"], "0");
+            assert_eq!(
+                a["endpoints"],
+                json!({"status":"not_available","reason":"unbound_endpoints"})
+            );
+            assert_eq!(
+                a["contributions"].as_array().unwrap().len(),
+                usize::from(first != last)
+            );
+        }
+    }
+}

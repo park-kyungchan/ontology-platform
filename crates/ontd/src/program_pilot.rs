@@ -95,11 +95,12 @@ fn request(bytes: &[u8]) -> Result<(Query, ReportWindow)> {
     }
     let value = program::strict::parse(bytes).map_err(|_| err("invalid_request"))?;
     let query: Query = serde_json::from_value(value).map_err(|_| err("invalid_request"))?;
-    match query {
-        Query::ProgramReport { root, window }
-            if root == id("program", PROGRAM, false) && window.start <= window.end =>
+    match &query {
+        Query::ProgramReport { root, window } | Query::ProgramReportV2 { root, window }
+            if *root == id("program", PROGRAM, false) && window.start <= window.end =>
         {
-            Ok((Query::ProgramReport { root, window }, window))
+            let window = *window;
+            Ok((query, window))
         }
         _ => Err(err("invalid_request")),
     }

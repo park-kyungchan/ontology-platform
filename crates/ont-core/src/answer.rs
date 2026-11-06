@@ -11,12 +11,14 @@ mod v2;
 pub enum Version {
     V1,
     V2,
+    V3,
 }
 impl Version {
     pub fn schema(self) -> &'static str {
         match self {
             Self::V1 => SCHEMA,
             Self::V2 => "ontology-answer/v2",
+            Self::V3 => "ontology-answer/v3",
         }
     }
 }
@@ -170,6 +172,14 @@ impl AnswerRecord {
             let mut cells =
                 serde_json::to_value(&record.result).map_err(|_| Error::StoreFailure)?;
             v2::enrich(result, &mut cells);
+            record.result = Cell::publication(cells);
+        }
+        if version == Version::V3
+            && let Response::Ok { result, .. } = response
+        {
+            let mut cells =
+                serde_json::to_value(&record.result).map_err(|_| Error::StoreFailure)?;
+            v2::enrich_derived(result, &mut cells);
             record.result = Cell::publication(cells);
         }
         Ok(record)
