@@ -54,6 +54,16 @@ or memory tag is not authentication. [O1][O2][O3]
 | May this caller read, derive or act? | Current authenticated domain policy and named action grant, plus the user's actual task authority. Hindsight never supplies a grant. |
 | Did an external effect happen, or may it be retried? | The domain's durable effect state and authoritative target reconciliation. A conversation, mental model or binary rollback cannot settle an uncertain effect. |
 
+Academy lesson archive exception (user decision 2026-11-06): because the academy
+server removes older rows, Hindsight archives dated Academy teacher statements and
+source observations under real student names, as education-platform
+`content/skills/academy-student-context/references/lesson-archive.md` specifies.
+An archived observation is a dated snapshot and history, not current operational
+state. It grants no admission or action, and a fresh owner read wins while the
+source still shows the row. When the Ontology cutover lands, its admission design
+decides whether this archive becomes an ingestion source; nothing here promotes
+prose into objects.
+
 If memory and current source disagree, preserve the dated memory as history and
 correct its interpretation through Hindsight. If a source-qualified Ontology
 observation is wrong, its owner appends the appropriate correction/backfill with
