@@ -851,3 +851,44 @@ fn transform_feedback_distinguishes_primary_keys_and_parameters() {
         }
     }
 }
+
+#[test]
+fn action_tool_descriptions_leave_discovery_room_and_keep_call_guidance() {
+    let list = ont::mcp::tools_list();
+    // A packet-specific room target; the existing protocol bounds stay 5000.
+    assert!(list.to_string().len() <= 4700, "{}", list.to_string().len());
+    let tools = list["tools"].as_array().unwrap();
+    let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
+    for name in ["ont_action_validate", "ont_action_apply"] {
+        let desc = tool(name)["description"].as_str().unwrap();
+        for term in [
+            "ont_action_list",
+            "objects[].id",
+            "ont_search",
+            "result.basis",
+            "expected",
+        ] {
+            assert!(desc.contains(term), "{name} lacks {term}");
+        }
+    }
+    let validate = tool("ont_action_validate")["description"].as_str().unwrap();
+    assert!(validate.contains("without writing") && validate.contains("result.valid"));
+    let apply = tool("ont_action_apply")["description"].as_str().unwrap();
+    for term in [
+        "edits_log",
+        "change was made",
+        "applied",
+        "already_applied",
+        "refusal",
+    ] {
+        assert!(apply.contains(term), "missing {term}");
+    }
+    assert_eq!(
+        tool("ont_action_apply")["inputSchema"]["required"],
+        json!(["action_type", "parameters", "request_id"])
+    );
+    assert_eq!(
+        tool("ont_action_apply")["inputSchema"]["properties"]["request_id"]["pattern"],
+        "^[A-Za-z0-9._-]{1,64}$"
+    );
+}
