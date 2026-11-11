@@ -901,8 +901,7 @@ fn action_validate_apply_passthrough_and_refusals_write_nothing() {
     let t = Temp::new();
     let store = action_fixture::install(&t);
     let mut server = ont::mcp::Server::new(action_config(&store, "test"), &ont::cli::execute);
-    let body =
-        json!({"action_type":"create_tag","parameters":{"label":"once"},"request_id":"tag-1"});
+    let body = json!({"action_type":"create_tag","parameters":{"label":"once"},"request_id":"tag-1","agent":"parity-agent"});
     let preview = action_call(&mut server, "ont_action_validate", body.clone());
     assert_eq!(preview["result"]["valid"], true, "{preview}");
     let (code, stdout, stderr) = sub(
@@ -1009,22 +1008,30 @@ fn cancellation_between_apply_and_retry_yields_two_answers_and_one_log_row() {
 fn action_actor_uses_initialize_fallback_and_explicit_client() {
     // Set the environment only in a child, never mutate the threaded test process.
     if std::env::var_os("ONT_MCP_ACTOR_TEST").is_none() {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "action_actor_uses_initialize_fallback_and_explicit_client",
-                "--nocapture",
-            ])
-            .env("ONT_AGENT", "environment-agent")
-            .env("ONT_MCP_ACTOR_TEST", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        for environment_agent in ["environment-agent", ""] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "action_actor_uses_initialize_fallback_and_explicit_client",
+                    "--nocapture",
+                ])
+                .env("ONT_AGENT", environment_agent)
+                .env("ONT_MCP_ACTOR_TEST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("test result: ok. 1 passed; 0 failed;"),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
         return;
     }
     let t = Temp::new();
@@ -1065,7 +1072,16 @@ fn action_actor_uses_initialize_fallback_and_explicit_client() {
         assert_eq!(answer["result"]["outcome"], "applied", "{answer}");
         let mut db = ont_store::Store::open_schema_existing(std::path::Path::new(&store)).unwrap();
         let log = db.action_log().unwrap();
-        assert_eq!(log.last().unwrap().1.actor["agent"], "environment-agent");
+        let expected = std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty());
+        assert_eq!(
+            log.last()
+                .unwrap()
+                .1
+                .actor
+                .get("agent")
+                .and_then(Value::as_str),
+            expected.as_deref()
+        );
     }
 }
 
@@ -1198,10 +1214,10 @@ fn peer_cli_optional_client_uses_initialize_and_explicit_client_wins() {
 }
 
 #[test]
-fn missing_initialize_client_name_leaves_context_client_empty() {
+fn missing_initialize_client_name_uses_mcp_context() {
     let t = Temp::new();
     let exec = |_op, _request: &[u8], ctx: &ont::Context| {
-        assert_eq!(ctx.client, "");
+        assert_eq!(ctx.client, "mcp");
         Ok(ont::Answer::Plain(json!({"client":ctx.client})))
     };
     let mut server = ont::mcp::Server::new(action_config(&t.store("absent"), ""), &exec);
@@ -1222,5 +1238,193 @@ fn missing_initialize_client_name_leaves_context_client_empty() {
         )
         .unwrap();
     assert_eq!(answer["result"]["isError"], false);
-    assert_eq!(answer["result"]["content"][0]["text"], "{\"client\":\"\"}");
+    assert_eq!(
+        answer["result"]["content"][0]["text"],
+        "{\"client\":\"mcp\"}"
+    );
+}
+
+#[test]
+fn request_id_forms_and_validate_unknown_argument_refuse_without_writing() {
+    let t = Temp::new();
+    let store = action_fixture::install(&t);
+    let mut server = ont::mcp::Server::new(action_config(&store, "test"), &ont::cli::execute);
+    let before = action_fixture::counts(&store);
+    for tool in ["ont_action_validate", "ont_action_apply"] {
+        for request_id in [
+            json!(""),
+            json!(23),
+            Value::Null,
+            json!("x".repeat(65)),
+            json!("tag:1"),
+            json!("my change"),
+            json!("é"),
+        ] {
+            let answer = action_call(
+                &mut server,
+                tool,
+                json!({"action_type":"create_tag",
+                "parameters":{"label":"invalid"},"request_id":request_id}),
+            );
+            assert_eq!(answer["code"], "invalid_argument", "{answer}");
+            assert_eq!(answer["argument"], "request_id");
+            let message = answer["message"].as_str().unwrap();
+            assert!(message.contains("request_id") && message.contains("^[A-Za-z0-9._-]{1,64}$"));
+        }
+    }
+    let answer = action_call(
+        &mut server,
+        "ont_action_validate",
+        json!({"action_type":"create_tag",
+        "parameters":{"label":"invalid"},"surprise":true}),
+    );
+    assert_eq!(answer["code"], "invalid_request");
+    for request_id in ["A-z_0.9", &"a".repeat(64)] {
+        let answer = action_call(
+            &mut server,
+            "ont_action_validate",
+            json!({"action_type":"create_tag",
+            "parameters":{"label":"valid"},"request_id":request_id}),
+        );
+        assert_eq!(answer["result"]["valid"], true, "{answer}");
+    }
+    assert_eq!(action_fixture::counts(&store), before);
+    assert!(!t.0.join("edits.jsonl").exists());
+}
+
+#[test]
+fn invalid_absent_empty_and_reserved_client_names_validate_and_apply_as_mcp() {
+    let t = Temp::new();
+    let store = action_fixture::install(&t);
+    for (i, name) in [
+        Some("Visual Studio Code"),
+        None,
+        Some(""),
+        Some("cli"),
+        Some("UPPER"),
+        Some("over-long-client-name-that-exceeds-thirty-two"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut server = ont::mcp::Server::new(action_config(&store, ""), &ont::cli::execute);
+        let mut params = json!({"protocolVersion":"2025-11-25"});
+        if let Some(name) = name {
+            params["clientInfo"] = json!({"name":name});
+        }
+        server
+            .handle_line(
+                json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":params})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        let body = json!({"action_type":"create_tag","parameters":{"label":"fallback"},"request_id":format!("fallback-{i}"),"agent":"test-agent"});
+        let preview = action_call(&mut server, "ont_action_validate", body.clone());
+        assert_eq!(preview["result"]["valid"], true, "{preview}");
+        let applied = action_call(&mut server, "ont_action_apply", body);
+        assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+        let mut db = ont_store::Store::open_schema_existing(std::path::Path::new(&store)).unwrap();
+        assert_eq!(
+            db.action_log().unwrap().last().unwrap().1.actor["client"],
+            "mcp"
+        );
+    }
+    let mut server = ont::mcp::Server::new(action_config(&store, "cli"), &ont::cli::execute);
+    let answer = action_call(
+        &mut server,
+        "ont_action_apply",
+        json!({"action_type":"create_tag",
+        "parameters":{"label":"reserved"},"request_id":"reserved-cli","agent":"test-agent"}),
+    );
+    assert_eq!(answer["result"]["outcome"], "applied", "{answer}");
+    let mut db = ont_store::Store::open_schema_existing(std::path::Path::new(&store)).unwrap();
+    assert_eq!(
+        db.action_log().unwrap().last().unwrap().1.actor["client"],
+        "mcp"
+    );
+}
+
+#[test]
+fn action_schemas_match_request_and_actor_bounds_and_validate_expected() {
+    let list = ont::mcp::tools_list();
+    for tool in list["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["name"].as_str().unwrap().starts_with("ont_action_"))
+    {
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false);
+        if tool["name"] == "ont_action_list" {
+            continue;
+        }
+        assert_eq!(
+            schema["properties"]["request_id"]["pattern"],
+            "^[A-Za-z0-9._-]{1,64}$"
+        );
+        for field in ["agent", "session"] {
+            assert_eq!(
+                schema["properties"][field]["pattern"],
+                "^[A-Za-z0-9._:-]{1,64}$"
+            );
+        }
+        assert_eq!(schema["properties"]["expected"]["type"], "array");
+    }
+    let t = Temp::new();
+    let store = action_fixture::install(&t);
+    let mut server = ont::mcp::Server::new(action_config(&store, "test"), &ont::cli::execute);
+    let body = json!({"action_type":"create_tag","parameters":{"label":"basis"},"request_id":"basis-1","agent":"A_z.0:-","session":"S_z.0:-"});
+    let applied = action_call(&mut server, "ont_action_apply", body.clone());
+    let mut preview = body;
+    preview["expected"] = json!([{"id":applied["result"]["edits"][0]["id"],"revision":"stale"}]);
+    let answer = action_call(&mut server, "ont_action_validate", preview);
+    assert_eq!(answer["code"], "revision_conflict", "{answer}");
+}
+
+#[test]
+fn oversized_committed_apply_retains_action_identity_and_outcome() {
+    let t = Temp::new();
+    let store = t.store("bulk.sqlite");
+    let mut schema: Value =
+        serde_json::from_slice(include_bytes!("fixtures/action-work.json")).unwrap();
+    let template = schema["object_types"]["tag"].clone();
+    let mut rules = Vec::new();
+    for i in 0..1600 {
+        let ty = format!("bulk_{i}");
+        schema["object_types"][&ty] = template.clone();
+        schema["grants"][0]["read"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(ty));
+        rules.push(json!({"create_object":ty,"set":{"label":"$label"}}));
+    }
+    schema["action_types"]["create_tag"]["rules"] = json!(rules);
+    let file = t.0.join("bulk-schema.json");
+    std::fs::write(&file, serde_json::to_vec(&schema).unwrap()).unwrap();
+    let (code, out, _) = sub(&store, &["schema", "install", file.to_str().unwrap()], b"");
+    assert_eq!(code, 0, "{out}");
+    let mut server = ont::mcp::Server::new(action_config(&store, "test"), &ont::cli::execute);
+    let body = json!({"action_type":"create_tag","parameters":{"label":"bulk"},"request_id":"bulk-1","agent":"test-agent"});
+    let first = action_call(&mut server, "ont_action_apply", body.clone());
+    assert_eq!(first["code"], "response_too_large", "{first}");
+    assert_eq!(first["outcome"], "applied");
+    assert!(first["action_id"].is_string());
+    let retry = action_call(&mut server, "ont_action_apply", body);
+    assert_eq!(retry["code"], "response_too_large");
+    assert_eq!(retry["action_id"], first["action_id"]);
+    assert_eq!(retry["outcome"], "already_applied");
+    let mut db = ont_store::Store::open_schema_existing(std::path::Path::new(&store)).unwrap();
+    let rows = db.action_log().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1.action_id, first["action_id"].as_str().unwrap());
+    assert_eq!(rows[0].1.edits.as_array().unwrap().len(), 1600);
+    assert_eq!(db.scan_heads("bulk_1599", 10, None).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(t.0.join("edits.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
 }

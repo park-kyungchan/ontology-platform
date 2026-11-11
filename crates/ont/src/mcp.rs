@@ -152,10 +152,13 @@ struct Tool {
 /// The single table used for discovery and dispatch.
 fn tools() -> Vec<Tool> {
     let s = json!({"type":"string"});
+    let request_id = json!({"type":"string","pattern":"^[A-Za-z0-9._-]{1,64}$"});
+    let actor = json!({"type":"string","pattern":"^[A-Za-z0-9._:-]{1,64}$"});
     let id = json!({"type":"object","required":["object_type","namespace","native_key"],
         "properties":{"object_type":s,"native_key":s,
             "namespace":{"type":"object","required":["instance","account"],
                 "properties":{"instance":s,"account":s}}}});
+    let expected = json!({"type":"array","items":{"type":"object","required":["id","revision"],"properties":{"id":id,"revision":s}}});
     vec![
         Tool {
             op: ToolOp::Read(Op::Describe),
@@ -187,27 +190,26 @@ fn tools() -> Vec<Tool> {
             op: ToolOp::ListActions,
             spec: json!({
                 "name":"ont_action_list",
-                "description":"List action types with their parameters and criteria codes, optionally limited to an installed domain from ont_describe. Take action_type and parameter names for ont_action_validate and ont_action_apply from this list. Object ids come from ont_search.",
-                "inputSchema":{"type":"object","properties":{"domain":s}}
+                "description":"List action types with parameters and criteria codes; optional domain from ont_describe. Use this list for action_type and parameter names in ont_action_validate and ont_action_apply. Object ids come from ont_search.",
+                "inputSchema":{"type":"object","additionalProperties":false,"properties":{"domain":s}}
             }),
         },
         Tool {
             op: ToolOp::Validate,
             spec: json!({
                 "name":"ont_action_validate",
-                "description":"Preview an action without writing: action_type and parameter names come from ont_action_list, object ids from ont_search; choose parameter values, optional request_id, agent and session for your change and attribution. If valid is true, apply with the returned basis as expected; otherwise fix the failed criteria before applying. Refusals carry code: do not retry unchanged.",
-                "inputSchema":{"type":"object","required":["action_type","parameters"],
-                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":s,"agent":s,"session":s}}
+                "description":"Preview an action without writing: action_type and parameter names come from ont_action_list; parameters is an object {name: value}, an object parameter's value is an objects[].id from ont_search; send the request_id you will use to apply, and optional agent/session (1-64 of A-Z a-z 0-9 . _ : -). If result.valid, call ont_action_apply with the same arguments and result.basis as expected; otherwise fix failed criteria. A refusal carries code: do not retry unchanged.",
+                "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters"],
+                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
             }),
         },
         Tool {
             op: ToolOp::Apply,
             spec: json!({
                 "name":"ont_action_apply",
-                "description":"Apply an action: action_type and parameter names from ont_action_list, object ids from ont_search, expected from validate basis, parameter values and optional agent/session chosen by you; every edits_log value means the change was made. `request_id`: any string you choose once per intended change; send the same one again if you did not see an answer: the change is then not made twice (outcome `already_applied`). On applied or already_applied continue; refusals carry code: do not retry unchanged.",
-                "inputSchema":{"type":"object","required":["action_type","parameters","request_id"],
-                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":s,"agent":s,"session":s,
-                        "expected":{"type":"array","items":{"type":"object","required":["id","revision"],"properties":{"id":id,"revision":s}}}}}
+                "description":"Apply an action: action_type/parameter names from ont_action_list, ids from ont_search, expected from validate result.basis, unchanged; parameters as {name: value}; every edits_log value means the change was made. request_id: a new unique string per intended change, 1-64 of A-Z a-z 0-9 . _ - (e.g. a UUID); if you did not see an answer, send the same request_id with the same arguments, agent included: the change is then not made twice (outcome already_applied). On applied or already_applied continue; refusals carry code: do not retry unchanged.",
+                "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters","request_id"],
+                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
             }),
         },
     ]
@@ -389,15 +391,24 @@ impl<'a> Server<'a> {
         let now = self.config.now.unwrap_or_else(now_seconds);
         let mut ctx = Context::new(self.config.store.clone(), now);
         ctx.client = if self.config.client.is_empty() {
-            self.session.client_info_name.clone().unwrap_or_default()
+            self.session
+                .client_info_name
+                .as_deref()
+                .filter(|name| valid_client(name))
+                .unwrap_or("mcp")
+                .to_string()
         } else {
             self.config.client.clone()
         };
+        // Keep the CLI action namespace distinct even for a literal "cli" name.
+        if ctx.client == "cli" {
+            ctx.client = "mcp".to_string();
+        }
         ctx.agent = arguments
             .get("agent")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| std::env::var("ONT_AGENT").ok());
+            .or_else(|| std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty()));
         ctx.session = arguments
             .get("session")
             .and_then(Value::as_str)
@@ -410,28 +421,25 @@ impl<'a> Server<'a> {
                 ToolOp::ListActions => crate::action::ListActionsRequest::parse(request.as_bytes())
                     .map_err(Failure::from)
                     .and_then(|req| crate::action::list_actions(&ctx, &req)),
-                ToolOp::Validate => crate::action::ValidateActionRequest::parse(request.as_bytes())
-                    .map_err(Failure::from)
+                ToolOp::Validate => check_request_id(arguments, false)
+                    .and_then(|()| {
+                        crate::action::ValidateActionRequest::parse(request.as_bytes())
+                            .map_err(Failure::from)
+                    })
                     .and_then(|mut req| {
                         req.agent = None;
                         req.session = None;
                         crate::action::validate_action(&ctx, &req)
                     }),
-                ToolOp::Apply => {
-                    if !arguments.get("request_id").is_some_and(Value::is_string) {
-                        Err(Refusal::new("invalid_argument")
-                            .with("argument", json!("request_id"))
-                            .into())
-                    } else {
-                        crate::action::ApplyActionRequest::parse(request.as_bytes())
-                            .map_err(Failure::from)
-                            .and_then(|mut req| {
-                                req.agent = None;
-                                req.session = None;
-                                crate::action::apply_action(&ctx, &req)
-                            })
-                    }
-                }
+                ToolOp::Apply => check_request_id(arguments, true).and_then(|()| {
+                    crate::action::ApplyActionRequest::parse(request.as_bytes())
+                        .map_err(Failure::from)
+                        .and_then(|mut req| {
+                            req.agent = None;
+                            req.session = None;
+                            crate::action::apply_action(&ctx, &req)
+                        })
+                }),
             };
             render(result, now)
         }));
@@ -455,6 +463,16 @@ impl<'a> Server<'a> {
             let mut refusal = Refusal::new("response_too_large")
                 .with("bytes", json!(text.len()))
                 .with("max_bytes", json!(MAX_RESPONSE));
+            if matches!(op, ToolOp::Apply)
+                && !is_error
+                && let Ok(answer) = serde_json::from_str::<Value>(&text)
+            {
+                for field in ["action_id", "outcome"] {
+                    if let Some(value) = answer["result"].get(field) {
+                        refusal = refusal.with(field, value.clone());
+                    }
+                }
+            }
             if matches!(op, ToolOp::Read(Op::Search)) {
                 refusal = refusal.with("retry_with_smaller_limit", json!(true));
             }
@@ -462,6 +480,19 @@ impl<'a> Server<'a> {
             return (outcome.stdout.trim_end_matches('\n').to_string(), true);
         }
         (text, is_error)
+    }
+}
+
+/// MCP argument feedback for the library's request-id form.
+fn check_request_id(arguments: &Value, required: bool) -> Result<(), Failure> {
+    match arguments.get("request_id") {
+        None if !required => Ok(()),
+        Some(Value::String(id)) if !id.is_empty() && id.len() <= 64
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) => Ok(()),
+        _ => Err(Refusal::new("invalid_argument")
+            .with("argument", json!("request_id"))
+            .with("message", json!("request_id must be 1-64 characters of A-Z a-z 0-9 . _ - (^[A-Za-z0-9._-]{1,64}$)"))
+            .into()),
     }
 }
 
