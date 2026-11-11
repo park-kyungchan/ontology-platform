@@ -10,10 +10,11 @@ the referenced type. Refusals may include a top-level `hint`; submission hints u
 fixed recovery text selected by failed criterion codes (unknown codes get a generic
 repair), without request values. File installs refuse symbolic-link store paths
 with `store_path_is_symlink` and field `--store`; default-store aliases retain
-`install_requires_commit`. Git provenance removes userinfo conservatively:
-a numeric port followed by a path containing `@` is ambiguous with malformed
-raw-slash credentials and loses the prefix through `@`; ordinary ports and local
-paths remain intact.
+`install_requires_commit`. Git provenance strips userinfo only when its host boundary is
+certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
+path as provenance instead; the sanitizer leaves ambiguous input unchanged and
+its caller never records that unchecked string. Ordinary ports and local paths
+remain intact.
 
 ## actions
 - Requests are one JSON object on stdin, one JSON line on stdout; exit 0 ok, 2 refused, 1 internal. `ont [--store PATH] [--client NAME] action list` takes `{"op":"list_actions","domain"?}` and lists each granted action type with its parameters (name, type, required, allowed values), criteria codes with messages, and the object types its rules edit. `action validate` takes `{"op":"validate_action","action_type","parameters":{…},"agent"?,"session"?,"request_id"?}` and answers `valid`, every criterion with `passed`, `basis` (the heads read with their revisions), `edits` (what apply would write; with a `request_id`, the same revisions apply would write) and the schema pin in the envelope; it writes nothing. `action apply` takes the same fields plus `"expected":[{"id","revision"}]?` and `"request_id"?`.

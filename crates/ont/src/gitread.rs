@@ -33,45 +33,49 @@ pub fn valid_repo_path(path: &str) -> bool {
         .any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Remove any userinfo (a credential part) from a remote URL.
+/// Strip only userinfo confined to an unambiguous authority or scp prefix;
+/// leave ambiguous input unchanged rather than guessing a host. This string is
+/// not a provenance admission: repository_of uses the checked result below and
+/// records the checkout path on ambiguity (including port/path-@ forms that
+/// cannot be distinguished from digit-leading raw-slash passwords).
 pub fn strip_credentials(url: &str) -> String {
+    certain_remote(url).unwrap_or_else(|| url.to_string())
+}
+
+fn certain_remote(url: &str) -> Option<String> {
     if let Some(scheme) = url.find("://") {
         let prefix_end = scheme + 3;
         let rest = &url[prefix_end..];
         let end = rest.find('/').unwrap_or(rest.len());
         let authority = &rest[..end];
-        let at = authority.rfind('@').or_else(|| {
-            // Recover raw-slash passwords, including numeric prefixes. The
-            // malformed userinfo and a port followed by @ in a path can be
-            // indistinguishable; redact that ambiguity conservatively.
-            authority.split_once(':')?;
-            if authority.starts_with('[') {
+        let path = &rest[end..];
+        if let Some(at) = authority.rfind('@') {
+            // A colon-bearing userinfo plus a later @ could instead be a
+            // password spanning raw slashes: the remaining host is uncertain.
+            if authority[at + 1..].is_empty()
+                || (authority[..at].contains(':') && path.contains('@'))
+            {
                 return None;
             }
-            let first_at = rest.find('@')?;
-            let host_end = rest[first_at..]
-                .find('/')
-                .map_or(rest.len(), |i| first_at + i);
-            rest[..host_end].rfind('@')
-        });
-        if let Some(at) = at {
-            return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
+            return Some(format!("{}{}", &url[..prefix_end], &rest[at + 1..]));
+        }
+        if !authority.starts_with('[') && authority.contains(':') && path.contains('@') {
+            return None;
         }
     } else if !url.starts_with('/')
+        && !url.starts_with("./")
+        && !url.starts_with("../")
         && let Some(first_at) = url.find('@')
+        && let Some(colon) = url[first_at..].find(':')
     {
-        // The host separator follows userinfo; @ in the repository path
-        // belongs to the path, not to the password.
-        if let Some(colon) = url[first_at..].find(':') {
-            let host_end = first_at + colon;
-            if !url[first_at..host_end].contains('/')
-                && let Some(at) = url[..host_end].rfind('@')
-            {
-                return url[at + 1..].to_string();
-            }
+        let host_end = first_at + colon;
+        if url[..host_end].contains('/') || url[..host_end].contains('\\') {
+            return None;
         }
+        let at = url[..host_end].rfind('@')?;
+        return Some(url[at + 1..].to_string());
     }
-    url.to_string()
+    Some(url.to_string())
 }
 
 struct GitOut {
@@ -146,8 +150,10 @@ fn repository_of(checkout: &Path) -> String {
         && out.success
     {
         let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !url.is_empty() {
-            return strip_credentials(&url);
+        if !url.is_empty()
+            && let Some(remote) = certain_remote(&url)
+        {
+            return remote;
         }
     }
     checkout.display().to_string()
