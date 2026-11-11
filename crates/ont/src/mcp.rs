@@ -1,12 +1,11 @@
 //! `ont mcp`: a Model Context Protocol server over stdio for `describe`,
-//! `get`, `search` and `index`.
+//! `get`, `search`, `index` and actions.
 //!
 //! Wire: newline-delimited JSON-RPC 2.0, one request per line on stdin, one
 //! JSON line per response on stdout (nothing else is ever written there).
 //! No listener, no threads. State kept between calls: the negotiated
 //! protocol version, `--client` and the client's `clientInfo.name`
-//! ([`Session`], held by [`Server`]; they are not written anywhere yet: the
-//! action log of a later packet reads them).
+//! ([`Session`], held by [`Server`]); actions record caller attribution.
 //!
 //! A `tools/call` runs the same operation function as the subcommand through
 //! [`crate::cli::execute`] with a [`Context`] built for that call (the store
@@ -137,37 +136,88 @@ fn take_panic_location() -> String {
         .unwrap_or_else(|| panic_location(file!(), line!()))
 }
 
-/// The four tools, in `tools/list` order.
-const TOOLS: [(&str, Op); 4] = [
-    ("ont_describe", Op::Describe),
-    ("ont_get", Op::Get),
-    ("ont_search", Op::Search),
-    ("ont_index", Op::Index),
-];
+#[derive(Clone, Copy)]
+enum ToolOp {
+    Read(Op),
+    ListActions,
+    Validate,
+    Apply,
+}
 
-/// The constant `tools/list` result: it never depends on installed schemas.
-pub fn tools_list() -> Value {
+struct Tool {
+    op: ToolOp,
+    spec: Value,
+}
+
+/// The single table used for discovery and dispatch.
+fn tools() -> Vec<Tool> {
     let s = json!({"type":"string"});
+    let request_id = json!({"type":"string","pattern":"^[A-Za-z0-9._-]{1,64}$"});
+    let actor = json!({"type":"string","pattern":"^[A-Za-z0-9._:-]{1,64}$"});
     let id = json!({"type":"object","required":["object_type","namespace","native_key"],
         "properties":{"object_type":s,"native_key":s,
             "namespace":{"type":"object","required":["instance","account"],
                 "properties":{"instance":s,"account":s}}}});
-    json!({"tools":[
-        {"name":"ont_describe",
+    let expected = json!({"type":"array","items":{"type":"object","required":["id","revision"],"properties":{"id":id,"revision":s}}});
+    vec![
+        Tool {
+            op: ToolOp::Read(Op::Describe),
+            spec: json!({"name":"ont_describe",
          "description":"Call first: lists the object types with their properties, plus links, actions, functions and sources this caller may read. Always carries schema pins and authorization_revision.",
-         "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}},
-        {"name":"ont_get",
+         "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}}),
+        },
+        Tool {
+            op: ToolOp::Read(Op::Get),
+            spec: json!({"name":"ont_get",
          "description":"One object with its full history. id: an objects[].id value from ont_search. Hidden and missing answer alike (unavailable). Always carries schema pins and authorization_revision.",
-         "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}},
-        {"name":"ont_search",
+         "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}}),
+        },
+        Tool {
+            op: ToolOp::Read(Op::Search),
+            spec: json!({"name":"ont_search",
          "description":"Filter objects of one type. where, one operator key per object, e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]. limit 1-1000 (default 100); continuation pages. Always carries schema pins, authorization_revision and basis (scanned, matched, stale, unresolved_excluded, qualified).",
          "inputSchema":{"type":"object","required":["object_type"],
             "properties":{"object_type":s,"where":{"type":"object"},
-                "limit":{"type":"integer","minimum":1,"maximum":1000},"continuation":s}}},
-        {"name":"ont_index",
+                "limit":{"type":"integer","minimum":1,"maximum":1000},"continuation":s}}}),
+        },
+        Tool {
+            op: ToolOp::Read(Op::Index),
+            spec: json!({"name":"ont_index",
          "description":"Read the installed sources and append what changed; returns counts per source, a failed source gives isError. sources: names (default all). One run at a time (index_busy). Always carries schema pins and authorization_revision.",
-         "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}
-    ]})
+         "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}),
+        },
+        Tool {
+            op: ToolOp::ListActions,
+            spec: json!({
+                "name":"ont_action_list",
+                "description":"List action types with parameters and criteria codes; optional domain from ont_describe. Use this list for action_type and parameter names in ont_action_validate and ont_action_apply. Object ids come from ont_search.",
+                "inputSchema":{"type":"object","additionalProperties":false,"properties":{"domain":s}}
+            }),
+        },
+        Tool {
+            op: ToolOp::Validate,
+            spec: json!({
+                "name":"ont_action_validate",
+                "description":"Preview an action without writing: action_type and parameter names come from ont_action_list; parameters is an object {name: value}, an object parameter's value is an objects[].id from ont_search; send the request_id you will use to apply, and optional agent/session (1-64 of A-Z a-z 0-9 . _ : -). If result.valid, call ont_action_apply with the same arguments and result.basis as expected; otherwise fix failed criteria. A refusal carries code: do not retry unchanged.",
+                "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters"],
+                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
+            }),
+        },
+        Tool {
+            op: ToolOp::Apply,
+            spec: json!({
+                "name":"ont_action_apply",
+                "description":"Apply an action: action_type/parameter names from ont_action_list, ids from ont_search, expected from validate result.basis, unchanged; parameters as {name: value}; every edits_log value means the change was made. request_id: a new unique string per intended change, 1-64 of A-Z a-z 0-9 . _ - (e.g. a UUID); if you did not see an answer, send the same request_id with the same arguments, agent included: the change is then not made twice (outcome already_applied). On applied or already_applied continue; refusals carry code: do not retry unchanged.",
+                "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters","request_id"],
+                    "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
+            }),
+        },
+    ]
+}
+
+/// Constant discovery, independent of installed schemas.
+pub fn tools_list() -> Value {
+    json!({"tools":tools().into_iter().map(|t| t.spec).collect::<Vec<_>>()})
 }
 
 enum Read {
@@ -319,7 +369,7 @@ impl<'a> Server<'a> {
         let Some(Value::String(name)) = params.get("name") else {
             return invalid(id);
         };
-        let Some((_, op)) = TOOLS.iter().find(|(n, _)| n == name) else {
+        let Some(tool) = tools().into_iter().find(|t| t.spec["name"] == *name) else {
             return invalid(id);
         };
         let arguments = match params.get("arguments") {
@@ -327,7 +377,7 @@ impl<'a> Server<'a> {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(_) => return invalid(id),
         };
-        let (text, is_error) = self.call(*op, &arguments);
+        let (text, is_error) = self.call(tool.op, &arguments);
         rpc_result(
             id,
             json!({"content":[{"type":"text","text":text}],"isError":is_error}),
@@ -337,14 +387,61 @@ impl<'a> Server<'a> {
     /// One tool call: the operation of the subcommand, rendered as the
     /// subcommand renders it. Returns the `text` and `isError`. A panic is
     /// contained here and answered as an internal failure of this call.
-    fn call(&self, op: Op, arguments: &Value) -> (String, bool) {
+    fn call(&self, op: ToolOp, arguments: &Value) -> (String, bool) {
         let now = self.config.now.unwrap_or_else(now_seconds);
         let mut ctx = Context::new(self.config.store.clone(), now);
-        ctx.client = self.config.client.clone();
+        ctx.client = if self.config.client.is_empty() {
+            self.session
+                .client_info_name
+                .as_deref()
+                .filter(|name| valid_client(name))
+                .unwrap_or("mcp")
+                .to_string()
+        } else {
+            self.config.client.clone()
+        };
+        // Keep the CLI action namespace distinct even for a literal "cli" name.
+        if ctx.client == "cli" {
+            ctx.client = "mcp".to_string();
+        }
+        ctx.agent = arguments
+            .get("agent")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty()));
+        ctx.session = arguments
+            .get("session")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let request = arguments.to_string();
         let guard = InCall::enter();
         let ran = catch_unwind(AssertUnwindSafe(|| {
-            render((self.exec)(op, request.as_bytes(), &ctx), now)
+            let result = match op {
+                ToolOp::Read(op) => (self.exec)(op, request.as_bytes(), &ctx),
+                ToolOp::ListActions => crate::action::ListActionsRequest::parse(request.as_bytes())
+                    .map_err(Failure::from)
+                    .and_then(|req| crate::action::list_actions(&ctx, &req)),
+                ToolOp::Validate => check_request_id(arguments, false)
+                    .and_then(|()| {
+                        crate::action::ValidateActionRequest::parse(request.as_bytes())
+                            .map_err(Failure::from)
+                    })
+                    .and_then(|mut req| {
+                        req.agent = None;
+                        req.session = None;
+                        crate::action::validate_action(&ctx, &req)
+                    }),
+                ToolOp::Apply => check_request_id(arguments, true).and_then(|()| {
+                    crate::action::ApplyActionRequest::parse(request.as_bytes())
+                        .map_err(Failure::from)
+                        .and_then(|mut req| {
+                            req.agent = None;
+                            req.session = None;
+                            crate::action::apply_action(&ctx, &req)
+                        })
+                }),
+            };
+            render(result, now)
         }));
         drop(guard);
         let outcome = match ran {
@@ -366,13 +463,36 @@ impl<'a> Server<'a> {
             let mut refusal = Refusal::new("response_too_large")
                 .with("bytes", json!(text.len()))
                 .with("max_bytes", json!(MAX_RESPONSE));
-            if op == Op::Search {
+            if matches!(op, ToolOp::Apply)
+                && !is_error
+                && let Ok(answer) = serde_json::from_str::<Value>(&text)
+            {
+                for field in ["action_id", "outcome"] {
+                    if let Some(value) = answer["result"].get(field) {
+                        refusal = refusal.with(field, value.clone());
+                    }
+                }
+            }
+            if matches!(op, ToolOp::Read(Op::Search)) {
                 refusal = refusal.with("retry_with_smaller_limit", json!(true));
             }
             let outcome = render(Err(Failure::Refused(refusal)), now);
             return (outcome.stdout.trim_end_matches('\n').to_string(), true);
         }
         (text, is_error)
+    }
+}
+
+/// MCP argument feedback for the library's request-id form.
+fn check_request_id(arguments: &Value, required: bool) -> Result<(), Failure> {
+    match arguments.get("request_id") {
+        None if !required => Ok(()),
+        Some(Value::String(id)) if !id.is_empty() && id.len() <= 64
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) => Ok(()),
+        _ => Err(Refusal::new("invalid_argument")
+            .with("argument", json!("request_id"))
+            .with("message", json!("request_id must be 1-64 characters of A-Z a-z 0-9 . _ - (^[A-Za-z0-9._-]{1,64}$)"))
+            .into()),
     }
 }
 
