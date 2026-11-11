@@ -70,20 +70,25 @@ impl SearchRequest {
     /// Parse the strict request (at most `MAX_REQUEST` bytes; an `op`, when
     /// present, must be `search`).
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
-        let req: Self = crate::cli::parse_request(bytes)?;
-        if req.op.as_deref().is_some_and(|op| op != "search") {
+        let value: Value = crate::cli::parse_request(bytes)?;
+        if value
+            .get("op")
+            .and_then(Value::as_str)
+            .is_some_and(|op| op != "search")
+        {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be search when non-null",
+                "use search for op search, around for search_around",
             ));
         }
+        let req: Self = crate::cli::parse_request(bytes)?;
         Ok(req)
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Tri {
+pub(crate) enum Tri {
     True,
     False,
     Unknown,
@@ -270,7 +275,7 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
-fn eval(f: &Filter, fields: &BTreeMap<String, Knowledge>) -> Tri {
+pub(crate) fn eval(f: &Filter, fields: &BTreeMap<String, Knowledge>) -> Tri {
     let value_of = |p: &str| match fields.get(p) {
         Some(Knowledge::Value(v)) => Some(v),
         _ => None,
@@ -335,6 +340,25 @@ fn decode_continuation(token: &str) -> Option<String> {
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
         .collect();
     String::from_utf8(bytes?).ok()
+}
+
+pub(crate) fn check_filter(
+    set: &ont_core::schema::SchemaSet,
+    object_type: &str,
+    filter: Option<&Filter>,
+) -> Result<BTreeSet<String>, Failure> {
+    let schema = set.schema_of(object_type).ok_or_else(unavailable)?;
+    let mut checker = Checker {
+        set,
+        schema,
+        object_type,
+        leaves: 0,
+        used: BTreeSet::new(),
+    };
+    if let Some(f) = filter {
+        checker.walk(f, 0)?;
+    }
+    Ok(checker.used)
 }
 
 fn unavailable() -> Failure {
@@ -533,7 +557,7 @@ struct Basis {
     stale_sources: BTreeSet<String>,
 }
 
-fn object_json(
+pub(crate) fn object_json(
     head: &SchemaHead,
     ty: Option<&ont_core::schema::ObjectType>,
     observed: &ont_core::Observed,

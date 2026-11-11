@@ -173,11 +173,13 @@ fn tools() -> Vec<Tool> {
          "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}}),
         },
         Tool {
-            op: ToolOp::Read(Op::Search),
+            op: ToolOp::Read(Op::SetRead),
             spec: json!({"name":"ont_search",
-         "description":"Filter objects of one type. where, one operator key per object, e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]. limit 1-1000 (default 100); continuation pages. Always carries schema pins, authorization_revision and basis (scanned, matched, stale, unresolved_excluded, qualified).",
-         "inputSchema":{"type":"object","required":["object_type"],
-            "properties":{"object_type":s,"where":{"type":"object"},
+         "description":"op: search (default) or search_around. search: object_type, where e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]; continuation pages. search_around: from {object_type,where?}, path 1-3 link names (ont_describe). limit 1-1000, default 100. Basis reports qualification.",
+         "inputSchema":{"type":"object",
+            "properties":{"op":{"enum":["search","search_around"]},"object_type":s,"where":{"type":"object"},
+                "from":{"type":"object","required":["object_type"],"properties":{"object_type":s,"where":{"type":"object"}}},
+                "path":{"type":"array","items":s,"minItems":1,"maxItems":3},
                 "limit":{"type":"integer","minimum":1,"maximum":1000},"continuation":s}}}),
         },
         Tool {
@@ -473,7 +475,7 @@ impl<'a> Server<'a> {
                     }
                 }
             }
-            if matches!(op, ToolOp::Read(Op::Search)) {
+            if matches!(op, ToolOp::Read(Op::SetRead)) {
                 refusal = refusal.with("retry_with_smaller_limit", json!(true));
             }
             let outcome = render(Err(Failure::Refused(refusal)), now);

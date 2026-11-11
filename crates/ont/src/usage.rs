@@ -11,6 +11,7 @@ pub(crate) enum Command {
     Backup,
     Index,
     Search,
+    Around,
     Render,
     ActionList,
     ActionValidate,
@@ -104,6 +105,16 @@ const SPECS: &[Spec] = &[
         stdin: true,
         fields: "op?: search|null; object_type: string; where?: filter|null; limit?: null or integer 1-1000; continuation?: null or string from previous result. Filter: eq|ne|lt|le|gt|ge|prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]",
         example: "echo '{\"object_type\":\"task\",\"limit\":10}' | ont search",
+    },
+    Spec {
+        command: Around,
+        words: &["around"],
+        files: &[0],
+        form: "around",
+        options: &[],
+        stdin: true,
+        fields: "op?: search_around|null; from: {object_type,where?:filter}; path: 1-3 link names; limit?: 1-1000 (default 100)",
+        example: "echo '{\"from\":{\"object_type\":\"hold\"},\"path\":[\"task\"]}' | ont around",
     },
     Spec {
         command: Render,
@@ -255,7 +266,7 @@ mod tests {
     fn usage_and_dispatch_have_the_same_commands_and_options() {
         let help = help(&[]).unwrap_or(Value::Null);
         assert_eq!(help["commands"].as_array().map(Vec::len), Some(SPECS.len()));
-        assert!(help.to_string().len() + 1 < 6000);
+        assert!(help.to_string().len() < 5000);
         for spec in SPECS {
             for files in spec.files {
                 let mut words: Vec<String> = spec.words.iter().map(|s| s.to_string()).collect();

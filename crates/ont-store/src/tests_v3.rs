@@ -1585,6 +1585,19 @@ fn admission_metadata_avoids_payloads_and_rechecks_scope_in_one_read() {
     );
     assert!(store.head(&target).is_err());
     store
+        .read_schema(|tx| {
+            assert_eq!(tx.schema_set().pin("work").unwrap().version, 1);
+            assert_eq!(tx.head_access(&target).unwrap(), Some(current.clone()));
+            assert_eq!(
+                tx.scan_head_access("thing", 1, None).unwrap(),
+                vec![current.clone()]
+            );
+            assert!(tx.head_after_access(&access).unwrap().is_none());
+            // Only an admitted, matching access attempts to decode the bad payload.
+            assert!(tx.head_after_access(&current).is_err());
+        })
+        .unwrap();
+    store
         .write(100, |tx| {
             assert_eq!(tx.head_access(&target)?, Some(current.clone()));
             assert_eq!(
