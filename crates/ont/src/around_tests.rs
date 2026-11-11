@@ -225,3 +225,27 @@ fn around_reference_limit_refuses_before_missing_target_lookups() {
         })
         .unwrap();
 }
+
+#[test]
+fn around_historical_reference_type_is_excluded_before_named_lookup() {
+    let mut store = memory(false);
+    let mut schema =
+        serde_json::to_value(store.schema_set().unwrap().schema("test").unwrap()).unwrap();
+    schema["version"] = json!(2);
+    schema["object_types"]["node"]["properties"]["edges"]["type"] = json!({"array":{"ref":"leaf"}});
+    schema["link_types"]["edge"]["to"] = json!("leaf");
+    store
+        .install_schema(&serde_json::to_vec(&schema).unwrap(), Default::default())
+        .unwrap();
+    store
+        .read_schema(|tx| {
+            let probe = Probe::new(tx, Some(id("node", "z")));
+            let answer = crate::cli::render(read_around(&ctx(), &request(&["next"]), &probe), 10);
+            let answer: serde_json::Value = serde_json::from_str(&answer.stdout).unwrap();
+            assert_eq!(answer["result"]["basis"]["unresolved_excluded"], 1);
+            assert_eq!(answer["result"]["basis"]["qualified"], false);
+            assert_eq!(probe.named_reads.get(), 0);
+            assert_eq!(*probe.payload_reads.borrow(), vec![id("node", "a")]);
+        })
+        .unwrap();
+}

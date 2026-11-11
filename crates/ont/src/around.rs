@@ -49,7 +49,12 @@ struct Hop {
     link: LinkType,
     reverse: bool,
 }
-fn plan(set: &SchemaSet, ty: &str, path: &[String]) -> Result<Vec<Hop>, Failure> {
+fn plan(
+    set: &SchemaSet,
+    readable: &BTreeSet<String>,
+    ty: &str,
+    path: &[String],
+) -> Result<Vec<Hop>, Failure> {
     if path.is_empty() || path.len() > MAX_HOPS {
         return Err(Refusal::input(
             "invalid_path",
@@ -65,6 +70,10 @@ fn plan(set: &SchemaSet, ty: &str, path: &[String]) -> Result<Vec<Hop>, Failure>
         for domain in set.pins().keys() {
             if let Some(schema) = set.schema(domain) {
                 for link in schema.link_types.values() {
+                    // Match describe: a usable link has two readable endpoints.
+                    if !readable.contains(&link.from) || !readable.contains(&link.to) {
+                        continue;
+                    }
                     if link.from == reached {
                         available.insert(
                             link.names.forward.clone(),
@@ -327,7 +336,12 @@ fn read_around(
     {
         return Err(Refusal::new("unavailable").into());
     }
-    let hops = plan(set, &req.from.object_type, &req.path)?;
+    let hops = plan(
+        set,
+        &principal.view().all_read_types(),
+        &req.from.object_type,
+        &req.path,
+    )?;
     let mut used = search::check_filter(set, &req.from.object_type, req.from.filter.as_ref())
         .map_err(|mut e| {
             if let Failure::Refused(r) = &mut e
@@ -392,8 +406,16 @@ fn read_around(
             if !current.is_empty() {
                 for head in reader.scan(target_type)? {
                     match refs(&head, &hop.link.via, &mut examined)? {
-                        Some(mut ids) => {
-                            if ids.any(|id| current.contains_key(&id)) {
+                        Some(ids) => {
+                            let mut linked = false;
+                            for id in ids {
+                                if id.object_type != hop.link.to {
+                                    reader.basis.unresolved_excluded += 1;
+                                } else {
+                                    linked |= current.contains_key(&id);
+                                }
+                            }
+                            if linked {
                                 next.insert(head.id.clone(), head.clone());
                             }
                         }
@@ -407,6 +429,11 @@ fn read_around(
                     None => reader.basis.used_unresolved = true,
                     Some(ids) => {
                         for id in ids {
+                            // Old schema pins may have allowed a different target.
+                            if id.object_type != hop.link.to {
+                                reader.basis.unresolved_excluded += 1;
+                                continue;
+                            }
                             match reader.named(&id)? {
                                 Some(target) => {
                                     next.insert(id, target);

@@ -475,3 +475,148 @@ fn around_wrong_op_hints_only_name_existing_subcommands() {
         assert!(rule.contains("search"), "{answer}");
     }
 }
+
+fn upgrade_schema(t: &Temp, change: impl FnOnce(&mut Value)) {
+    let path = t.0.join("schema.json");
+    let mut schema: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    schema["version"] = json!(schema["version"].as_u64().unwrap() + 1);
+    change(&mut schema);
+    let bytes = serde_json::to_vec(&schema).unwrap();
+    ont_store::Store::open_schema_existing_writable(&t.store())
+        .unwrap()
+        .install_schema(&bytes, Default::default())
+        .unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn around_links_require_both_readable_endpoint_types_in_both_directions() {
+    for reverse in [false, true] {
+        for both_grants in [false, true] {
+            let t = Temp::new();
+            let mut a = row("a", &[], false);
+            let mut leaf = row("z", &[], false);
+            leaf.id.object_type = "leaf".into();
+            leaf.observation.fields.clear();
+            a.observation
+                .fields
+                .insert("leaf".into(), Knowledge::Value(json!(leaf.id)));
+            t.append(vec![a, leaf]);
+            if !both_grants {
+                upgrade_schema(&t, |s| {
+                    s["grants"][0]["read"] = json!([if reverse { "leaf" } else { "node" }])
+                });
+            }
+            let name = if reverse { "parents" } else { "leaf" };
+            let request = if reverse {
+                json!({"op":"search_around","from":{"object_type":"leaf"},"path":[name]})
+            } else {
+                req("a", &[name])
+            };
+            let answer = t.both(request.clone());
+            if both_grants {
+                assert_eq!(keys(&answer), if reverse { vec!["a"] } else { vec!["z"] });
+            } else {
+                assert_eq!(answer["code"], "invalid_link");
+                assert!(
+                    !answer["available"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(name))
+                );
+                let mut unknown = request.clone();
+                unknown["path"] = json!(["no_such_link"]);
+                assert_eq!(t.cli("around", &request), t.cli("around", &unknown));
+                assert_eq!(answer, t.both(unknown));
+                let describe: Value = serde_json::from_str(&t.cli("describe", &json!({}))).unwrap();
+                assert!(
+                    describe["result"]["link_types"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|l| l["name"] != "node_leaf")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn around_upgraded_reference_targets_are_excluded_and_keep_hidden_missing_parity() {
+    for count in [
+        1,
+        ont::around::MAX_REFERENCE_ENTRIES,
+        ont::around::MAX_REFERENCE_ENTRIES + 1,
+    ] {
+        let mut prior = None;
+        for visibility in ["visible", "hidden", "missing"] {
+            let t = Temp::new();
+            upgrade_schema(&t, |s| {
+                s["object_types"]["legacy"] =
+                    json!({"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}});
+                s["grants"][0]["read"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!("legacy"));
+                s["object_types"]["node"]["properties"]["edges"]["type"] =
+                    json!({"array":{"ref":"legacy"}});
+                s["link_types"]["edge"]["to"] = json!("legacy");
+            });
+            let mut old = row("z", &[], visibility == "hidden");
+            old.id.object_type = "legacy".into();
+            old.observation.fields.clear();
+            let mut a = row("a", &[], false);
+            a.observation.fields.insert(
+                "edges".into(),
+                Knowledge::Value(json!(vec![old.id.clone(); count])),
+            );
+            let mut leaf = row("z", &[], false);
+            leaf.id.object_type = "leaf".into();
+            leaf.observation.fields.clear();
+            t.append(vec![a, leaf]);
+            if visibility != "missing" {
+                t.append(vec![old]);
+            }
+            upgrade_schema(&t, |s| {
+                s["object_types"]["node"]["properties"]["edges"]["type"] =
+                    json!({"array":{"ref":"leaf"}});
+                s["link_types"]["edge"]["to"] = json!("leaf");
+            });
+            let mut store = ont_store::Store::open_schema_existing(&t.store()).unwrap();
+            assert_eq!(store.head(&id("a")).unwrap().unwrap().schema_pin.version, 2);
+            assert_eq!(store.schema_set().unwrap().pin("test").unwrap().version, 3);
+            let mut answers = Vec::new();
+            for reverse in [false, true] {
+                let request = if reverse {
+                    json!({"op":"search_around","from":{"object_type":"leaf"},"path":["previous"]})
+                } else {
+                    req("a", &["next"])
+                };
+                let answer = t.both(request.clone());
+                if count > ont::around::MAX_REFERENCE_ENTRIES {
+                    assert_eq!(answer["code"], "result_too_large");
+                    assert_eq!(
+                        answer["max_reference_entries"],
+                        ont::around::MAX_REFERENCE_ENTRIES
+                    );
+                } else {
+                    assert_eq!(answer["status"], "ok", "{answer}");
+                    assert!(keys(&answer).is_empty());
+                    assert_eq!(answer["result"]["basis"]["qualified"], false);
+                    assert_eq!(answer["result"]["basis"]["unresolved_excluded"], count);
+                    assert_eq!(answer["result"]["basis"]["dangling"], 0);
+                    assert_eq!(
+                        answer["result"]["basis"]["scanned"],
+                        if reverse { 2 } else { 1 }
+                    );
+                }
+                answers.push(t.cli("around", &request));
+            }
+            if let Some(expected) = &prior {
+                assert_eq!(&answers, expected);
+            } else {
+                prior = Some(answers);
+            }
+        }
+    }
+}
