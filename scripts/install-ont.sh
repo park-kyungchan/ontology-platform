@@ -3,6 +3,9 @@
 # no index is run here; install prints those commands for the host step.
 set -euo pipefail
 
+# Never let the caller redirect git away from the checkout named by -C.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+
 REAL_BIN_DIR=/usr/local/bin
 REAL_STATE_DIR=/var/lib/ontology-platform
 CARGO_LOCK=/home/palantirkc/work/ws-replan/wt/.host-cargo.lock
@@ -95,15 +98,34 @@ version_commit() {
   "$1" --version 2>/dev/null | awk 'NR==1 && $1=="ont" && NF==3 {print $3}'
 }
 
+state_write_failed() {
+  # $1 = operation; $2 = install's previous sha256, when any.
+  printf 'installed.json write failed; manual recovery commands:\n' >&2
+  if [ "$1" = "rollback" ]; then
+    # The previous copy is already restored. Repeating rollback records it.
+    printf '%q rollback\n' "$SCRIPT_PATH" >&2
+  elif [ -n "$2" ]; then
+    printf 'install -m 0755 -- %q %q\n' "$INSTALL_DIR/ont.before-${2:0:12}" "$BIN_PATH" >&2
+  else
+    printf 'rm -f -- %q\n' "$BIN_PATH" >&2
+  fi
+  printf '# installed.json still describes the installation before this attempt; verify it before check or rollback\n' >&2
+  exit 1
+}
+
 do_install() {
   local commit=${1:-}
   [[ $commit =~ ^[0-9a-f]{40}$ ]] || refuse "commit must be 40 lowercase hex"
   if [ "$DRY_RUN" = "1" ]; then
-    printf 'dry-run: git -C %s fetch origin before the ancestor check\n' "$REPO_ROOT"
+    printf 'dry-run: git -C %s fetch origin +refs/heads/main:refs/remotes/origin/main --refmap= before the ancestor check\n' "$REPO_ROOT"
   else
-    printf 'fetch: git -C %s fetch origin\n' "$REPO_ROOT"
-    git -C "$REPO_ROOT" fetch origin || refuse "git_unavailable: fetch origin failed"
+    printf 'fetch: git -C %s fetch origin +refs/heads/main:refs/remotes/origin/main --refmap=\n' "$REPO_ROOT"
+    git -C "$REPO_ROOT" fetch origin +refs/heads/main:refs/remotes/origin/main --refmap= || refuse "git_unavailable: fetch origin failed"
   fi
+  local commit_type
+  commit_type=$(printf '%s\n' "$commit" | git -C "$REPO_ROOT" cat-file --batch-check='%(objecttype)' 2>/dev/null) \
+    || refuse "git_unavailable: commit lookup failed"
+  [ "$commit_type" = "commit" ] || refuse "commit_unknown: $commit is not a known commit in the checkout"
   local ancestor_status=0
   git -C "$REPO_ROOT" merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null || ancestor_status=$?
   case $ancestor_status in
@@ -174,14 +196,7 @@ do_install() {
   mv "$tmp_bin" "$BIN_PATH"
   new_sha=$(sha256_of "$BIN_PATH")
   if ! write_installed_json "$commit" "$new_sha" "$previous_sha"; then
-    printf 'installed.json write failed; manual recovery commands:\n' >&2
-    if [ -n "$previous_sha" ]; then
-      printf 'install -m 0755 -- %q %q\n' "$INSTALL_DIR/ont.before-${previous_sha:0:12}" "$BIN_PATH" >&2
-    else
-      printf 'rm -f -- %q\n' "$BIN_PATH" >&2
-    fi
-    printf '# installed.json still describes the installation before this attempt; verify it before check or rollback\n' >&2
-    exit 1
+    state_write_failed install "$previous_sha"
   fi
   prune_previous
   rm -rf "$tmp"
@@ -227,17 +242,18 @@ do_rollback() {
   [ -f "$previous" ] || refuse "previous binary not found: $previous"
   [ "$(sha256_of "$previous")" = "$previous_sha" ] || refuse "previous binary sha256 does not match installed.json"
   local restored_commit tmp_bin=""
+  mkdir -p "$BIN_DIR"
   # The retained copy is 0600: execute a disposable copy before replacing ont.
   tmp_bin=$(mktemp "$BIN_DIR/.ont.XXXXXX")
   CLEANUP_BIN=$tmp_bin
   install -m 0755 "$previous" "$tmp_bin"
   restored_commit=$(version_commit "$tmp_bin" || true)
   [ -n "$restored_commit" ] || refuse "previous binary does not print a version line"
-  mkdir -p "$BIN_DIR"
-
   mv "$tmp_bin" "$BIN_PATH"
   [ "$(sha256_of "$BIN_PATH")" = "$previous_sha" ] || refuse "restored binary sha256 mismatch"
-  write_installed_json "$restored_commit" "$previous_sha" ""
+  if ! write_installed_json "$restored_commit" "$previous_sha" ""; then
+    state_write_failed rollback ""
+  fi
   printf 'restored_sha256: %s\n' "$previous_sha"
   printf 'store untouched: %s and its schema were not changed\n' "$STORE_DIR"
 }
