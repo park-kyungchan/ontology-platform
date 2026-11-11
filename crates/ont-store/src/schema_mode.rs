@@ -268,6 +268,27 @@ impl SchemaWrite<'_> {
     pub fn head(&self, id: &Id) -> Result<Option<SchemaHead>, StoreRefusal> {
         head_in(self.tx, id)
     }
+    /// Heads of one type inside this transaction (retracted hidden).
+    pub fn scan_heads(
+        &self,
+        object_type: &str,
+        limit: usize,
+    ) -> Result<Vec<SchemaHead>, StoreRefusal> {
+        scan_in(self.tx, &self.schemas, object_type, limit, None)
+    }
+    /// The whole action log inside this transaction, in `seq` order.
+    pub fn action_log(&self) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
+        action_log_in(self.tx)
+    }
+    /// One action-log row by its action id, inside this transaction.
+    pub fn find_action(
+        &self,
+        action_id: &str,
+    ) -> Result<Option<(i64, ActionLogEntry)>, StoreRefusal> {
+        Ok(action_log_in(self.tx)?
+            .into_iter()
+            .find(|(_, e)| e.action_id == action_id))
+    }
     pub fn schema_set(&self) -> &SchemaSet {
         &self.schemas
     }

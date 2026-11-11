@@ -342,6 +342,9 @@ impl<'a> Server<'a> {
         let ctx = Context {
             store: self.config.store.clone(),
             now,
+            client: self.config.client.clone(),
+            agent: None,
+            session: None,
         };
         let request = arguments.to_string();
         let guard = InCall::enter();

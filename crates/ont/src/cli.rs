@@ -1,5 +1,9 @@
 //! The command line: argument parsing, stdin, and the only place where the
 //! answer line, the exit code and the error text are built.
+use crate::action::{
+    ApplyActionRequest, ListActionsRequest, ValidateActionRequest, apply_action, list_actions,
+    validate_action,
+};
 use crate::backup::{BackupRequest, backup};
 use crate::describe::{DescribeRequest, describe};
 use crate::get::{GetRequest, get};
@@ -201,7 +205,8 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
     if cmd.as_slice() != ["index"] && !cli.sources.is_empty() {
         return Err(invalid_argument("--source").into());
     }
-    if cli.client.is_some() {
+    let is_action = matches!(cmd.as_slice(), ["action", "list" | "validate" | "apply"]);
+    if cli.client.is_some() && !is_action {
         return Err(invalid_argument("--client").into());
     }
     match cmd.as_slice() {
@@ -248,6 +253,13 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
             execute(Op::Index, request.to_string().as_bytes(), ctx)
         }
         ["search"] => execute(Op::Search, &read_request(stdin)?, ctx),
+        ["action", "list"] => list_actions(ctx, &ListActionsRequest::parse(&read_request(stdin)?)?),
+        ["action", "validate"] => {
+            validate_action(ctx, &ValidateActionRequest::parse(&read_request(stdin)?)?)
+        }
+        ["action", "apply"] => {
+            apply_action(ctx, &ApplyActionRequest::parse(&read_request(stdin)?)?)
+        }
         _ => Err(invalid_argument("command").into()),
     }
 }
@@ -334,9 +346,29 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
         return run_mcp(&cli, stdin);
     }
     let now = cli.now.unwrap_or_else(now_seconds);
+    let is_action_cmd = matches!(
+        cli.command
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["action", "list" | "validate" | "apply"]
+    );
+    let client = if is_action_cmd {
+        match cli.client.as_deref() {
+            None => "cli".to_string(),
+            Some(c) if crate::mcp::valid_client(c) => c.to_string(),
+            Some(_) => return render(Err(Refusal::new("invalid_request").into()), now),
+        }
+    } else {
+        "cli".to_string()
+    };
     let ctx = Context {
         store: cli.store.clone(),
         now,
+        client,
+        agent: std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty()),
+        session: None,
     };
     render(dispatch(&cli, stdin, &ctx), now)
 }
