@@ -93,6 +93,7 @@ pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing
             exclude: &spec.exclude,
             found: &mut found,
             symlinks: &mut symlinks,
+            roots_required: spec.complete_listing,
             visited: 0,
             max_visited: bounds.max_visited,
             listed: BTreeMap::new(),
@@ -137,6 +138,10 @@ struct Walker<'a> {
     exclude: &'a [Glob],
     found: &'a mut BTreeSet<PathBuf>,
     symlinks: &'a mut BTreeSet<PathBuf>,
+    /// `complete_listing`: a wildcard-free directory of the glob's root that
+    /// does not exist fails the source (`glob_root_missing`), so that an
+    /// unmounted or renamed root cannot retract every object.
+    roots_required: bool,
     visited: usize,
     max_visited: usize,
     /// Directories already read for this glob (each is read once).
@@ -252,6 +257,12 @@ impl Walker<'_> {
             return Ok(());
         }
         let Some(meta) = lstat(path)? else {
+            if literal && !last && self.roots_required {
+                return Err(SourceError::new(
+                    "glob_root_missing",
+                    path.display().to_string(),
+                ));
+            }
             return Ok(());
         };
         if meta.file_type().is_symlink() {
@@ -275,6 +286,12 @@ impl Walker<'_> {
             }
         } else if meta.is_dir() {
             self.walk(path, rest, depth + 1, literal)?;
+        } else if literal && self.roots_required {
+            // A wildcard-free prefix that exists but is not a directory.
+            return Err(SourceError::new(
+                "glob_root_not_directory",
+                path.display().to_string(),
+            ));
         }
         Ok(())
     }
@@ -573,5 +590,39 @@ mod tests {
         // Cut mid-line: the partial last line is dropped.
         let (_, f) = parse_head(b"A: 1\nB: 2 and mor", true, 10);
         assert!(f.contains_key("A") && !f.contains_key("B"));
+    }
+
+    /// The record keys that `read_one` produces for each source kind are
+    /// exactly the list the schema check accepts (`record_fields`).
+    #[test]
+    fn record_keys_equal_the_schema_check_list() {
+        let d = temp();
+        std::fs::write(d.join("a-1.md"), "# t\nOwner: x\n").unwrap();
+        for (kind, glob) in [
+            (FileSourceKind::MarkdownFields, "a-1.md"),
+            (FileSourceKind::FileDigest, "a-1.md"),
+        ] {
+            let spec = FileSourceSpec {
+                kind,
+                globs: Vec::new(),
+                exclude: Vec::new(),
+                head_lines: 40,
+                complete_listing: false,
+                fresh_for_s: 1,
+            };
+            let (record, _) = read_one(&d.join(glob), &spec).unwrap().unwrap();
+            let mut produced: Vec<&str> = record
+                .value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            produced.sort_unstable();
+            let mut listed: Vec<&str> = kind.record_fields().to_vec();
+            listed.sort_unstable();
+            assert_eq!(produced, listed, "{kind:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

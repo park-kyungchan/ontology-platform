@@ -47,6 +47,7 @@ struct Cli {
     source_repository: Option<String>,
     source_commit: Option<String>,
     sources: Vec<String>,
+    client: Option<String>,
     command: Vec<String>,
 }
 
@@ -63,6 +64,7 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
         source_repository: None,
         source_commit: None,
         sources: Vec::new(),
+        client: None,
         command: Vec::new(),
     };
     let mut it = args.iter();
@@ -97,6 +99,13 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
                         .clone(),
                 );
             }
+            "--client" => {
+                cli.client = Some(
+                    it.next()
+                        .ok_or_else(|| invalid_argument("--client"))?
+                        .clone(),
+                );
+            }
             "--version" => cli.version = true,
             _ if arg.starts_with("--") => return Err(invalid_argument(arg)),
             _ => cli.command.push(arg.clone()),
@@ -105,7 +114,7 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
     Ok(cli)
 }
 
-fn now_seconds() -> u64 {
+pub(crate) fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -125,6 +134,27 @@ fn read_request(stdin: impl Read) -> Result<Vec<u8>, Refusal> {
     Ok(bytes)
 }
 
+/// The four operations that take a JSON request, by name: the one place that
+/// maps a request to its typed `parse` and public operation function. The
+/// subcommands and the MCP tools both come through here.
+pub fn execute(op: Op, request: &[u8], ctx: &Context) -> Result<Answer, Failure> {
+    match op {
+        Op::Describe => describe(ctx, &DescribeRequest::parse(request)?),
+        Op::Get => get(ctx, &GetRequest::parse(request)?),
+        Op::Search => search(ctx, &SearchRequest::parse(request)?),
+        Op::Index => index(ctx, &IndexRequest::parse(request)?),
+    }
+}
+
+/// An operation that takes a JSON request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    Describe,
+    Get,
+    Search,
+    Index,
+}
+
 fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failure> {
     let cmd: Vec<&str> = cli.command.iter().map(String::as_str).collect();
     let is_install = matches!(cmd.as_slice(), ["schema", "install", _]);
@@ -133,6 +163,9 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
     }
     if cmd.as_slice() != ["index"] && !cli.sources.is_empty() {
         return Err(invalid_argument("--source").into());
+    }
+    if cli.client.is_some() {
+        return Err(invalid_argument("--client").into());
     }
     match cmd.as_slice() {
         ["schema", "check", file] => check(
@@ -149,8 +182,8 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
                 source_commit: cli.source_commit.clone(),
             },
         ),
-        ["describe"] => describe(ctx, &DescribeRequest::parse(&read_request(stdin)?)?),
-        ["get"] => get(ctx, &GetRequest::parse(&read_request(stdin)?)?),
+        ["describe"] => execute(Op::Describe, &read_request(stdin)?, ctx),
+        ["get"] => execute(Op::Get, &read_request(stdin)?, ctx),
         ["backup"] => backup(ctx, &BackupRequest::default()),
         ["index"] => {
             let request = if cli.sources.is_empty() {
@@ -158,9 +191,9 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
             } else {
                 json!({"op":"index","sources":cli.sources})
             };
-            index(ctx, &IndexRequest::parse(request.to_string().as_bytes())?)
+            execute(Op::Index, request.to_string().as_bytes(), ctx)
         }
-        ["search"] => search(ctx, &SearchRequest::parse(&read_request(stdin)?)?),
+        ["search"] => execute(Op::Search, &read_request(stdin)?, ctx),
         _ => Err(invalid_argument("command").into()),
     }
 }
@@ -190,7 +223,7 @@ fn envelope(
     )
 }
 
-fn render(result: Result<Answer, Failure>, now: u64) -> Outcome {
+pub(crate) fn render(result: Result<Answer, Failure>, now: u64) -> Outcome {
     match result {
         Ok(Answer::Plain(value)) => Outcome::line(&value, 0),
         Ok(Answer::Enveloped {
@@ -243,10 +276,44 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
     if let Err(code) = check_uid(real_uid, effective_uid) {
         return render(Err(Refusal::new(code).into()), 0);
     }
+    if cli.command.as_slice() == ["mcp"] {
+        return run_mcp(&cli, stdin);
+    }
     let now = cli.now.unwrap_or_else(now_seconds);
     let ctx = Context {
         store: cli.store.clone(),
         now,
     };
     render(dispatch(&cli, stdin, &ctx), now)
+}
+
+/// `ont mcp --client <name>`: the server loop of [`crate::mcp`] over `stdin`
+/// and the process's standard output (the one subcommand that writes while it
+/// runs). The client name is checked before anything is read.
+fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
+    if !cli.sources.is_empty() || cli.source_repository.is_some() || cli.source_commit.is_some() {
+        return render(Err(invalid_argument("--source").into()), 0);
+    }
+    let Some(client) = cli
+        .client
+        .as_deref()
+        .filter(|c| crate::mcp::valid_client(c))
+    else {
+        return render(Err(Refusal::new("invalid_request").into()), 0);
+    };
+    crate::mcp::install_panic_recorder();
+    let config = crate::mcp::Config {
+        store: cli.store.clone(),
+        now: cli.now,
+        client: client.to_string(),
+    };
+    let mut out = std::io::stdout().lock();
+    match crate::mcp::serve(&config, std::io::BufReader::new(stdin), &mut out) {
+        Ok(_) => Outcome {
+            stdout: String::new(),
+            stderr: String::new(),
+            code: 0,
+        },
+        Err(_) => render(Err(Failure::Internal(crate::internal!("mcp_io_failed"))), 0),
+    }
 }

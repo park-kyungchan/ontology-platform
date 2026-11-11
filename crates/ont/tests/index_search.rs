@@ -1161,3 +1161,127 @@ fn index_request_parse() {
     assert!(IndexRequest::parse(br#"{"sources":"a"}"#).is_err());
     assert!(IndexRequest::parse(br#"{"x":1}"#).is_err());
 }
+
+#[test]
+fn a_missing_glob_root_with_complete_listing_fails_and_retracts_nothing() {
+    let t = Temp::new();
+    for n in ["a", "b", "c"] {
+        t.task(n, "# x\n");
+    }
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    // The root goes away (an unmounted or renamed directory).
+    std::fs::rename(t.tasks(), t.0.join("moved")).unwrap();
+    let (code, ans) = index(&t, 11, &[]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_missing");
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    let (_, ans) = search(&t, 11, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "b", "c"]);
+    // The root comes back: the run succeeds again.
+    std::fs::rename(t.0.join("moved"), t.tasks()).unwrap();
+    assert_eq!(index(&t, 12, &[]).0, 0);
+}
+
+#[test]
+fn a_missing_literal_parent_fails_a_complete_listing_file_digest_source() {
+    let t = Temp::new();
+    let dir = t.0.join("mounted");
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("f.txt");
+    std::fs::write(&f, "x").unwrap();
+    let mut s = schema(&t);
+    s["sources"]["files"] = json!({"kind":"file_digest","paths":[f.display().to_string()],
+        "complete_listing":true,"fresh_for_s":60});
+    s["object_types"]["digest"] = json!({"owner":{"source":"files"},"primary_key":{"from":"/path"},
+        "properties":{"sha256":{"type":"string","required":true,"from":"/sha256"}}});
+    s["grants"][0]["read"] = json!(["task", "note", "digest"]);
+    install(&t, &s);
+    let (code, ans) = index(&t, 1, &["--source", "files"]);
+    assert_eq!(
+        (code, appended(first_source(&ans))),
+        (0, [1, 0, 0, 0]),
+        "{ans}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (code, ans) = index(&t, 2, &["--source", "files"]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_missing");
+    let (_, ans) = search(&t, 2, &json!({"object_type":"digest"}));
+    assert_eq!(keys(&ans), [f.display().to_string()]);
+    // Without complete_listing a missing root is an empty listing.
+    let mut s2 = s.clone();
+    s2["version"] = json!(2);
+    s2["sources"]["files"]["complete_listing"] = json!(false);
+    let file = t.file("s2.json", &serde_json::to_vec(&s2).unwrap());
+    let (code, _) = run(&["--store", &t.store(), "schema", "install", &file], b"");
+    assert_eq!(code, 0);
+    let (code, ans) = index(&t, 3, &["--source", "files"]);
+    assert_eq!(
+        (code, appended(first_source(&ans))),
+        (0, [0, 0, 0, 0]),
+        "{ans}"
+    );
+}
+
+#[test]
+fn a_run_lock_that_cannot_be_opened_is_a_refusal_not_an_internal_failure() {
+    let t = Temp::new();
+    t.task("a", "# a\n");
+    install(&t, &schema(&t));
+    // A symlink at the lock name is not followed (O_NOFOLLOW).
+    let target = t.0.join("elsewhere");
+    std::fs::write(&target, "keep").unwrap();
+    symlink(&target, format!("{}.index.lock", t.store())).unwrap();
+    let (code, ans) = index(&t, 10, &[]);
+    assert_eq!(
+        (code, ans["status"].as_str(), ans["code"].as_str()),
+        (2, Some("refused"), Some("index_lock_unavailable")),
+        "{ans}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+}
+
+#[test]
+fn a_literal_prefix_that_is_not_a_directory_fails_a_complete_listing_source() {
+    let t = Temp::new();
+    t.task("a", "# a\n");
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    // `tasks` becomes a regular file.
+    std::fs::rename(t.tasks(), t.0.join("moved")).unwrap();
+    std::fs::write(t.tasks(), "x").unwrap();
+    let (code, ans) = index(&t, 11, &[]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_not_directory");
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    let (_, ans) = search(&t, 11, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a"]);
+    // The same for the parent of a literal file_digest path.
+    let dir = t.0.join("mounted");
+    std::fs::write(&dir, "x").unwrap();
+    let f = dir.join("f.txt");
+    let mut s = schema(&t);
+    s["version"] = json!(2);
+    s["sources"]["files"] = json!({"kind":"file_digest","paths":[f.display().to_string()],
+        "complete_listing":true,"fresh_for_s":60});
+    s["object_types"]["digest"] = json!({"owner":{"source":"files"},"primary_key":{"from":"/path"},
+        "properties":{"sha256":{"type":"string","required":true,"from":"/sha256"}}});
+    s["grants"][0]["read"] = json!(["task", "note", "digest"]);
+    let file = t.file("s2.json", &serde_json::to_vec(&s).unwrap());
+    assert_eq!(
+        run(&["--store", &t.store(), "schema", "install", &file], b"").0,
+        0
+    );
+    let (code, ans) = index(&t, 12, &["--source", "files"]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_not_directory");
+    // Made a directory again: both sources run.
+    std::fs::remove_file(&dir).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&f, "x").unwrap();
+    std::fs::remove_file(t.tasks()).unwrap();
+    std::fs::rename(t.0.join("moved"), t.tasks()).unwrap();
+    let (code, ans) = index(&t, 13, &[]);
+    assert_eq!(code, 0, "{ans}");
+}
