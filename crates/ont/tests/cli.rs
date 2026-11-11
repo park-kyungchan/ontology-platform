@@ -1176,3 +1176,28 @@ fn commit_install_refuses_dangling_and_existing_store_links() {
         0
     );
 }
+
+#[test]
+fn scp_provenance_strips_certain_userinfo_and_falls_back_on_password_shape() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    for (remote, expected) in [
+        ("git@host:path", "host:path"),
+        ("user:pass@host:path", repo.as_str()),
+        ("user@host:a@b", "host:a@b"),
+        ("host:path", "host:path"),
+        ("user@[::1]:path", "[::1]:path"),
+    ] {
+        git(
+            std::path::Path::new(&repo),
+            &["config", "remote.origin.url", remote],
+        );
+        let got = ont::gitread::read_schema(
+            std::path::Path::new(&repo),
+            &commit,
+            "ontology/work.schema.json",
+        )
+        .unwrap();
+        assert_eq!(got.repository, expected, "remote={remote}");
+    }
+}

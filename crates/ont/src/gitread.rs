@@ -227,6 +227,21 @@ pub fn read_schema(checkout: &Path, commit: &str, path: &str) -> Result<GitSchem
 mod tests {
     use super::*;
     #[test]
+    fn ambiguous_credentials_are_not_returned_to_future_callers() {
+        for remote in [
+            "https://u:12/34@h/x",
+            "https://u:p/w@x/y@h/z",
+            "user:p@w/x@host:path",
+            "user:pass@host:path",
+        ] {
+            assert_eq!(
+                serde_json::to_value(strip_credentials(remote))
+                    .unwrap_or(serde_json::Value::Bool(false)),
+                serde_json::Value::Null
+            );
+        }
+    }
+    #[test]
     fn credentials_are_stripped_and_paths_checked() {
         for (remote, stripped) in [
             (

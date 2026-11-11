@@ -873,6 +873,7 @@ fn action_tool_descriptions_leave_discovery_room_and_keep_call_guidance() {
     }
     let validate = tool("ont_action_validate")["description"].as_str().unwrap();
     assert!(validate.contains("without writing") && validate.contains("result.valid"));
+    assert!(validate.contains("body that will be applied") && validate.contains("same request_id"));
     let apply = tool("ont_action_apply")["description"].as_str().unwrap();
     for term in [
         "edits_log",
