@@ -806,9 +806,8 @@ fn b2_concurrent_repair_no_duplicates() {
     let path = t.store_path();
     let handles: Vec<_> = (0..2)
         .map(|_| {
-            let log = log.clone();
             let path = path.clone();
-            std::thread::spawn(move || ont::action::sync_edits_file(&path, &log))
+            std::thread::spawn(move || ont::action::sync_edits_file(&path))
         })
         .collect();
     for h in handles {
@@ -1157,4 +1156,107 @@ fn b4_validate_with_request_id_equals_apply_and_actor_bounds() {
     let big = json!({"action_type":"record_note","parameters":{"title":"x".repeat(70_000),"task":task_id()}});
     let err = lib_apply(&ctx, big).unwrap_err();
     assert_eq!(refusal_code(&err), "invalid_request");
+}
+
+#[test]
+fn n2_retry_id_length_prefixed_distinguishes_colon_fields() {
+    let t = setup();
+    let mut ctx_a = Context::new(t.store_path(), NOW);
+    ctx_a.client = "a:b".into();
+    let r_a = lib_apply(
+        &ctx_a,
+        json!({"action_type":"record_note","parameters":{"title":"n2","task":task_id()},"request_id":"n2-rid"}),
+    )
+    .unwrap();
+    let mut ctx_b = Context::new(t.store_path(), NOW);
+    ctx_b.client = "a".into();
+    let r_b = lib_apply(
+        &ctx_b,
+        json!({"action_type":"record_note","parameters":{"title":"n2","task":task_id()},"agent":"b:","request_id":"n2-rid"}),
+    )
+    .unwrap();
+    assert_eq!(r_a["outcome"], "applied", "{r_a}");
+    assert_eq!(r_b["outcome"], "applied", "{r_b}");
+    assert_ne!(r_a["action_id"], r_b["action_id"]);
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    assert_eq!(store.action_log().unwrap().len(), 2);
+}
+
+#[test]
+fn n1_interleaved_apply_sync_never_rebuilt() {
+    let t = setup();
+    ont::action::__reset_pause_after_commit();
+    let path_a = t.store_path();
+    let handle = std::thread::spawn(move || {
+        ont::action::__set_pause_after_commit(true);
+        let ctx = Context::new(path_a, NOW);
+        lib_apply(
+            &ctx,
+            json!({"action_type":"record_note","parameters":{"title":"a-first","task":task_id()}}),
+        )
+    });
+    for _ in 0..5000 {
+        if ont::action::__pause_after_commit_entered() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(ont::action::__pause_after_commit_entered());
+    let ctx_b = Context::new(t.store_path(), NOW);
+    let r_b = lib_apply(
+        &ctx_b,
+        json!({"action_type":"record_note","parameters":{"title":"b-second","task":task_id()}}),
+    )
+    .unwrap();
+    ont::action::__release_pause_after_commit();
+    let r_a = handle.join().unwrap().unwrap();
+    ont::action::__reset_pause_after_commit();
+    for r in [&r_a, &r_b] {
+        assert_eq!(r["outcome"], "applied", "{r}");
+        assert!(
+            matches!(r["edits_log"].as_str(), Some("written" | "pending")),
+            "{r}"
+        );
+    }
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    drop(store);
+    assert_eq!(log.len(), 2);
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), log.len(), "{text}");
+    for ((seq, e), line) in log.iter().zip(text.lines()) {
+        assert_eq!(line, log_line(*seq, e));
+    }
+    assert!(
+        !std::fs::read_dir(&t.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .starts_with("edits.jsonl.diverged-")),
+        "no diverged aside expected"
+    );
+}
+
+#[test]
+fn n1b_two_diverged_repairs_leave_two_asides() {
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    for _ in 0..2 {
+        let mut bytes = std::fs::read(t.edits()).unwrap();
+        bytes.extend_from_slice(b"{\"seq\":999}\n");
+        std::fs::write(t.edits(), &bytes).unwrap();
+        let _ = ont::action::sync_edits_file(&t.store_path());
+    }
+    let asides: Vec<_> = std::fs::read_dir(&t.0)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("edits.jsonl.diverged-")
+        })
+        .collect();
+    assert_eq!(asides.len(), 2, "{asides:?}");
 }

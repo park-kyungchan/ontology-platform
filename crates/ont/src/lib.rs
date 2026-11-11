@@ -66,6 +66,7 @@ pub fn check_uid(real: u32, effective: u32) -> Result<(), &'static str> {
 /// or `ONT_AGENT`; `session` is given per request. All three are
 /// self-reported, as DESIGN section 7 states.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Context {
     pub store: PathBuf,
     pub now: u64,

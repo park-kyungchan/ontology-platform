@@ -33,6 +33,49 @@ fn take_fail_after_commit() -> bool {
     FAIL_AFTER_COMMIT_LOCAL.with(|c| c.replace(false))
 }
 
+thread_local! {
+    #[doc(hidden)]
+    pub static PAUSE_AFTER_COMMIT_LOCAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[doc(hidden)]
+pub static PAUSE_AFTER_COMMIT_ENTERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[doc(hidden)]
+pub static PAUSE_AFTER_COMMIT_RELEASE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Test seam: pause between the commit and the edits-log sync of an
+/// apply on this thread, until [`__release_pause_after_commit`] is called.
+#[doc(hidden)]
+pub fn __set_pause_after_commit(v: bool) {
+    PAUSE_AFTER_COMMIT_LOCAL.with(|c| c.set(v));
+}
+#[doc(hidden)]
+pub fn __pause_after_commit_entered() -> bool {
+    PAUSE_AFTER_COMMIT_ENTERED.load(std::sync::atomic::Ordering::SeqCst)
+}
+#[doc(hidden)]
+pub fn __release_pause_after_commit() {
+    PAUSE_AFTER_COMMIT_RELEASE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+#[doc(hidden)]
+pub fn __reset_pause_after_commit() {
+    PAUSE_AFTER_COMMIT_ENTERED.store(false, std::sync::atomic::Ordering::SeqCst);
+    PAUSE_AFTER_COMMIT_RELEASE.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+fn maybe_pause_after_commit() {
+    let armed = PAUSE_AFTER_COMMIT_LOCAL.with(|c| c.replace(false));
+    if !armed {
+        return;
+    }
+    PAUSE_AFTER_COMMIT_ENTERED.store(true, std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..10_000 {
+        if PAUSE_AFTER_COMMIT_RELEASE.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListActionsRequest {
@@ -206,9 +249,13 @@ fn valid_request_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 fn derive_request_action_id(client: &str, agent: Option<&str>, request_id: &str) -> String {
-    let h = sha256_hex(
-        format!("request_id:{}:{}:{request_id}", client, agent.unwrap_or("")).as_bytes(),
-    );
+    let agent = agent.unwrap_or("");
+    let mut buf = Vec::new();
+    for field in [client, agent, request_id] {
+        buf.extend_from_slice(format!("{}:", field.len()).as_bytes());
+        buf.extend_from_slice(field.as_bytes());
+    }
+    let h = sha256_hex(&buf);
     format!("act-rq-{}", &h[..32])
 }
 fn allocate_action_id(
@@ -1118,10 +1165,32 @@ fn fsync_dir(dir: &std::path::Path) {
         let _ = f.sync_all();
     }
 }
-pub fn sync_edits_file(
-    store_path: &std::path::Path,
-    log: &[(i64, ActionLogEntry)],
-) -> EditsLogStatus {
+fn rename_aside(path: &std::path::Path, dir: &std::path::Path) -> bool {
+    let stamp = utc_stamp_now();
+    let Ok(dir_file) = std::fs::File::open(dir) else {
+        return false;
+    };
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "edits.jsonl".to_string());
+    for n in 0.. {
+        let aside = format!("edits.jsonl.diverged-{stamp}-{n}");
+        match rustix::fs::renameat_with(
+            &dir_file,
+            &file_name,
+            &dir_file,
+            &aside,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => return true,
+            Err(e) if e == rustix::io::Errno::EXIST => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let path = edits_path(store_path);
     let dir = path
@@ -1141,6 +1210,16 @@ pub fn sync_edits_file(
     if rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).is_err() {
         return EditsLogStatus::Pending;
     }
+    // Read the committed table only after the lock is held, so the
+    // comparison never uses a snapshot taken before another writer's
+    // commit and sync.
+    let log = match ont_store::Store::open_schema_existing(store_path) {
+        Ok(mut s) => match s.action_log() {
+            Ok(l) => l,
+            Err(_) => return EditsLogStatus::Pending,
+        },
+        Err(_) => return EditsLogStatus::Pending,
+    };
     let expected: Vec<String> = log.iter().map(|(seq, e)| log_line(*seq, e)).collect();
     let pending = EditsLogStatus::Pending;
     if path.symlink_metadata().is_err() {
@@ -1216,8 +1295,7 @@ pub fn sync_edits_file(
         EditsLogStatus::Rebuilt
     };
     let Ok(complete_text) = std::str::from_utf8(&bytes[..complete_len]) else {
-        let aside = dir.join(format!("edits.jsonl.diverged-{}", utc_stamp_now()));
-        if std::fs::rename(&path, &aside).is_err() {
+        if !rename_aside(&path, &dir) {
             return pending;
         }
         return make_fresh(&expected);
@@ -1230,8 +1308,7 @@ pub fn sync_edits_file(
             .collect()
     };
     if lines.len() > expected.len() || lines.iter().enumerate().any(|(i, l)| *l != expected[i]) {
-        let aside = dir.join(format!("edits.jsonl.diverged-{}", utc_stamp_now()));
-        if std::fs::rename(&path, &aside).is_err() {
+        if !rename_aside(&path, &dir) {
             return pending;
         }
         return make_fresh(&expected);
@@ -1704,10 +1781,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     }
     match outcome {
         Some(ApplyOutcome::Already { action_id, edits }) => {
-            let edits_log = match store.action_log() {
-                Ok(log) => sync_edits_file(&ctx.store, &log),
-                Err(_) => EditsLogStatus::Pending,
-            };
+            let edits_log = sync_edits_file(&ctx.store);
             Ok(Answer::Enveloped {
                 pins: pins_for(&set, &schema.domain),
                 revision,
@@ -1718,12 +1792,10 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             if take_fail_after_commit() {
                 return Err(Failure::Internal(internal!("crash_after_commit")));
             }
+            maybe_pause_after_commit();
             // After the commit the action stands whatever happens to
             // the file: a failed append is reported, never an error.
-            let edits_log = match store.action_log() {
-                Ok(log) => sync_edits_file(&ctx.store, &log),
-                Err(_) => EditsLogStatus::Pending,
-            };
+            let edits_log = sync_edits_file(&ctx.store);
             Ok(Answer::Enveloped {
                 pins: pins_for(&set, &schema.domain),
                 revision,
@@ -1731,5 +1803,59 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             })
         }
         None => Err(Failure::Internal(internal!("authority_failure"))),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use ont_core::schema::{ActionRule, Schema};
+
+    #[test]
+    fn planner_refuses_source_owned() {
+        let fixture: &[u8] = include_bytes!("../tests/fixtures/action-work.json");
+        let checked = Schema::check_bytes(fixture, &BTreeSet::new()).unwrap();
+        let schema = checked.schema().clone();
+        let set = SchemaSet::new(vec![checked]).unwrap();
+        let at = ActionType {
+            description: None,
+            parameters: BTreeMap::new(),
+            submission_criteria: Vec::new(),
+            rules: vec![ActionRule {
+                create_object: Some("task".to_string()),
+                modify_object: None,
+                create_or_modify_object: None,
+                delete_object: None,
+                set_reference: None,
+                clear_reference: None,
+                set: BTreeMap::new(),
+            }],
+        };
+        let params = BTreeMap::new();
+        let mut planner = Planner {
+            schema: &schema,
+            set: &set,
+            snap: Snapshot::default(),
+            params: &params,
+            action_id: "act-test".to_string(),
+            edit_index: 0,
+            planned: Vec::new(),
+            overlay: BTreeMap::new(),
+        };
+        let err = planner.plan(&at).unwrap_err();
+        match err {
+            Failure::Refused(r) => assert_eq!(r.code, "action_edits_source_owned"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_id_length_prefixed() {
+        assert_ne!(
+            derive_request_action_id("a:b", None, "rid-1"),
+            derive_request_action_id("a", Some("b:"), "rid-1")
+        );
+        assert!(derive_request_action_id("a:b", None, "rid-1").starts_with("act-rq-"));
     }
 }
