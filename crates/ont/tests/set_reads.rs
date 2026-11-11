@@ -69,7 +69,14 @@ impl Temp {
         out.stdout
     }
     fn both(&self, request: Value) -> Value {
-        let text = self.cli("around", &request);
+        let text = self.cli(
+            if request["op"] == "aggregate" {
+                "aggregate"
+            } else {
+                "around"
+            },
+            &request,
+        );
         let config = ont::mcp::Config {
             store: self.store(),
             now: Some(10),
@@ -471,7 +478,7 @@ fn around_wrong_op_hints_only_name_existing_subcommands() {
         let answer: Value = serde_json::from_str(&t.cli(command, &request)).unwrap();
         assert_eq!(answer["code"], "invalid_request");
         let rule = answer["rule"].as_str().unwrap();
-        assert!(!rule.contains("aggregate"), "{answer}");
+        assert!(rule.contains("aggregate"), "{answer}");
         assert!(rule.contains("search"), "{answer}");
     }
 }
@@ -618,5 +625,34 @@ fn around_upgraded_reference_targets_are_excluded_and_keep_hidden_missing_parity
                 prior = Some(answers);
             }
         }
+    }
+}
+
+#[test]
+fn aggregate_cli_mcp_count_filter_refusals_and_hints() {
+    let t = Temp::new();
+    upgrade_schema(&t, |schema| schema["grants"][0]["derive"] = json!(["node"]));
+    t.put("a", &[], false);
+    t.put("hidden", &[], true);
+    let req = json!({"op":"aggregate","object_type":"node","where":{"eq":["name","a"]},"group_by":["name"],"metrics":["count"]});
+    let a = t.both(req.clone());
+    assert_eq!(
+        a["result"]["groups"],
+        json!([{"key":{"name":"a"},"count":1}])
+    );
+    assert_eq!(a["result"]["basis"]["scanned"], 1);
+    for metrics in [
+        json!([]),
+        json!(["count", "count"]),
+        json!([{"min":"name"}]),
+        json!([{"max":"name"}]),
+        json!([{"sum":"name"}]),
+    ] {
+        let mut r = req.clone();
+        r["metrics"] = metrics;
+        let a = t.both(r);
+        assert_eq!(a["code"], "unsupported_metric");
+        assert_eq!(a["field"], "/metrics");
+        assert!(a["rule"].as_str().unwrap().contains("count"));
     }
 }

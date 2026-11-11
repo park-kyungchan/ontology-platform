@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `action list|validate|apply` over a format 3 store.
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 3 store.
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -399,3 +399,21 @@ is charged before iteration or target lookups, also in reverse scans; hidden
 source heads consume no entries. Exceeding `MAX_REFERENCE_ENTRIES` refuses
 `result_too_large` with `max_reference_entries: 10000`. Loaded heads are shared
 without copying their reference arrays before this check.
+
+## Count aggregation
+
+`ont aggregate` and `ont_search` with `"op":"aggregate"` accept
+`{"object_type":"instruction_conflict","group_by":["status"],"metrics":["count"]}`
+and optional `where` using the search filter grammar. Only `metrics:["count"]`
+is supported; other metrics refuse `unsupported_metric` at `/metrics`.
+The answer has `kind: aggregation`, `groups:[{key:{status:"open"},count:0},...]`
+and basis `scanned`, `unresolved_excluded`, `stale`, `partial`,
+`oldest_observed_at` (null for no admitted heads), `qualified`, `stale_sources`.
+Read and derive grants are required on the type and on each readable object's
+scope, before loading payloads. Hidden objects affect no counts. Bounds are
+10,000 admitted heads, 2 distinct group properties, 1 metric, 1,000 buckets
+including enum zero buckets, and 1,024 compact JSON bytes per group value.
+Enum keys expand all declared combinations, including on an empty store when
+all keys are enums; mixed keys expand for observed non-enum combinations.
+Missing or historically incompatible used values are excluded and counted;
+any exclusion, stale or partial head makes `qualified` false.
