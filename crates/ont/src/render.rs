@@ -313,18 +313,44 @@ fn parse_open(line: &str) -> Option<RenderRequest> {
         args,
     })
 }
-fn blocks(text: &[u8]) -> Vec<Block> {
+/// A fence run after zero to three spaces, plus the remaining bytes.
+fn fence_run(line: &[u8]) -> Option<(u8, usize, &[u8])> {
+    let indent = line.iter().take_while(|b| **b == b' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let marker = *rest.first()?;
+    if !matches!(marker, b'`' | b'~') {
+        return None;
+    }
+    let length = rest.iter().take_while(|b| **b == marker).count();
+    (length >= 3).then_some((marker, length, &rest[length..]))
+}
+
+fn blocks(text: &[u8]) -> Result<Vec<Block>, usize> {
     let mut out = Vec::new();
     let mut offset = 0;
     let mut active: Option<usize> = None;
-    let mut fenced = false;
+    // Character, length and opening line; a shorter or different run is content.
+    let mut fence: Option<(u8, usize, usize)> = None;
     for (i, raw) in text.split_inclusive(|b| *b == b'\n').enumerate() {
         let line_bytes = raw.strip_suffix(b"\n").unwrap_or(raw);
         let line_bytes = line_bytes.strip_suffix(b"\r").unwrap_or(line_bytes);
         let line = std::str::from_utf8(line_bytes).unwrap_or("");
-        if line.starts_with("```") || line.starts_with("~~~") {
-            fenced = !fenced;
-        } else if !fenced && line.starts_with("<!-- ont:render") {
+        let run = fence_run(line_bytes);
+        if let Some((marker, length, _)) = fence {
+            if run.is_some_and(|(c, n, tail)| {
+                c == marker && n >= length && tail.iter().all(|b| *b == b' ')
+            }) {
+                fence = None;
+            }
+        } else if let Some((marker, length, tail)) = run
+            // CommonMark forbids backticks in a backtick fence's info string.
+            && (marker != b'`' || !tail.contains(&b'`'))
+        {
+            fence = Some((marker, length, i + 1));
+        } else if line.starts_with("<!-- ont:render") {
             out.push(Block {
                 start: offset,
                 end: None,
@@ -332,15 +358,17 @@ fn blocks(text: &[u8]) -> Vec<Block> {
                 request: parse_open(line),
             });
             active = Some(out.len() - 1);
-        } else if !fenced
-            && line == "<!-- /ont:render -->"
+        } else if line == "<!-- /ont:render -->"
             && let Some(at) = active.take()
         {
             out[at].end = Some(offset + line.len());
         }
         offset += raw.len();
     }
-    out
+    match fence {
+        Some((_, _, line)) => Err(line),
+        None => Ok(out),
+    }
 }
 fn target(path: &Path) -> Result<(Vec<u8>, fs::Metadata), Failure> {
     let mut file = OpenOptions::new()
@@ -367,7 +395,14 @@ fn plain(answer: Answer) -> Result<Value, Failure> {
 }
 pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
     let (text, _) = target(path)?;
-    let found = blocks(&text);
+    let found = blocks(&text).map_err(|line| {
+        Refusal::new("render_drift").with(
+            "drift",
+            json!([{
+                "view":"", "args":{}, "line":line, "refusal_code":"render_fence_unclosed"
+            }]),
+        )
+    })?;
     let mut drift = Vec::new();
     for block in &found {
         let mut refusal_code = None;
@@ -461,7 +496,8 @@ pub fn write_file(
 ) -> Result<Answer, Failure> {
     let _lock = writer_lock(path)?;
     let (text, meta) = target(path)?;
-    let found = blocks(&text);
+    let found = blocks(&text)
+        .map_err(|line| Refusal::new("render_fence_unclosed").with("line", json!(line)))?;
     let matches: Vec<_> = found
         .iter()
         .filter(|b| {

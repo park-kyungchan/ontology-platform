@@ -143,12 +143,19 @@ have finished. The `(stale)` suffix still follows the trusted clock.
 `<target file name>.ont-render.lock` sidecar beside the target, from before the
 read through rename. Other render writers wait at most 250 ms and then refuse
 with `render_busy`; an inaccessible or invalid sidecar is `render_lock_unavailable`.
-The sidecar is never removed, so rename does not change the lock inode. Other
-editors must respect the same lock to be serialized. Targets with multiple hard
+Render leaves `<target>.ont-render.lock` beside the target; inside a Git worktree
+it appears as an untracked file and may be deleted when no render runs.
+Render never removes the sidecar itself, so rename does not change the lock inode.
+Other editors must respect the same lock to be serialized. Targets with multiple hard
 links are refused as `render_target_invalid`.
 
-Fenced examples are prose: markers between lines starting with three backticks
-or three tildes and the next such line are ignored by both check and write.
+Fenced examples are prose: an opener has at most three leading spaces and a run
+of at least three backticks or tildes. A closer has at most three leading spaces,
+the same character repeated at least as many times, and only spaces after it;
+backtick opener info strings cannot contain backticks. Markers inside the fence
+are ignored by both check and write. An unclosed fence makes check exit 2 with
+`refusal_code: render_fence_unclosed` at the opening fence's line (empty view and
+arguments); write refuses `render_fence_unclosed` without changing the target.
 Cells escape backslashes before pipes, line breaks and comment delimiters.
 In a `render_drift` entry, `refusal_code` is present when rendering was refused
 (for example `store_busy`, `store_not_found`, `unavailable`); pure byte drift

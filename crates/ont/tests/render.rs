@@ -773,3 +773,93 @@ fn schema_argument_type_refusals_name_the_filter_pointer() {
     t.install(s);
     assert_eq!(t.render("named_items", json!({"title":"value"})).0, 0);
 }
+
+const FENCE_EXAMPLE_BLOCK: &str =
+    "<!-- ont:render items schema=board@0 -->\nexample\n<!-- /ont:render -->";
+
+#[test]
+fn unclosed_fence_above_real_block_refuses_check_and_write() {
+    let t = Temp::setup();
+    for opener in ["```", "   ~~~~text"] {
+        let text = format!("intro\n{opener}\n{FENCE_EXAMPLE_BLOCK}\n");
+        let file = t.file("unclosed.md", text.as_bytes());
+        let (code, answer) = t.run(&["render", "--check", &file], json!({}));
+        assert_eq!((code, answer["code"].as_str()), (2, Some("render_drift")));
+        assert_eq!(answer["drift"][0]["refusal_code"], "render_fence_unclosed");
+        assert_eq!(answer["drift"][0]["line"], 2);
+        let (code, answer) = t.write(&file, "items");
+        assert_eq!(
+            (code, answer["code"].as_str()),
+            (2, Some("render_fence_unclosed"))
+        );
+        assert_eq!(answer["line"], 2);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    }
+}
+
+#[test]
+fn four_backtick_fence_keeps_three_backtick_line_as_content() {
+    let t = Temp::setup();
+    let text = format!("````markdown\n```\n{FENCE_EXAMPLE_BLOCK}\n````\n");
+    let file = t.file("four.md", text.as_bytes());
+    assert_eq!(
+        t.run(&["render", "--check", &file], json!({})),
+        (0, json!({"status":"ok","blocks":0,"drift":[]}))
+    );
+    assert_eq!(t.write(&file, "items").1["code"], "render_block_missing");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn tilde_line_inside_backtick_fence_does_not_close_it() {
+    let t = Temp::setup();
+    let text = format!("```markdown\n~~~\n{FENCE_EXAMPLE_BLOCK}\n```\n");
+    let file = t.file("mixed.md", text.as_bytes());
+    assert_eq!(
+        t.run(&["render", "--check", &file], json!({})),
+        (0, json!({"status":"ok","blocks":0,"drift":[]}))
+    );
+    assert_eq!(t.write(&file, "items").1["code"], "render_block_missing");
+}
+
+#[test]
+fn indented_closing_fence_accepts_up_to_three_spaces() {
+    let t = Temp::setup();
+    for indent in ["", " ", "  ", "   "] {
+        let text = format!("   ~~~markdown\n{FENCE_EXAMPLE_BLOCK}\n{indent}~~~~  \n");
+        let file = t.file("indented.md", text.as_bytes());
+        assert_eq!(
+            t.run(&["render", "--check", &file], json!({})),
+            (0, json!({"status":"ok","blocks":0,"drift":[]}))
+        );
+        assert_eq!(t.write(&file, "items").1["code"], "render_block_missing");
+    }
+    // Four-space indentation and non-space suffixes cannot close the fence.
+    for closer in ["    ~~~", "~~~text", "~~~\t"] {
+        let file = t.file("not-closed.md", format!("~~~\n{closer}\n").as_bytes());
+        let (_, answer) = t.run(&["render", "--check", &file], json!({}));
+        assert_eq!(answer["drift"][0]["refusal_code"], "render_fence_unclosed");
+    }
+}
+
+#[test]
+fn real_block_after_correctly_closed_fence_is_checked_and_written() {
+    let t = Temp::setup();
+    let prefix = format!("````markdown\n```\n~~~\n{FENCE_EXAMPLE_BLOCK}\n   ````` \n");
+    let file = t.file(
+        "after-fence.md",
+        format!("{prefix}{FENCE_EXAMPLE_BLOCK}").as_bytes(),
+    );
+    let (code, answer) = t.run(&["render", "--check", &file], json!({}));
+    assert_eq!(code, 2);
+    assert_eq!(answer["drift"].as_array().unwrap().len(), 1);
+    assert_eq!(answer["drift"][0]["view"], "items");
+    assert_eq!(answer["drift"][0]["line"], 8);
+    assert!(answer["drift"][0].get("refusal_code").is_none());
+    assert_eq!(t.write(&file, "items").0, 0);
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with(&prefix));
+    assert_eq!(
+        t.run(&["render", "--check", &file], json!({})),
+        (0, json!({"status":"ok","blocks":1,"drift":[]}))
+    );
+}
