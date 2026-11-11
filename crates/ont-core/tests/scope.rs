@@ -251,6 +251,136 @@ fn authority(scope: Scope, derive: bool) -> Authority {
 }
 
 #[test]
+fn domain_scope_round_trips_and_refusals() {
+    let empty = Scope::domain(namespace(), "work", BTreeMap::new()).unwrap();
+    let literal = r#"{"namespace":{"instance":"synthetic://same-host","account":"A"},"domain":"work","keys":{}}"#;
+    assert_eq!(serde_json::to_string(&empty).unwrap(), literal);
+    assert_eq!(serde_json::from_str::<Scope>(literal).unwrap(), empty);
+    let keyed = Scope::domain(
+        namespace(),
+        "academy",
+        BTreeMap::from([
+            ("class_key".to_string(), "C1".to_string()),
+            ("student_key".to_string(), "001".to_string()),
+        ]),
+    )
+    .unwrap();
+    let keyed_literal = r#"{"namespace":{"instance":"synthetic://same-host","account":"A"},"domain":"academy","keys":{"class_key":"C1","student_key":"001"}}"#;
+    assert_eq!(serde_json::to_string(&keyed).unwrap(), keyed_literal);
+    assert_eq!(serde_json::from_str::<Scope>(keyed_literal).unwrap(), keyed);
+    let ns = r#""namespace":{"instance":"synthetic://same-host","account":"A"}"#;
+    for raw in [
+        format!(r#"{{{ns},"domain":"program","keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"program","program_key":"001","keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"work"}}"#),
+        format!(r#"{{{ns},"keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"","keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"work","keys":{{"":"x"}}}}"#),
+        format!(r#"{{{ns},"domain":"work","keys":{{"k":""}}}}"#),
+        format!(r#"{{{ns},"domain":"work","keys":{{}},"class_key":"C1"}}"#),
+    ] {
+        assert!(
+            serde_json::from_str::<Scope>(&raw).is_err(),
+            "accepted {raw}"
+        );
+    }
+    assert_eq!(
+        Scope::domain(namespace(), "program", BTreeMap::new()),
+        Err(Error::InvalidRequest)
+    );
+    assert_eq!(
+        Scope::domain(namespace(), "", BTreeMap::new()),
+        Err(Error::InvalidRequest)
+    );
+}
+
+#[test]
+fn education_and_program_scopes_with_keys_are_refused() {
+    let ns = r#""namespace":{"instance":"synthetic://same-host","account":"A"}"#;
+    for raw in [
+        format!(r#"{{{ns},"class_key":"C1","student_key":"001","keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"program","program_key":"001","keys":{{}}}}"#),
+    ] {
+        assert!(
+            serde_json::from_str::<Scope>(&raw).is_err(),
+            "accepted {raw}"
+        );
+    }
+}
+
+#[test]
+fn conformance_fixture_scopes_round_trip() {
+    let dir = format!("{}/../../conformance/fixtures", env!("CARGO_MANIFEST_DIR"));
+    let mut found = 0;
+    for name in [
+        "synthetic.json",
+        "synthetic-v2.json",
+        "synthetic-source.json",
+    ] {
+        let text = std::fs::read_to_string(format!("{dir}/{name}")).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut stack = vec![&root];
+        while let Some(item) = stack.pop() {
+            match item {
+                serde_json::Value::Object(map) => {
+                    if let Some(scope) = map.get("scope") {
+                        let parsed: Scope = serde_json::from_value(scope.clone()).unwrap();
+                        assert_eq!(serde_json::to_value(&parsed).unwrap(), *scope);
+                        found += 1;
+                    }
+                    stack.extend(map.values());
+                }
+                serde_json::Value::Array(items) => stack.extend(items.iter()),
+                _ => {}
+            }
+        }
+    }
+    assert!(found >= 12, "found {found} fixture scopes");
+}
+
+#[test]
+fn domain_grant_matching_named_omitted_and_wrong_domain() {
+    let candidate = Scope::domain(
+        namespace(),
+        "academy",
+        BTreeMap::from([
+            ("class_key".to_string(), "C1".to_string()),
+            ("student_key".to_string(), "001".to_string()),
+        ]),
+    )
+    .unwrap();
+    let named = Scope::domain(
+        namespace(),
+        "academy",
+        BTreeMap::from([("class_key".to_string(), "C1".to_string())]),
+    )
+    .unwrap();
+    let omitted = Scope::domain(namespace(), "academy", BTreeMap::new()).unwrap();
+    let wrong_value = Scope::domain(
+        namespace(),
+        "academy",
+        BTreeMap::from([("class_key".to_string(), "C2".to_string())]),
+    )
+    .unwrap();
+    let wrong_domain = Scope::domain(namespace(), "work", BTreeMap::new()).unwrap();
+    for (grant, allowed) in [
+        (named, true),
+        (omitted, true),
+        (wrong_value, false),
+        (wrong_domain, false),
+    ] {
+        assert_eq!(grant.matches(&candidate), allowed);
+        let authority = authority(grant.clone(), true);
+        let session = authority.bind_trusted("owner").unwrap();
+        let admission = authority.admit(&session).unwrap();
+        let obj = object(candidate.clone(), "001");
+        let graph = Graph(vec![obj.clone()]);
+        let result = admission.query(&graph, Query::Get { id: obj.id.clone() }, 15);
+        assert_eq!(result.is_ok(), allowed, "grant {grant:?}");
+    }
+}
+
+#[test]
 fn grants_isolate_account_instance_domain_program_and_derive() {
     let scopes = vec![
         Scope::program(namespace(), "001").unwrap(),

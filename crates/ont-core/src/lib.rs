@@ -9,6 +9,7 @@ pub mod action;
 pub mod answer;
 pub mod program;
 pub mod report;
+pub mod schema;
 mod scope;
 pub use scope::Scope;
 
@@ -31,6 +32,7 @@ pub enum Error {
     TargetIdentity,
     FieldFenced,
     RetryForbidden,
+    SchemaViolation,
 }
 impl Error {
     pub fn code(self) -> &'static str {
@@ -52,6 +54,7 @@ impl Error {
             Self::TargetIdentity => "target_identity",
             Self::FieldFenced => "field_fenced",
             Self::RetryForbidden => "retry_forbidden",
+            Self::SchemaViolation => "schema_violation",
         }
     }
 }
@@ -118,6 +121,9 @@ pub enum Change {
     Initial,
     Correction,
     Backfill,
+    Update,
+    Refresh,
+    Retraction,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -156,7 +162,12 @@ impl Observation {
         }
         match (&self.change, &self.supersedes) {
             (Change::Initial, None) => Ok(()),
-            (Change::Correction | Change::Backfill, Some(s)) if !s.is_empty() => Ok(()),
+            (Change::Correction | Change::Backfill | Change::Update | Change::Refresh, Some(s))
+                if !s.is_empty() =>
+            {
+                Ok(())
+            }
+            (Change::Retraction, Some(s)) if !s.is_empty() && self.fields.is_empty() => Ok(()),
             _ => Err(Error::InvalidEvidence),
         }
     }
@@ -361,7 +372,7 @@ impl Admission<'_> {
             .get(self.principal)
             .is_some_and(|grants| {
                 grants.iter().any(|g| {
-                    g.scope == object.scope
+                    g.scope.matches(&object.scope)
                         && g.object_types.contains(&object.id.object_type)
                         && g.read
                         && (!derive || g.derive)

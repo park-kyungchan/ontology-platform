@@ -1,0 +1,38 @@
+{
+  "format": "ontology-schema/v1",
+  "domain": "work",
+  "version": 1,
+  "namespace": {
+    "instance": "vps://palantirkc",
+    "account": "root"
+  },
+  "scope_keys": [],
+  "value_types": {},
+  "sources": {
+    "src": {
+      "kind": "json_records",
+      "path": "x.json"
+    }
+  },
+  "object_types": {
+    "thing": {
+      "owner": "ontology",
+      "primary_key": {
+        "from": "$action_id"
+      },
+      "title": "name",
+      "properties": {
+        "name": {
+          "type": {
+            "value_type": "missing"
+          },
+          "required": true
+        }
+      }
+    }
+  },
+  "link_types": {},
+  "action_types": {},
+  "functions": {},
+  "grants": []
+}

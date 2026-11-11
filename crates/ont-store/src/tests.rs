@@ -189,14 +189,15 @@ fn seed_and_append_roll_back_domain_namespace_and_invalid_scope_failures() {
         };
         let mut foreign = good.scope.clone();
         match &mut foreign {
-            Scope::Education { namespace, .. } | Scope::Program { namespace, .. } => {
-                namespace.account = "foreign".into()
-            }
+            Scope::Education { namespace, .. }
+            | Scope::Program { namespace, .. }
+            | Scope::Domain { namespace, .. } => namespace.account = "foreign".into(),
         }
         let mut empty = good.scope.clone();
         match &mut empty {
             Scope::Education { class_key, .. } => class_key.clear(),
             Scope::Program { program_key, .. } => program_key.clear(),
+            Scope::Domain { domain, .. } => domain.clear(),
         }
         for bad_scope in [object(other, "bad").scope, foreign, empty] {
             let mut store = memory(mode);
@@ -217,6 +218,46 @@ fn seed_and_append_roll_back_domain_namespace_and_invalid_scope_failures() {
             );
             assert_eq!(read(&mut store, &good), Some(good.clone()));
         }
+    }
+}
+#[test]
+fn schema_only_change_kinds_refused_in_both_store_modes() {
+    fn counts(store: &Store) -> (i64, i64) {
+        let objects: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM objects", [], |r| r.get(0))
+            .unwrap();
+        let observations: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
+            .unwrap();
+        (objects, observations)
+    }
+    for mode in [StoreMode::Education, StoreMode::Program] {
+        let mut store = memory(mode);
+        let item = object(mode, "root");
+        store.seed(std::slice::from_ref(&item), &[]).unwrap();
+        let before = counts(&store);
+        for (change, revision) in [
+            (Change::Update, "r-update"),
+            (Change::Refresh, "r-refresh"),
+            (Change::Retraction, "r-retraction"),
+        ] {
+            let mut append = correction(&item, revision);
+            append.observation.change = change.clone();
+            assert!(
+                append.observation.validate().is_ok(),
+                "{change:?} must be valid by Observation::validate"
+            );
+            assert_eq!(
+                store.append_batch(std::slice::from_ref(&append)),
+                Err(Error::InvalidEvidence),
+                "mode version {} change {change:?}",
+                mode.version()
+            );
+            assert_eq!(counts(&store), before);
+        }
+        assert_eq!(read(&mut store, &item), Some(item));
     }
 }
 #[test]
@@ -281,9 +322,9 @@ fn external_scope_corruption_refuses_objects_links_and_existing_scope_append() {
         };
         let mut foreign = root.scope.clone();
         match &mut foreign {
-            Scope::Education { namespace, .. } | Scope::Program { namespace, .. } => {
-                namespace.instance = "synthetic://foreign".into()
-            }
+            Scope::Education { namespace, .. }
+            | Scope::Program { namespace, .. }
+            | Scope::Domain { namespace, .. } => namespace.instance = "synthetic://foreign".into(),
         }
         let invalid = [
             serde_json::to_string(&object(other, "unused").scope).unwrap(),

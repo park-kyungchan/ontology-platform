@@ -202,6 +202,13 @@ fn append_in(transaction: &Transaction<'_>, mode: StoreMode, item: &Append) -> R
     } = item;
     id.validate()?;
     observation.validate()?;
+    // Schema-only change kinds are refused by the v1/v2 store paths.
+    if matches!(
+        observation.change,
+        Change::Update | Change::Refresh | Change::Retraction
+    ) {
+        return Err(Error::InvalidEvidence);
+    }
     if !mode.accepts(scope, &id.namespace) {
         return Err(Error::InvalidEvidence);
     }

@@ -1,0 +1,198 @@
+{
+  "format": "ontology-schema/v1",
+  "domain": "work",
+  "version": 1,
+  "namespace": {
+    "instance": "vps://palantirkc",
+    "account": "root"
+  },
+  "scope_keys": [],
+  "value_types": {
+    "hold_status": {
+      "base": "string",
+      "enum": [
+        "active",
+        "lifted"
+      ]
+    }
+  },
+  "sources": {
+    "task_states": {
+      "kind": "markdown_fields",
+      "glob": "/home/palantirkc/work/*/STATE.md",
+      "head_lines": 40,
+      "complete_listing": true,
+      "fresh_for_s": 3600
+    }
+  },
+  "object_types": {
+    "task": {
+      "description": "One task directory under /home/palantirkc/work with its STATE.md.",
+      "owner": {
+        "source": "task_states"
+      },
+      "primary_key": {
+        "from": "/dir"
+      },
+      "title": "directory",
+      "properties": {
+        "directory": {
+          "type": "string",
+          "required": true,
+          "from": "/dir_path"
+        },
+        "state_sha256": {
+          "type": "string",
+          "required": true,
+          "from": "/sha256"
+        },
+        "checkpoint_line": {
+          "type": "string",
+          "required": true,
+          "from": "/line1"
+        },
+        "owner_line": {
+          "type": "string",
+          "required": false,
+          "from": "/fields/Owner"
+        }
+      }
+    },
+    "hold": {
+      "description": "An effect that must not happen until a named condition is met.",
+      "owner": "ontology",
+      "primary_key": {
+        "from": "$action_id"
+      },
+      "title": "effect",
+      "properties": {
+        "task": {
+          "type": {
+            "ref": "task"
+          },
+          "required": true
+        },
+        "effect": {
+          "type": "string",
+          "required": true
+        },
+        "until": {
+          "type": "string",
+          "required": true
+        },
+        "status": {
+          "type": {
+            "value_type": "hold_status"
+          },
+          "required": true
+        }
+      }
+    }
+  },
+  "link_types": {
+    "hold_task": {
+      "from": "hold",
+      "via": "task",
+      "to": "task",
+      "cardinality": "many_to_one",
+      "names": {
+        "forward": "task",
+        "reverse": "holds"
+      }
+    }
+  },
+  "action_types": {
+    "set_hold": {
+      "description": "Record a hold on a task.",
+      "parameters": {
+        "task": {
+          "type": {
+            "ref": "task"
+          },
+          "required": true
+        },
+        "effect": {
+          "type": "string",
+          "required": true,
+          "max_bytes": 300
+        },
+        "until": {
+          "type": "string",
+          "required": true,
+          "max_bytes": 300
+        }
+      },
+      "submission_criteria": [
+        {
+          "code": "task_not_current",
+          "message": "The task is unknown, retracted or stale; run `ont index --source task_states`.",
+          "all": [
+            {
+              "exists": "$task"
+            },
+            {
+              "fresh": "$task"
+            }
+          ]
+        },
+        {
+          "code": "duplicate_active_hold",
+          "message": "This task already has an active hold on the same effect.",
+          "none": [
+            {
+              "linked": {
+                "from": "$task",
+                "link": "holds",
+                "where": {
+                  "all": [
+                    {
+                      "eq": [
+                        "status",
+                        "active"
+                      ]
+                    },
+                    {
+                      "eq": [
+                        "effect",
+                        "$effect"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "rules": [
+        {
+          "create_object": "hold",
+          "set": {
+            "task": "$task",
+            "effect": "$effect",
+            "until": "$until",
+            "status": "active"
+          }
+        }
+      ]
+    }
+  },
+  "functions": {},
+  "grants": [
+    {
+      "principal": "agent",
+      "scope": {},
+      "read": [
+        "task",
+        "hold"
+      ],
+      "derive": [
+        "task",
+        "hold"
+      ],
+      "actions": [
+        "set_hold"
+      ]
+    }
+  ]
+}
