@@ -12,7 +12,7 @@ use ont_core::{
     Change, Coverage, Id, Knowledge, Lineage, Object, Observation, Query, Response, Scope,
 };
 use ont_store::Append;
-use ont_store::schema_mode::{ActionLogEntry, SchemaHead};
+use ont_store::schema_mode::{ActionLogEntry, HeadAccess, SchemaHead};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -480,6 +480,8 @@ fn validate_parameters(
 #[derive(Default, Clone)]
 struct Snapshot {
     heads: BTreeMap<String, SchemaHead>,
+    // Only the documented creation-occupancy exception may inspect this set.
+    unreadable_occupied: BTreeSet<String>,
 }
 impl Snapshot {
     fn key(id: &Id) -> String {
@@ -527,29 +529,36 @@ fn reference_head<'a>(
     now: u64,
 ) -> Result<&'a SchemaHead, Failure> {
     let head = snap.head(id);
-    let object = head.map(|h| Object {
-        id: h.id.clone(),
-        scope: h.scope.clone(),
-        head: h.head.observation.revision.clone(),
-        observations: vec![h.head.observation.clone()],
-    });
+    if let Some(h) = head
+        && !admit_scope(principal, &h.id, &h.scope, now)?
+    {
+        return Err(Refusal::new("rule_reference_unavailable").into());
+    }
+    head.filter(|h| !h.retracted)
+        .ok_or_else(|| Refusal::new("rule_reference_unavailable").into())
+}
+// Native Get admission needs only identity and scope. The empty observation
+// list prevents fields/revisions from being read merely to authorize a load.
+fn admit_scope(principal: &Principal, id: &Id, scope: &Scope, now: u64) -> Result<bool, Failure> {
+    let object = Object {
+        id: id.clone(),
+        scope: scope.clone(),
+        head: String::new(),
+        observations: vec![],
+    };
     let admission = principal
         .authority()
         .admit(principal.session())
         .map_err(|_| internal!("authority_failure"))?;
     match admission.query(
-        &crate::get::OneObject(object),
+        &crate::get::OneObject(Some(object)),
         Query::Get { id: id.clone() },
         now,
     ) {
-        Ok(Response::Ok { .. }) => {}
-        Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => {
-            return Err(Refusal::new("rule_reference_unavailable").into());
-        }
-        Err(_) => return Err(internal!("authority_failure").into()),
+        Ok(Response::Ok { .. }) => Ok(true),
+        Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => Ok(false),
+        Err(_) => Err(internal!("authority_failure").into()),
     }
-    head.filter(|h| !h.retracted)
-        .ok_or_else(|| Refusal::new("rule_reference_unavailable").into())
 }
 // Check rule reference preconditions before expected revisions, so an unreadable,
 // missing source is never misreported as an ordinary revision race. Availability
@@ -1175,6 +1184,7 @@ impl<'a> Planner<'a> {
         }
         Ok(self.action_id.clone())
     }
+    // Snapshot contains only admitted live heads; hidden parameters equal missing.
     fn scope_for_create(&self, at: &ActionType, object_type: &str) -> Scope {
         let mut keys = BTreeMap::new();
         if !self.schema.scope_keys.is_empty() {
@@ -1287,6 +1297,11 @@ impl<'a> Planner<'a> {
             } else if let Some(t) = &rule.create_or_modify_object {
                 // If a live target exists, modify; else create.
                 if let Some(id) = self.ref_target_typed(at, t)
+                    && self.snap.unreadable_occupied.contains(&Snapshot::key(&id))
+                {
+                    return Err(Refusal::new("rule_reference_unavailable").into());
+                }
+                if let Some(id) = self.ref_target_typed(at, t)
                     && self.state(&id).is_some_and(|(_, _, r, _)| !r)
                 {
                     edits.push(self.do_modify(at, t, &set_map, Some(id))?);
@@ -1349,6 +1364,13 @@ impl<'a> Planner<'a> {
             namespace: self.schema.namespace.clone(),
             native_key: key,
         };
+        if self.snap.unreadable_occupied.contains(&Snapshot::key(&id)) {
+            return Err(if or_modify {
+                Refusal::new("rule_reference_unavailable").into()
+            } else {
+                revision_conflict(&id)
+            });
+        }
         if let Some((fields, head, retracted, scope)) = self.state(&id)
             && !retracted
         {
@@ -1795,12 +1817,25 @@ fn insert_snap(snap: &mut Snapshot, h: SchemaHead, max: usize) -> Result<(), Fai
     }
     Ok(())
 }
-fn collect_linked_scans(set: &SchemaSet, c: &Condition, out: &mut BTreeSet<String>) {
+fn collect_linked_scans(
+    set: &SchemaSet,
+    snap: &Snapshot,
+    params: &BTreeMap<String, Value>,
+    c: &Condition,
+    out: &mut BTreeSet<String>,
+) {
     match c {
         Condition::Linked(link) => {
             for schema in set.pins().keys().filter_map(|d| set.schema(d)) {
                 for lt in schema.link_types.values() {
-                    if lt.names.reverse == link.link {
+                    if lt.names.reverse == link.link
+                        && link
+                            .from
+                            .strip_prefix('$')
+                            .and_then(|p| params.get(p))
+                            .and_then(id_from_value)
+                            .is_some_and(|id| snap.live(&id).is_some())
+                    {
                         out.insert(lt.from.clone());
                     }
                 }
@@ -1808,57 +1843,128 @@ fn collect_linked_scans(set: &SchemaSet, c: &Condition, out: &mut BTreeSet<Strin
             if let Some(g) = &link.condition {
                 for cs in [&g.all, &g.any, &g.none].into_iter().flatten() {
                     for x in cs {
-                        collect_linked_scans(set, x, out);
+                        collect_linked_scans(set, snap, params, x, out);
                     }
                 }
             }
         }
         Condition::All(cs) | Condition::Any(cs) | Condition::NoneOf(cs) => {
             for x in cs {
-                collect_linked_scans(set, x, out);
+                collect_linked_scans(set, snap, params, x, out);
             }
         }
         _ => {}
     }
 }
 trait SnapshotSource {
-    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure>;
+    fn fetch_access(&mut self, id: &Id) -> Result<Option<HeadAccess>, Failure>;
+    fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure>;
     fn fetch_scan(
         &mut self,
         ty: &str,
         limit: usize,
         after: Option<&Id>,
-    ) -> Result<Vec<SchemaHead>, Failure>;
+    ) -> Result<Vec<HeadAccess>, Failure>;
 }
 impl SnapshotSource for ont_store::Store {
-    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
-        self.head(id).map_err(store_err)
+    fn fetch_access(&mut self, id: &Id) -> Result<Option<HeadAccess>, Failure> {
+        self.head_access(id).map_err(store_err)
+    }
+    fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
+        self.head_after_access(access).map_err(store_err)
     }
     fn fetch_scan(
         &mut self,
         ty: &str,
         limit: usize,
         after: Option<&Id>,
-    ) -> Result<Vec<SchemaHead>, Failure> {
-        self.scan_heads(ty, limit, after).map_err(store_err)
+    ) -> Result<Vec<HeadAccess>, Failure> {
+        self.scan_head_access(ty, limit, after).map_err(store_err)
     }
 }
 impl SnapshotSource for ont_store::schema_mode::SchemaWrite<'_> {
-    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
-        self.head(id).map_err(store_err)
+    fn fetch_access(&mut self, id: &Id) -> Result<Option<HeadAccess>, Failure> {
+        self.head_access(id).map_err(store_err)
+    }
+    fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
+        self.head_after_access(access).map_err(store_err)
     }
     fn fetch_scan(
         &mut self,
         ty: &str,
         limit: usize,
         after: Option<&Id>,
-    ) -> Result<Vec<SchemaHead>, Failure> {
-        self.scan_heads_after(ty, limit, after).map_err(store_err)
+    ) -> Result<Vec<HeadAccess>, Failure> {
+        self.scan_head_access(ty, limit, after).map_err(store_err)
     }
+}
+// All payload fetches pass here after metadata-only native admission. Filtered
+// heads never enter the snapshot or its bound. Occupancy retains no payload.
+fn load_access(
+    snap: &mut Snapshot,
+    access: HeadAccess,
+    principal: &Principal,
+    now: u64,
+    max: usize,
+    source: &mut dyn SnapshotSource,
+) -> Result<(), Failure> {
+    let key = Snapshot::key(&access.id);
+    if access.retracted {
+        return Ok(());
+    }
+    if !admit_scope(principal, &access.id, &access.scope, now)? {
+        return Ok(());
+    }
+    if !snap.heads.contains_key(&key)
+        && let Some(h) = source.fetch_head(&access)?
+    {
+        // Store rechecks admitted metadata before fetching this payload.
+        if !h.retracted && admit_scope(principal, &h.id, &h.scope, now)? {
+            insert_snap(snap, h, max)?;
+        }
+    }
+    Ok(())
+}
+fn load_named(
+    snap: &mut Snapshot,
+    id: &Id,
+    principal: &Principal,
+    now: u64,
+    max: usize,
+    source: &mut dyn SnapshotSource,
+) -> Result<(), Failure> {
+    if snap.head(id).is_none()
+        && let Some(access) = source.fetch_access(id)?
+    {
+        load_access(snap, access, principal, now, max, source)?;
+    }
+    Ok(())
+}
+// Only creation targets retain an unreadable occupancy bit. Ordinary named
+// reads and scans discard rejected metadata, so hidden scans retain no IDs.
+fn load_creation_target(
+    snap: &mut Snapshot,
+    id: &Id,
+    principal: &Principal,
+    now: u64,
+    max: usize,
+    source: &mut dyn SnapshotSource,
+) -> Result<(), Failure> {
+    if snap.head(id).is_none()
+        && let Some(access) = source.fetch_access(id)?
+    {
+        if !access.retracted && !admit_scope(principal, &access.id, &access.scope, now)? {
+            snap.unreadable_occupied.insert(Snapshot::key(id));
+        } else {
+            load_access(snap, access, principal, now, max, source)?;
+        }
+    }
+    Ok(())
 }
 fn load_snapshot(
     ctx: &Context,
     set: &SchemaSet,
+    principal: &Principal,
     at: &ActionType,
     params: &BTreeMap<String, Value>,
     expected: &Option<Vec<ExpectedHead>>,
@@ -1877,9 +1983,7 @@ fn load_snapshot(
         }
     }
     for id in &ids {
-        if let Some(h) = source.fetch_head(id)? {
-            insert_snap(&mut snap, h, max)?;
-        }
+        load_named(&mut snap, id, principal, ctx.now, max, source)?;
     }
     // One hop: objects referenced by the heads just loaded (linked
     // forward targets and reference fields).
@@ -1892,18 +1996,14 @@ fn load_snapshot(
         }
     }
     for id in &hop {
-        if snap.head(id).is_none()
-            && let Some(h) = source.fetch_head(id)?
-        {
-            insert_snap(&mut snap, h, max)?;
-        }
+        load_named(&mut snap, id, principal, ctx.now, max, source)?;
     }
     // Reverse `linked` conditions scan by type, paged until exhausted.
     let mut scan_types = BTreeSet::new();
     for crit in &at.submission_criteria {
         for cs in [&crit.all, &crit.any, &crit.none].into_iter().flatten() {
             for c in cs {
-                collect_linked_scans(set, c, &mut scan_types);
+                collect_linked_scans(set, &snap, params, c, &mut scan_types);
             }
         }
     }
@@ -1914,7 +2014,7 @@ fn load_snapshot(
             let full = heads.len() == page;
             after = heads.last().map(|h| h.id.clone());
             for h in heads {
-                insert_snap(&mut snap, h, max)?;
+                load_access(&mut snap, h, principal, ctx.now, max, source)?;
             }
             if !full {
                 break;
@@ -1931,6 +2031,18 @@ fn augment_planner(
 ) -> Result<(), Failure> {
     let mut targets: Vec<(String, String)> = Vec::new();
     for rule in &at.rules {
+        if let Some(t) = &rule.create_or_modify_object
+            && let Some(id) = planner.ref_target_typed(at, t)
+        {
+            load_creation_target(
+                &mut planner.snap,
+                &id,
+                planner.principal,
+                planner.now,
+                max,
+                source,
+            )?;
+        }
         for t in [
             rule.create_object.clone(),
             rule.create_or_modify_object.clone(),
@@ -1949,11 +2061,14 @@ fn augment_planner(
             namespace: planner.schema.namespace.clone(),
             native_key: key,
         };
-        if planner.snap.head(&id).is_none()
-            && let Some(h) = source.fetch_head(&id)?
-        {
-            insert_snap(&mut planner.snap, h, max)?;
-        }
+        load_creation_target(
+            &mut planner.snap,
+            &id,
+            planner.principal,
+            planner.now,
+            max,
+            source,
+        )?;
     }
     Ok(())
 }
@@ -2067,7 +2182,15 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     ));
     let actor = actor_json(ctx, &req.agent, &req.session);
-    let snap = load_snapshot(ctx, &set, &at, &params, &req.expected, &mut store)?;
+    let snap = load_snapshot(
+        ctx,
+        &set,
+        &principal,
+        &at,
+        &params,
+        &req.expected,
+        &mut store,
+    )?;
     let references = check_reference_inputs(&principal, &snap, &at, &params, ctx.now)?;
     let (criteria, basis_map, failed) =
         eval_criteria(&principal, &set, &snap, &at, &params, &actor, ctx.now)?;
@@ -2243,7 +2366,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                     return Err(Refusal::new("request_id_reused").into());
                 }
             }
-            let snap = load_snapshot(ctx, &tx_set, &tat, &tparams, &req.expected, tx)?;
+            let snap = load_snapshot(ctx, &tx_set, &tprincipal, &tat, &tparams, &req.expected, tx)?;
             let references = check_reference_inputs(&tprincipal, &snap, &tat, &tparams, ctx.now)?;
             let (criteria, basis_map, failed) = eval_criteria(&tprincipal, &tx_set, &snap, &tat, &tparams, &actor, ctx.now)?;
             if references.stale || criteria.iter().any(|c| c["precondition"] == "rule_value_stale") {
@@ -2333,6 +2456,80 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
 mod tests {
     use super::*;
     use ont_core::schema::{ActionRule, Schema};
+
+    #[test]
+    fn unreadable_named_heads_fetch_no_payload_and_start_no_scan() {
+        struct CountingSource {
+            access: Option<HeadAccess>,
+            payload_reads: usize,
+            scans: usize,
+        }
+        impl SnapshotSource for CountingSource {
+            fn fetch_access(&mut self, _: &Id) -> Result<Option<HeadAccess>, Failure> {
+                Ok(self.access.clone())
+            }
+            fn fetch_head(&mut self, _: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
+                self.payload_reads += 1;
+                panic!("unadmitted payload read")
+            }
+            fn fetch_scan(
+                &mut self,
+                _: &str,
+                _: usize,
+                _: Option<&Id>,
+            ) -> Result<Vec<HeadAccess>, Failure> {
+                self.scans += 1;
+                panic!("scan from unadmitted source")
+            }
+        }
+        let mut wire: Value =
+            serde_json::from_slice(include_bytes!("../tests/fixtures/action-work.json")).unwrap();
+        wire["scope_keys"] = json!(["tenant"]);
+        wire["grants"][0]["scope"] = json!({"tenant":"allowed"});
+        wire["object_types"]["task"]["owner"] = json!("ontology");
+        wire["object_types"]["task"]["primary_key"] = json!({"from":"$action_id"});
+        for prop in wire["object_types"]["task"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            prop.as_object_mut().unwrap().remove("from");
+        }
+        let checked =
+            Schema::check_bytes(&serde_json::to_vec(&wire).unwrap(), &BTreeSet::new()).unwrap();
+        let at = checked.schema().action_types["set_hold"].clone();
+        let set = SchemaSet::new(vec![checked]).unwrap();
+        let principal = Principal::bind(&set).unwrap();
+        let id = Id {
+            object_type: "task".into(),
+            namespace: set.schema("work").unwrap().namespace.clone(),
+            native_key: "unavailable".into(),
+        };
+        let params = BTreeMap::from([("task".into(), serde_json::to_value(&id).unwrap())]);
+        let ctx = Context::with_snapshot_bounds(PathBuf::new(), 1000, 1, 1);
+        for hidden in [false, true] {
+            let mut source = CountingSource {
+                access: hidden.then(|| HeadAccess {
+                    id: id.clone(),
+                    scope: Scope::domain(
+                        id.namespace.clone(),
+                        "work",
+                        BTreeMap::from([("tenant".into(), "blocked".into())]),
+                    )
+                    .unwrap(),
+                    retracted: false,
+                }),
+                payload_reads: 0,
+                scans: 0,
+            };
+            let snap =
+                load_snapshot(&ctx, &set, &principal, &at, &params, &None, &mut source).unwrap();
+            assert!(snap.heads.is_empty());
+            assert!(snap.unreadable_occupied.is_empty());
+            assert_eq!(source.payload_reads, 0);
+            assert_eq!(source.scans, 0);
+        }
+    }
 
     #[test]
     fn application_time_utc_boundaries() {

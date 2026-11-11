@@ -2116,3 +2116,233 @@ fn skipped_reverse_link_scans_still_count_toward_snapshot_bound() {
     );
     assert!(ont::action::apply_action(&large, &apply).is_ok());
 }
+
+// Each pair has the same request bytes. Only the synthetic store differs.
+#[test]
+fn snapshot_admission_parity_at_default_and_minimal_bounds_cli_and_mcp() {
+    for mcp in [false, true] {
+        for case in [
+            "exists",
+            "fresh",
+            "property",
+            "forward_source",
+            "forward_candidate",
+            "reverse_source",
+            "reverse_candidate",
+            "modify",
+            "delete",
+            "set",
+            "clear",
+            "expected",
+            "inherit",
+            "inherit_fallback",
+        ] {
+            for op in ["validate", "apply"] {
+                for bound in [100_000, 1] {
+                    let mut missing_line = None;
+                    for hidden in [false, true] {
+                        let t = Temp::new();
+                        let mut s = scoped_action_schema();
+                        let note = json!({"object_type":"note","namespace":task()["namespace"],"native_key":"target"});
+                        let mut parameters = json!({"note":note});
+                        let condition = match case {
+                            "exists" => Some(json!({"exists":"$note"})),
+                            "fresh" => Some(json!({"fresh":"$note"})),
+                            "property" => Some(json!({"eq":["title","source"]})),
+                            "forward_source" | "forward_candidate" => {
+                                Some(json!({"linked":{"from":"$note","link":"note_task"}}))
+                            }
+                            "reverse_source" | "reverse_candidate" => {
+                                Some(json!({"linked":{"from":"$task","link":"notes"}}))
+                            }
+                            _ => None,
+                        };
+                        let rule = match case {
+                            "modify" => json!({"modify_object":"note","set":{"title":"changed"}}),
+                            "delete" => json!({"delete_object":"note"}),
+                            "set" => {
+                                json!({"set_reference":{"object_type":"note","property":"task","value":"$task"}})
+                            }
+                            "clear" => {
+                                json!({"clear_reference":{"object_type":"note","property":"task"}})
+                            }
+                            "inherit" | "inherit_fallback" => {
+                                json!({"create_object":"tag","set":{"label":"created"}})
+                            }
+                            _ => Value::Null,
+                        };
+                        let mut defs = json!({"note":{"type":{"ref":"note"},"required":true}});
+                        if case.starts_with("reverse_") {
+                            parameters = json!({"task":task()});
+                            defs = json!({"task":{"type":{"ref":"task"},"required":true}});
+                        }
+                        if case == "set" || case == "inherit_fallback" {
+                            parameters["task"] = task();
+                            defs["task"] = json!({"type":{"ref":"task"},"required":true});
+                        }
+                        if case == "expected" {
+                            parameters = json!({});
+                            defs = json!({});
+                        }
+                        let criteria = condition.map(|c| json!([{"code":"unavailable","message":"Unavailable.","all":[c]}])).unwrap_or(json!([]));
+                        s["action_types"]["probe_admission"] = json!({"parameters":defs,"submission_criteria":criteria,"rules":if rule.is_null() { json!([]) } else { json!([rule]) }});
+                        s["grants"][0]["actions"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(json!("probe_admission"));
+                        t.install(s);
+                        // Hidden note always references an existing task: the review's
+                        // bound-1 counterexample, including property/delete/clear/expected.
+                        let task_readable =
+                            matches!(case, "reverse_candidate" | "set" | "inherit_fallback");
+                        let note_readable = case == "forward_candidate";
+                        let task_hidden = case == "forward_candidate" || case == "reverse_source";
+                        if task_readable || (!task_hidden || hidden) {
+                            put(
+                                &t,
+                                task(),
+                                &[("tenant", if task_readable { "allowed" } else { "blocked" })],
+                                json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+                                NOW + 10,
+                                false,
+                            );
+                        }
+                        if note_readable || hidden {
+                            put(
+                                &t,
+                                note.clone(),
+                                &[("tenant", if note_readable { "allowed" } else { "blocked" })],
+                                json!({"title":"source","task":task()}),
+                                NOW + 10,
+                                false,
+                            );
+                        }
+                        let mut req = json!({"action_type":"probe_admission","parameters":parameters,"request_id":"snapshot-admission"});
+                        if case == "expected" {
+                            req["expected"] = json!([{"id":note,"revision":"mismatch"}]);
+                        }
+                        let before_bytes = std::fs::read(t.store()).unwrap();
+                        let before_logs = t.logs();
+                        let before_edits = std::fs::read(t.0.join("edits.jsonl")).ok();
+                        let line = if bound == 100_000 {
+                            t.action_line(mcp, op, req, NOW)
+                        } else {
+                            ont::__with_snapshot_bounds(1, bound, || {
+                                t.action_line(mcp, op, req, NOW)
+                            })
+                        };
+                        let answer: Value = serde_json::from_str(&line).unwrap();
+                        assert_ne!(
+                            answer["code"], "snapshot_too_large",
+                            "{case} {op} {bound}: {line}"
+                        );
+                        match case {
+                            "property" => {
+                                assert_eq!(answer["code"], "criterion_not_evaluable", "{answer}")
+                            }
+                            "modify" | "delete" | "set" | "clear" | "expected" => {
+                                assert_eq!(answer["code"], "rule_reference_unavailable", "{answer}")
+                            }
+                            "inherit" | "inherit_fallback" if op == "validate" => {
+                                assert_eq!(answer["result"]["valid"], true, "{answer}")
+                            }
+                            "inherit" => assert_eq!(answer["code"], "schema_violation", "{answer}"),
+                            "inherit_fallback" => {
+                                assert_eq!(answer["result"]["outcome"], "applied", "{answer}")
+                            }
+                            _ if op == "validate" => {
+                                assert_eq!(answer["result"]["valid"], false, "{answer}")
+                            }
+                            _ => assert_eq!(answer["code"], "submission_criteria", "{answer}"),
+                        }
+                        if let Some(ref missing) = missing_line {
+                            assert_eq!(&line, missing, "{case} {op} {mcp} {bound}");
+                        } else {
+                            missing_line = Some(line);
+                        }
+                        // All these bounds are the smallest supported bound (1).
+                        // A refusal/invalid preview must preserve all retained bytes.
+                        if answer["status"] != "ok"
+                            || answer["result"]["valid"] == false
+                            || op == "validate"
+                        {
+                            assert_eq!(std::fs::read(t.store()).unwrap(), before_bytes, "{case}");
+                            assert_eq!(t.logs(), before_logs);
+                            assert_eq!(std::fs::read(t.0.join("edits.jsonl")).ok(), before_edits);
+                        }
+                        if case.starts_with("inherit") && op == "apply" && answer["status"] == "ok"
+                        {
+                            let id =
+                                serde_json::from_value(answer["result"]["edits"][0]["id"].clone())
+                                    .unwrap();
+                            let head = ont_store::Store::open_schema_existing(&t.store())
+                                .unwrap()
+                                .head(&id)
+                                .unwrap()
+                                .unwrap();
+                            let ont_core::Scope::Domain { keys, .. } = head.scope else {
+                                panic!("domain scope");
+                            };
+                            assert_eq!(keys.get("tenant").map(String::as_str), Some("allowed"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unreadable_creation_occupancy_exception_survives_minimal_bound_cli_and_mcp() {
+    for mcp in [false, true] {
+        for op in ["validate", "apply"] {
+            for create_only in [false, true] {
+                for hidden in [false, true] {
+                    let t = Temp::new();
+                    let mut s = scoped_action_schema();
+                    if create_only {
+                        s["action_types"]["upsert_widget"]["rules"][0] =
+                            json!({"create_object":"widget","set":{"name":"$title"}});
+                    }
+                    t.install(s);
+                    let widget = json!({"object_type":"widget","namespace":task()["namespace"],"native_key":"occupied"});
+                    if hidden {
+                        put(
+                            &t,
+                            widget,
+                            &[("tenant", "blocked")],
+                            json!({"name":"hidden"}),
+                            NOW + 10,
+                            false,
+                        );
+                    }
+                    let before = std::fs::read(t.store()).unwrap();
+                    let req = json!({"action_type":"upsert_widget","parameters":{"spec":{"key":"occupied"},"title":"created"},"request_id":"occupancy"});
+                    let line =
+                        ont::__with_snapshot_bounds(1, 1, || t.action_line(mcp, op, req, NOW));
+                    let answer: Value = serde_json::from_str(&line).unwrap();
+                    if hidden {
+                        assert_eq!(
+                            answer["code"],
+                            if create_only {
+                                "revision_conflict"
+                            } else {
+                                "rule_reference_unavailable"
+                            },
+                            "{answer}"
+                        );
+                        assert_eq!(std::fs::read(t.store()).unwrap(), before);
+                        assert!(t.logs().is_empty());
+                        assert!(!t.0.join("edits.jsonl").exists());
+                    } else if op == "validate" {
+                        assert_eq!(answer["result"]["valid"], true, "{answer}");
+                    } else {
+                        // No readable parameter supplies the required scope keys.
+                        assert_eq!(answer["code"], "schema_violation", "{answer}");
+                        assert_eq!(std::fs::read(t.store()).unwrap(), before);
+                    }
+                }
+            }
+        }
+    }
+}

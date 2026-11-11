@@ -82,16 +82,36 @@ pub struct Context {
     pub snapshot_page_size: usize,
     pub snapshot_max_heads: usize,
 }
+thread_local! {
+    static TEST_SNAPSHOT_BOUNDS: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+}
+/// Test seam for exercising the command and MCP dispatchers with small bounds.
+/// The calling thread's previous bounds are restored even during unwinding.
+#[doc(hidden)]
+pub fn __with_snapshot_bounds<T>(page: usize, max: usize, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(usize, usize)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SNAPSHOT_BOUNDS.with(|b| b.set(self.0));
+        }
+    }
+    let _restore =
+        Restore(TEST_SNAPSHOT_BOUNDS.with(|b| b.replace(Some((page.max(1), max.max(1))))));
+    f()
+}
 impl Context {
     pub fn new(store: PathBuf, now: u64) -> Self {
+        let (page, max) = TEST_SNAPSHOT_BOUNDS
+            .with(|b| b.get())
+            .unwrap_or((500, 100_000));
         Self {
             store,
             now,
             client: "cli".to_string(),
             agent: None,
             session: None,
-            snapshot_page_size: 500,
-            snapshot_max_heads: 100_000,
+            snapshot_page_size: page,
+            snapshot_max_heads: max,
         }
     }
     /// Test-only constructor: a small snapshot page size (and hard head
