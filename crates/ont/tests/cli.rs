@@ -1201,3 +1201,188 @@ fn scp_provenance_strips_certain_userinfo_and_falls_back_on_password_shape() {
         assert_eq!(got.repository, expected, "remote={remote}");
     }
 }
+
+#[test]
+fn store_open_refuses_linked_parents_and_adjacent_files() {
+    for existing in [false, true] {
+        for entry in [
+            "parent",
+            "-journal",
+            "-wal",
+            "-shm",
+            "edits.jsonl",
+            "edits.jsonl.lock",
+        ] {
+            for dangling in [false, true] {
+                let t = Temp::new();
+                let file = t.file("schema.json", EXAMPLE);
+                let real = t.0.join("real");
+                std::fs::create_dir(&real).unwrap();
+                let store = real.join("store.sqlite");
+                if existing {
+                    assert_eq!(
+                        run(
+                            &[
+                                "--store",
+                                store.to_str().unwrap(),
+                                "schema",
+                                "install",
+                                &file
+                            ],
+                            b""
+                        )
+                        .0,
+                        0
+                    );
+                }
+                let target = t.0.join("untouched");
+                if !dangling {
+                    std::fs::write(&target, b"must remain untouched").unwrap();
+                }
+                let (request_store, link) = if entry == "parent" {
+                    let link = t.0.join("alias");
+                    std::os::unix::fs::symlink(&real, &link).unwrap();
+                    (link.join("store.sqlite"), link)
+                } else {
+                    let link = if entry.starts_with('-') {
+                        real.join(format!("store.sqlite{entry}"))
+                    } else {
+                        real.join(entry)
+                    };
+                    std::os::unix::fs::symlink(&target, &link).unwrap();
+                    (store.clone(), link)
+                };
+                let before = std::fs::read(&store).ok();
+                for command in [vec!["schema", "install", file.as_str()], vec!["describe"]] {
+                    let mut args = vec!["--store", request_store.to_str().unwrap()];
+                    args.extend(command);
+                    let (code, answer) = run(&args, b"");
+                    assert_eq!(code, 2, "{entry} {existing} {answer}");
+                    assert_eq!(answer["code"], "store_path_is_symlink", "{answer}");
+                    assert_eq!(answer["field"], "--store");
+                    assert_eq!(std::fs::read(&store).ok(), before);
+                    assert_eq!(
+                        std::fs::read(&target).ok(),
+                        if dangling {
+                            None
+                        } else {
+                            Some(b"must remain untouched".to_vec())
+                        }
+                    );
+                }
+                // The library boundary must reject before SQLite touches a sidecar.
+                assert_eq!(
+                    Store::open_schema(&request_store).err().unwrap().code,
+                    "store_path_is_symlink"
+                );
+                assert_eq!(
+                    Store::open_schema_existing(&request_store)
+                        .err()
+                        .unwrap()
+                        .code,
+                    "store_path_is_symlink"
+                );
+                assert_eq!(
+                    Store::open_schema_existing_writable(&request_store)
+                        .err()
+                        .unwrap()
+                        .code,
+                    "store_path_is_symlink"
+                );
+                std::fs::remove_file(link).unwrap();
+                assert_eq!(
+                    run(
+                        &[
+                            "--store",
+                            store.to_str().unwrap(),
+                            "schema",
+                            "install",
+                            &file
+                        ],
+                        b""
+                    )
+                    .0,
+                    0
+                );
+                assert_eq!(
+                    run(&["--store", store.to_str().unwrap(), "describe"], b"").0,
+                    0
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn store_parent_guard_checks_two_levels_but_allows_host_alias_above_them() {
+    for existing in [false, true] {
+        for level in [1, 2, 3] {
+            let t = Temp::new();
+            let file = t.file("schema.json", EXAMPLE);
+            let real = t.0.join("real");
+            let directory = real.join("a/b");
+            std::fs::create_dir_all(&directory).unwrap();
+            let store = directory.join("store.sqlite");
+            if existing {
+                assert_eq!(
+                    run(
+                        &[
+                            "--store",
+                            store.to_str().unwrap(),
+                            "schema",
+                            "install",
+                            &file
+                        ],
+                        b""
+                    )
+                    .0,
+                    0
+                );
+            }
+            let alias = t.0.join("alias");
+            let (target, suffix) = match level {
+                1 => (directory.clone(), "store.sqlite"),
+                2 => (real.join("a"), "b/store.sqlite"),
+                _ => (real.clone(), "a/b/store.sqlite"),
+            };
+            std::os::unix::fs::symlink(target, &alias).unwrap();
+            let linked_store = alias.join(suffix);
+            let before = std::fs::read(&store).ok();
+            let (code, answer) = run(
+                &[
+                    "--store",
+                    linked_store.to_str().unwrap(),
+                    "schema",
+                    "install",
+                    &file,
+                ],
+                b"",
+            );
+            if level <= 2 {
+                assert_eq!(code, 2, "{answer}");
+                assert_eq!(answer["code"], "store_path_is_symlink");
+                assert_eq!(std::fs::read(&store).ok(), before);
+                for result in [
+                    Store::open_schema(&linked_store),
+                    Store::open_schema_existing(&linked_store),
+                    Store::open_schema_existing_writable(&linked_store),
+                ] {
+                    assert_eq!(result.err().unwrap().code, "store_path_is_symlink");
+                }
+            } else {
+                assert_eq!(code, 0, "{answer}");
+                assert_eq!(
+                    run(
+                        &["--store", linked_store.to_str().unwrap(), "describe"],
+                        b""
+                    )
+                    .0,
+                    0
+                );
+                assert!(Store::open_schema(&linked_store).is_ok());
+                assert!(Store::open_schema_existing(&linked_store).is_ok());
+                assert!(Store::open_schema_existing_writable(&linked_store).is_ok());
+            }
+        }
+    }
+}

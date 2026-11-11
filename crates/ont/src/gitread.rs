@@ -245,6 +245,10 @@ mod tests {
     fn credentials_are_stripped_and_paths_checked() {
         for (remote, stripped) in [
             (
+                "https://user:secret@example.com/a/b.git",
+                Some("https://example.com/a/b.git"),
+            ),
+            (
                 "https://example.com/a/b.git",
                 Some("https://example.com/a/b.git"),
             ),

@@ -197,17 +197,10 @@ pub fn install_commit(ctx: &Context, req: &CommitInstallRequest) -> Result<Answe
     )
 }
 
-// Both install forms reach this single creating open. The metadata check
-// provides a field refusal; SQLite NOFOLLOW at open_file closes the swap window.
+// Both install forms check before creating the file; the store boundary also
+// checks on every schema open. SQLite NOFOLLOW protects the final database open.
 fn open_install_store(ctx: &Context, bytes: &[u8]) -> Result<(Store, bool), Failure> {
-    if std::fs::symlink_metadata(&ctx.store).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(Refusal::input(
-            "store_path_is_symlink",
-            "--store",
-            "schema install requires a store path that is not a symbolic link",
-        )
-        .into());
-    }
+    ont_store::schema_mode::check_store_path(&ctx.store).map_err(crate::refusal::store_err)?;
     let store_exists = ctx.store.exists();
     if !store_exists {
         // Check first; a refused check must not create a store.

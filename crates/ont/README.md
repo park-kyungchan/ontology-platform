@@ -8,10 +8,15 @@ for `describe` and `action list`; commands with required fields report the first
 missing field. Reference search filters require a full Id, obtainable by searching
 the referenced type. Refusals may include a top-level `hint`; submission hints use
 fixed recovery text selected by failed criterion codes (unknown codes get a generic
-repair), without request values. File and commit installs refuse symbolic-link store paths
-with `store_path_is_symlink` and field `--store`; the creating SQLite open uses
-`SQLITE_OPEN_NOFOLLOW` against a swapped final path. Parent-directory symlinks are
-outside this guarantee. Default-store aliases retain
+repair), without request values. Store creation and existing-store opens refuse
+symbolic links at the store file, its containing directory, or that directory's
+parent (exactly two directory levels; aliases above them are allowed), SQLite sidecars
+(`-journal`, `-wal`, `-shm`), `edits.jsonl` or its lock with
+`store_path_is_symlink` and field `--store`. SQLite opens use
+`SQLITE_OPEN_NOFOLLOW` against a swapped final database path; the parent path is
+canonicalized after the guard so host aliases above the two checked directory
+levels can open normally. Parent and adjacent file checks are pre-open checks: concurrent replacement after inspection remains
+outside this guarantee; edit-log descriptors separately use `O_NOFOLLOW`. Default-store aliases retain
 `install_requires_commit`. Git provenance strips userinfo only when its host boundary is
 certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
 path as provenance instead; `strip_credentials` returns `None` for ambiguity.
@@ -27,7 +32,7 @@ Ordinary ports and local paths remain intact.
 - Attribution: the actor `{principal, client, agent, session}` reaches the log: `client` from `--client NAME` of the command (default `cli`), `agent` from the request field or the environment variable `ONT_AGENT`, `session` if given; all self-reported. The log row and the apply answer mark this with `"actor_trust": "self_reported"`: the actor is a claim, not authentication. On the library path `agent`, `session` and `client` are each 1 to 64 characters of `[A-Za-z0-9._:-]`, and the total size of `parameters` is bounded as on the command path (`invalid_request` otherwise).
 - `edits.jsonl` beside the store (0600, opened without following a symlink): one canonical JSON line per applied action after the commit, with `fsync`. After the commit the action stands whatever happens to the file: the answer is `"outcome":"applied"` with `"edits_log"` = `written`, `pending` (the append failed; the next write repairs it) or `rebuilt`. Every write takes an exclusive `flock` on `edits.jsonl.lock` beside the store around its read-compare-append, writes each line with its newline in one write, and truncates an incomplete trailing line before appending. The file is valid only if its lines equal the table's rows in order, by sequence and by content; a diverged file (extra or changed lines, invalid UTF-8, an unparseable complete line) is renamed to `edits.jsonl.diverged-<UTC yyyymmddThhmmssZ>-<n>` (`n` counting up from 0 until the name is free, never replacing an existing aside) and a fresh file is written from the table (the database wins, nothing is lost). The table is read only after the `flock` is held, so no caller passes a reading taken before the lock. An existing file that is not 0600 owned by the caller is not appended to (`edits_log: pending`, one warning on stderr).
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
-- Snapshot: apply and validate read only the heads the request needs (the parameter objects, the objects a rule edits, and a paged scan by type for a reverse `linked` condition); any scan pages until exhausted, and reaching the hard head bound refuses with `snapshot_too_large` and writes nothing.
+- Snapshot: apply and validate load parameter objects, expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Initial loading and one-hop traversal run before admission, and every loaded head counts against the hard snapshot bound; reaching it refuses with `snapshot_too_large` and writes nothing. Snapshot loading counts the reverse-link scans of every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
 
 ## Action values and parameter descriptions
 
@@ -45,9 +50,12 @@ current value inside its transaction and logs that application basis. A copied
 value needs a fresh, readable source: every grant listing the action must include
 the referenced type in `read` (`reference_read_forbidden` at the expression's
 schema pointer otherwise). At runtime the native read admission policy also
-checks the object's grant scope. Missing, retracted and inadmissible sources all
-refuse `rule_reference_unavailable` with the same detail-free answer. Availability
-of all referenced inputs is checked before staleness or expected revisions. A
+checks the object's grant scope. At the reference-admission boundary, missing,
+retracted and inadmissible sources refuse `rule_reference_unavailable` with the
+same detail-free answer, subject to the snapshot-loading and creation-scope limits
+below. Availability of all rule reference inputs is checked before staleness or
+expected revisions. Criterion `$parameter.property` admission and freshness
+checks run only when reached in evaluation order, after snapshot loading. A
 present object whose requested property has no value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
 `rule_value_stale`; `validate` returns `valid:false`, no edits and a failed
 `preconditions` entry with that code, while retaining the criteria results and
@@ -118,12 +126,37 @@ idempotency. Criteria use the existing `{"exists":"$label"}` form to test a
 scalar or array parameter's presence (empty strings and empty arrays are present;
 array elements are not tested for liveness). For a single reference, `exists`
 checks that the referenced object exists and is live. An absent optional reference
-therefore fails `exists`. Comparisons with an absent parameter remain unevaluable
-and refuse. "If present then equal" cannot be written: `all`, `any` and `none`
-evaluate every condition, so a presence branch cannot guard a comparison that
-would be unevaluable. Ordinary properties cannot be cleared by a `set` value:
+therefore fails `exists`. At their repaired admission/evaluation boundaries,
+bare-parameter `exists`/`fresh`, bare-property comparisons, `linked` source and
+candidate reads, modify/delete/`set_reference`/`clear_reference` target reads, and
+`expected` revision reads give byte-equal answers for a missing and an unreadable
+object. This equality applies only once snapshot loading reaches those boundaries;
+it does not cover pre-admission loading or creation-scope inheritance. At the
+target-read boundary, missing, retracted and unreadable modify, delete and
+reference targets refuse with the detail-free `rule_reference_unavailable` used
+by `$parameter.property`. `create_or_modify_object` is an exception:
+it creates when missing and refuses when unreadable, because creating a missing
+object must not overwrite an existing object the caller cannot read. Comparisons
+with an absent parameter remain unevaluable
+and refuse when evaluated. `all` evaluates operands in written order and stops
+at the first false operand, so a presence test can guard a later comparison:
+`{"none":[{"all":[{"exists":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}`
+permits an absent optional `supersedes` and refuses self-supersession. `any` and
+`none` keep evaluating every operand; a stale or unevaluable operand still fails
+the criterion even after an earlier operand determines its Boolean result.
+A requirement of freshness or read access must stand in its own criterion or
+before any operand a caller can make false, because `all` skips everything after
+its first false operand. Ordinary properties cannot be cleared by a `set` value:
 absent/null parameters mean skip, not clear, and no scalar clear rule exists.
 Reference properties can still use the existing explicit `clear_reference` rule.
+
+Before admission, snapshot loading still follows one reference hop from a named
+object and counts every loaded head against the snapshot bound. An unreadable
+object can therefore cause extra reads and, at a small bound,
+`snapshot_too_large` where a missing object returns `criterion_not_evaluable` or
+`rule_reference_unavailable`. `scope_for_create` still copies the scope of an
+unreadable parameter, which can change a creation's scope or refusal. These loading
+and creation-scope limits are known and not yet repaired.
 
 Object properties and action parameters accept an optional `description` string
 of at most 300 UTF-8 bytes, for example
@@ -132,8 +165,20 @@ of at most 300 UTF-8 bytes, for example
 descriptions. The existing MCP response and tool-list bounds still apply.
 
 ## How a criterion names a property
-In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an unevaluable condition anywhere under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
+In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an evaluated unevaluable condition under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
 - `get` and `search` on an Ontology-owned type return what actions wrote, with `basis` and history as for indexed types, and `describe` lists action types.
+
+Wire changes in this pull request at the repaired admission/evaluation boundaries
+(subject to the snapshot-loading and creation-scope limits above): a missing or
+retracted modify, delete, `set_reference` or `clear_reference` target now answers
+`rule_reference_unavailable` without `id` (previously `revision_conflict` with
+`id`); unreadable targets give the same refusal. Unavailable `expected` objects
+now give that same detail-free refusal before their revisions are compared.
+Bare-property comparisons on unreadable objects now give
+`criterion_not_evaluable`, just as missing objects do, without testing the hidden
+value. When an expected-revision mismatch coincides with a stale value, both
+validate and apply refuse `rule_value_stale`. Store-link refusals use the expanded
+`store_path_is_symlink` message and also apply to existing-store reads.
 
 ## Embedding
 A domain server uses the library without the command: `Context::new(store_path, now)` is the supported constructor (`Context` is `#[non_exhaustive]`; `with_snapshot_bounds` is the documented test constructor) (then set its fields: the store path, a trusted `now`, `client`, `agent`, `session`), then call the public functions `ont::action::list_actions`, `ont::action::validate_action`, `ont::action::apply_action`, `ont::get::get` and `ont::search::search` with their public request types (`ListActionsRequest`, `ValidateActionRequest`, `ApplyActionRequest`, `GetRequest`, `SearchRequest`). Install the server's own schema into its own store file first (for example with `ont_store::Store::install_schema`).
