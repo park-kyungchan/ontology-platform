@@ -187,7 +187,7 @@ fn request_id_colon_and_parameter_refusals_name_the_field_without_value_cli_and_
         diagnostic(&cli, "invalid_request", "/request_id");
         assert_eq!(
             cli["rule"],
-            "1 to 64 characters: letters, digits, '.', '_', '-'"
+            "1 to 64 ASCII characters: letters, digits, '.', '_', '-'"
         );
         let mcp = t.mcp(&format!("ont_action_{command}"), invalid.clone());
         // Existing MCP invalid_argument code is intentionally preserved.
@@ -330,6 +330,18 @@ fn tools_list_wire_answer_is_at_most_5000_bytes() {
     // Leave one byte for the trailing newline.
     assert!(answer.to_string().len() < 5000);
     assert_eq!(answer["result"]["tools"].as_array().unwrap().len(), 7);
+    let index = answer["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "ont_index")
+        .unwrap();
+    assert!(
+        index["description"]
+            .as_str()
+            .unwrap()
+            .contains("append what changed")
+    );
 }
 
 #[test]
@@ -379,4 +391,196 @@ fn unknown_lookup_codes_name_fields_and_do_not_echo_values_cli_and_mcp() {
         answer
     );
     assert!(!answer.to_string().contains("secret-value"));
+}
+
+#[test]
+fn source_commit_feedback_matches_ascii_hex_admission() {
+    let t = Temp::new();
+    let file = t.0.join("schema.json");
+    for commit in ["aB".repeat(20), "F".repeat(40), "0".repeat(40)] {
+        assert_eq!(
+            t.cli(
+                &[
+                    "schema",
+                    "install",
+                    file.to_str().unwrap(),
+                    "--source-commit",
+                    &commit
+                ],
+                json!({})
+            )
+            .0,
+            0
+        );
+    }
+    let (exit, answer) = t.cli(
+        &[
+            "schema",
+            "install",
+            file.to_str().unwrap(),
+            "--source-commit",
+            "not-a-commit",
+        ],
+        json!({}),
+    );
+    assert_eq!(exit, 2);
+    diagnostic(&answer, "invalid_argument", "--source-commit");
+    assert_eq!(
+        answer["rule"],
+        "40 ASCII hexadecimal characters (0-9, a-f, A-F)"
+    );
+    let help = ont::run(&["help".into()], &b""[..], 0, 0);
+    let help: Value = serde_json::from_str(&help.stdout).unwrap();
+    assert_eq!(
+        help["options"]["--source-commit"],
+        "40 ASCII hex (0-9, a-f, A-F)"
+    );
+    assert_eq!(help["options"]["--commit"], "40 lowercase hex");
+}
+
+#[test]
+fn help_returns_while_stdin_pipe_remains_open() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut commands = vec![
+        vec!["help".to_string()],
+        vec!["--help".into()],
+        vec!["-h".into()],
+    ];
+    let help = ont::run(&["help".into()], &b""[..], 0, 0);
+    let help: Value = serde_json::from_str(&help.stdout).unwrap();
+    for command in help["commands"].as_array().unwrap() {
+        let mut args: Vec<_> = command["command"]
+            .as_str()
+            .unwrap()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        args.push("--help".into());
+        commands.push(args);
+    }
+    for args in commands {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ont"))
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let writer = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                drop(writer);
+                reader.join().unwrap();
+                panic!("help read or waited on stdin: {args:?}");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(status.success(), "{args:?}");
+        // This writer is held until after the child has exited.
+        drop(writer);
+        let bytes = reader.join().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["status"],
+            "ok"
+        );
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(stderr.is_empty(), "{stderr}");
+    }
+}
+
+#[test]
+fn continuation_rule_describes_existing_signed_hex_pairs() {
+    let t = Temp::new();
+    // The existing decoder uses u8::from_str_radix, which accepts a leading +.
+    assert_eq!(
+        t.cli(
+            &["search"],
+            json!({"object_type":"item","continuation":"c1:+1"})
+        )
+        .0,
+        0
+    );
+    let (code, answer) = t.cli(
+        &["search"],
+        json!({"object_type":"item","continuation":"c1:+g"}),
+    );
+    assert_eq!(code, 2);
+    diagnostic(&answer, "invalid_continuation", "/continuation");
+    assert!(
+        answer["rule"]
+            .as_str()
+            .unwrap()
+            .contains("pair may start with '+'")
+    );
+}
+
+#[test]
+fn planned_field_origins_are_request_pointers_cli_and_mcp() {
+    for (mode, parameters, field) in [
+        ("key", json!({"spec":{"key":7}}), "/parameters/spec/key"),
+        (
+            "property",
+            json!({"payload":"too long"}),
+            "/parameters/payload",
+        ),
+        ("absent_target", json!({"payload":"text"}), "/parameters"),
+    ] {
+        let t = Temp::new();
+        let mut schema: Value =
+            serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+        schema["version"] = json!(2);
+        match mode {
+            "key" => {
+                schema["object_types"]["item"]["primary_key"]["from"] = json!("/key");
+                schema["action_types"]["create_item"] = json!({"parameters":{"spec":{"type":{"struct":{"key":"integer"}},"required":true}},"rules":[{"create_object":"item","set":{"title":"literal"}}]});
+            }
+            "property" => {
+                schema["object_types"]["item"]["properties"]["title"]["max_bytes"] = json!(1);
+                schema["action_types"]["create_item"] = json!({"parameters":{"payload":{"type":"string","required":true}},"rules":[{"create_object":"item","set":{"title":"$payload"}}]});
+            }
+            _ => {
+                schema["action_types"]["create_item"] = json!({"parameters":{"subject":{"type":{"ref":"item"},"required":false},"payload":{"type":"string","required":true}},"rules":[{"modify_object":"item","set":{"title":"$payload"}}]});
+            }
+        }
+        let path = t.0.join("origins.json");
+        std::fs::write(&path, schema.to_string()).unwrap();
+        let (code, answer) = t.cli(&["schema", "install", path.to_str().unwrap()], json!({}));
+        assert_eq!(code, 0, "{answer}");
+        let request =
+            json!({"action_type":"create_item","parameters":parameters,"request_id":"origin-1"});
+        for operation in ["validate", "apply"] {
+            let (code, answer) = t.cli(&["action", operation], request.clone());
+            assert_eq!(code, 2, "{answer}");
+            diagnostic(&answer, "invalid_parameter", field);
+            assert_eq!(
+                t.mcp(&format!("ont_action_{operation}"), request.clone()),
+                answer
+            );
+            assert!(request.pointer(answer["field"].as_str().unwrap()).is_some());
+            if mode != "absent_target" {
+                assert!(answer["rule"].as_str().unwrap().contains("schema rule"));
+            }
+        }
+        assert!(!t.0.join("edits.jsonl").exists());
+    }
 }

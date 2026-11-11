@@ -298,5 +298,6 @@ hides a real block from the parser.
 O17 renamed the composition crate and synthetic CLI from `ontd` to `ont-daemon`
 (Rust import `ont_daemon`). It remains the consumer of `ont-core`/`ont-store`
 used by `ont-program-pilot`, `ont-local-fake` and the synthetic integration tests.
-The operational command is `ont`. Historical references in the immutable
+The operational command is `ont`. Pinned contracts, recorded diagnostics and
+commands over archived source retain their historical names. References in the immutable
 `conformance/` evidence and the out-of-scope root README retain the earlier name.

@@ -183,7 +183,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Index),
             spec: json!({"name":"ont_index",
-         "description":"Index installed sources; returns counts per source; failed source gives isError. sources: names (default all). One run at a time (index_busy). Includes schema pins and authorization_revision.",
+         "description":"Index installed sources and append what changed; counts per source; failed source gives isError. sources: names (default all). One run at a time (index_busy). Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}),
         },
         Tool {
@@ -499,7 +499,7 @@ fn check_request_id(arguments: &Value, required: bool) -> Result<(), Failure> {
         _ => Err(Refusal::input(
             "invalid_argument",
             "/request_id",
-            "1 to 64 characters: letters, digits, '.', '_', '-'",
+            "1 to 64 ASCII characters: letters, digits, '.', '_', '-'",
         )
         .with("argument", json!("request_id"))
         .with(

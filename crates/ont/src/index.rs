@@ -50,7 +50,7 @@ impl IndexRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be index when supplied",
+                "must be index when non-null",
             ));
         }
         Ok(req)

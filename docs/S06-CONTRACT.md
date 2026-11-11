@@ -30,7 +30,7 @@ expiry equality remains fresh. Backfill may be older than its predecessor.
 ont-core defines domain principals and grants independently of host users or agent
 roles. The embedding application owns Authority construction, credential validation,
 clock and trusted session binding. `bind_trusted` is explicitly NOT authentication.
-S06 has no production credential adapter. The only CLI is `ont-daemon --synthetic`: a
+S06 has no production credential adapter. The only CLI is `ontd --synthetic`: a
 fixed synthetic principal/policy, compiled fixtures and fixed clock, no caller
 principal, grant, source path, role, UID, time or policy input. Unknown fields refuse.
 It demonstrates no real teacher entitlement, root ownership or live permission.
@@ -86,7 +86,7 @@ It validates the whole file digest plus audit hash and each row's source pointer
 No HTML/parser, native account, physical-field, live operation-policy or root-ownership
 proof is inherited. All imported observations stay partial and stale at the fixed
 November clock; empty/exhausted source selection is never promoted to completeness.
-The Academy-specific adapter lives in ont-daemon; generic core/store have no Academy names.
+The Academy-specific adapter lives in ontd; generic core/store have no Academy names.
 No source request, journal, lock, database, save, print, PDF or parent send occurs.
 
 ## Store and scope

@@ -92,7 +92,7 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        if arg.starts_with('-') {
+        if arg.starts_with("--") || arg == "-h" {
             if crate::usage::option(arg).is_none() {
                 // An unknown token is not copied: it may contain a secret value.
                 return Err(crate::usage::invalid(
@@ -510,7 +510,7 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
         match cli.client.as_deref() {
             None => "cli".to_string(),
             Some(c) if crate::mcp::valid_client(c) => c.to_string(),
-            Some(_) => return render(Err(Refusal::input("invalid_request", "--client", "1 to 32 characters: lowercase letter or digit first; then lowercase letters, digits, or hyphen").into()), now),
+            Some(_) => return render(Err(Refusal::input("invalid_request", "--client", "1 to 32 ASCII characters: lowercase letter or digit first; then lowercase letters, digits, or hyphen").into()), now),
         }
     } else {
         "cli".to_string()
@@ -543,7 +543,7 @@ fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
     let client = match cli.client.as_deref() {
         None => "",
         Some(client) if crate::mcp::valid_client(client) => client,
-        Some(_) => return render(Err(Refusal::input("invalid_request", "--client", "1 to 32 characters: lowercase letter or digit first; then lowercase letters, digits, or hyphen").into()), 0),
+        Some(_) => return render(Err(Refusal::input("invalid_request", "--client", "1 to 32 ASCII characters: lowercase letter or digit first; then lowercase letters, digits, or hyphen").into()), 0),
     };
     crate::mcp::install_panic_recorder();
     let config = crate::mcp::Config {
@@ -582,5 +582,25 @@ mod tests {
             assert!(parse_args(&args).is_ok(), "{name}");
         }
         assert!(parse_args(&["--unknown".into()]).is_err());
+    }
+    #[test]
+    fn schema_check_keeps_single_hyphen_positional_file() {
+        let args = ["schema", "check", "-schema.json"].map(str::to_string);
+        assert_eq!(
+            parse_args(&args)
+                .unwrap_or_else(|e| panic!("{e:?}"))
+                .command,
+            args
+        );
+    }
+    #[test]
+    fn schema_install_keeps_single_hyphen_positional_file() {
+        let args = ["schema", "install", "-schema.json"].map(str::to_string);
+        assert_eq!(
+            parse_args(&args)
+                .unwrap_or_else(|e| panic!("{e:?}"))
+                .command,
+            args
+        );
     }
 }

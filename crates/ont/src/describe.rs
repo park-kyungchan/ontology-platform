@@ -36,7 +36,7 @@ impl DescribeRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be describe when supplied",
+                "must be describe when non-null",
             ));
         }
         Ok(req)

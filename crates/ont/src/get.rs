@@ -26,7 +26,7 @@ impl GetRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be get when supplied",
+                "must be get when non-null",
             ));
         }
         Ok(req)

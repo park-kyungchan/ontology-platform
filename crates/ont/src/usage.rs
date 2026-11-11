@@ -62,7 +62,7 @@ const SPECS: &[Spec] = &[
         form: "describe",
         options: &[],
         stdin: true,
-        fields: "op?: describe; domain?: string; object_type?: string",
+        fields: "op?: describe|null; domain?: string|null; object_type?: string|null",
         example: "echo '{}' | ont describe",
     },
     Spec {
@@ -72,7 +72,7 @@ const SPECS: &[Spec] = &[
         form: "get",
         options: &[],
         stdin: true,
-        fields: "op?: get; id: {object_type:string,namespace:{instance:string,account:string},native_key:string}",
+        fields: "op?: get|null; id: {object_type:string,namespace:{instance:string,account:string},native_key:string}",
         example: "echo '{\"id\":{\"object_type\":\"task\",\"namespace\":{\"instance\":\"local\",\"account\":\"root\"},\"native_key\":\"demo\"}}' | ont get",
     },
     Spec {
@@ -102,7 +102,7 @@ const SPECS: &[Spec] = &[
         form: "search",
         options: &[],
         stdin: true,
-        fields: "op?: search; object_type: string; where?: filter; limit?: integer 1-1000; continuation?: string from previous result. Filter: eq|ne|lt|le|gt|ge|prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]",
+        fields: "op?: search|null; object_type: string; where?: filter|null; limit?: null or integer 1-1000; continuation?: null or string from previous result. Filter: eq|ne|lt|le|gt|ge|prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]",
         example: "echo '{\"object_type\":\"task\",\"limit\":10}' | ont search",
     },
     Spec {
@@ -119,7 +119,7 @@ const SPECS: &[Spec] = &[
             "--arg",
         ],
         stdin: true,
-        fields: "stdin only without options: op?: render; view: string from installed schema; args?: {name:string}",
+        fields: "stdin only without options: op?: render|null; view: string from installed schema; args?: {name:string}",
         example: "ont render --check BOARD.md --expect-blocks 2",
     },
     Spec {
@@ -129,7 +129,7 @@ const SPECS: &[Spec] = &[
         form: "action list",
         options: &["--client"],
         stdin: true,
-        fields: "op?: list_actions; domain?: string",
+        fields: "op?: list_actions|null; domain?: string|null",
         example: "echo '{}' | ont action list",
     },
     Spec {
@@ -139,7 +139,7 @@ const SPECS: &[Spec] = &[
         form: "action validate",
         options: &["--client"],
         stdin: true,
-        fields: "op?: validate_action; action_type: string; parameters: object (names/types from action list); agent?,session?: 1-64 of letters,digits,._:-; request_id?: 1-64 of letters,digits,._-; expected?: [{id,revision:string}]",
+        fields: "op?: validate_action|null; action_type: string; parameters: object (names/types from action list); agent?,session?: null or 1-64 of ASCII letters,digits,._:-; request_id?: null or 1-64 of ASCII letters,digits,._-; expected?: null or [{id,revision:string}]",
         example: "echo '{\"action_type\":\"create_tag\",\"parameters\":{\"label\":\"demo\"},\"request_id\":\"demo-1\"}' | ont action validate",
     },
     Spec {
@@ -149,7 +149,7 @@ const SPECS: &[Spec] = &[
         form: "action apply",
         options: &["--client"],
         stdin: true,
-        fields: "op?: apply_action; action_type: string; parameters: object (action list); agent?,session?: 1-64 of letters,digits,._:-; request_id?: 1-64 of letters,digits,._- (reuse unchanged on retry); expected?: [{id,revision:string}] from validate basis; id form as get",
+        fields: "op?: apply_action|null; action_type: string; parameters: object (action list); agent?,session?: null or 1-64 of ASCII letters,digits,._:-; request_id?: null or 1-64 of ASCII letters,digits,._- (reuse unchanged on retry); expected?: null or [{id,revision:string}] from validate basis; id form as get",
         example: "echo '{\"action_type\":\"create_tag\",\"parameters\":{\"label\":\"demo\"},\"request_id\":\"demo-1\"}' | ont action apply",
     },
     Spec {
@@ -168,16 +168,19 @@ pub(crate) const OPTIONS: &[(&str, &str)] = &[
     ("--now", "U64 (requires --store)"),
     (
         "--client",
-        "NAME: lowercase letter/digit then lowercase letters/digits/'-', 1-32 bytes",
+        "NAME: ASCII lowercase letter/digit then lowercase letters/digits/'-', 1-32 bytes",
     ),
     (
         "--source-repository",
-        "OWNER/REPO: nonempty parts of letters/digits/._-",
+        "OWNER/REPO: nonempty parts of ASCII letters/digits/._-",
     ),
-    ("--source-commit", "40 lowercase hex"),
+    ("--source-commit", "40 ASCII hex (0-9, a-f, A-F)"),
     ("--from", "CHECKOUT"),
     ("--commit", "40 lowercase hex"),
-    ("--path", "relative PATH without '..'"),
+    (
+        "--path",
+        "nonempty relative PATH without a parent (..) component",
+    ),
     ("--source", "NAME (repeatable)"),
     ("--write", "FILE"),
     ("--check", "FILE"),

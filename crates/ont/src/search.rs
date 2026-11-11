@@ -75,7 +75,7 @@ impl SearchRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be search when supplied",
+                "must be search when non-null",
             ));
         }
         Ok(req)
@@ -142,9 +142,12 @@ struct Checker<'a> {
 impl Checker<'_> {
     fn walk(&mut self, f: &Filter, depth: usize) -> Result<(), Failure> {
         if depth > MAX_DEPTH {
-            return Err(
-                Refusal::input("filter_too_large", "/where", "at most 8 nesting levels").into(),
-            );
+            return Err(Refusal::input(
+                "filter_too_large",
+                "/where",
+                "filter depth at most 8 (root depth 0)",
+            )
+            .into());
         }
         match f {
             Filter::All(v) | Filter::Any(v) | Filter::NoneOf(v) => {
@@ -378,7 +381,7 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         None => None,
         Some(token) => {
             let key = decode_continuation(token)
-                .ok_or_else(|| Failure::from(Refusal::input("invalid_continuation", "/continuation", "c1: followed by nonempty even-length hexadecimal encoding of UTF-8; use the previous result continuation")))?;
+                .ok_or_else(|| Failure::from(Refusal::input("invalid_continuation", "/continuation", "c1: followed by nonempty ASCII pairs of hexadecimal digits (a pair may start with '+'), decoding to UTF-8; use the previous result continuation")))?;
             Some(Id {
                 object_type: req.object_type.clone(),
                 namespace: schema.namespace.clone(),

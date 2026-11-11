@@ -29,7 +29,7 @@ impl RenderRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "must be render when supplied",
+                "must be render when non-null",
             ));
         }
         Ok(req)
@@ -270,7 +270,7 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
             return Err(Refusal::input(
                 "reference_argument_unrepresentable",
                 &crate::input::pointer("/args", name),
-                "nonempty letters, digits, or . _ : / -",
+                "nonempty ASCII letters, digits, or . _ : / -",
             )
             .with("argument", json!(name))
             .into());
@@ -278,7 +278,7 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
         if !view.args.contains(name) || !safe_value(value) {
             return Err(invalid(
                 name,
-                "declared view argument; nonempty letters, digits, or . _ : / -",
+                "declared view argument; nonempty ASCII letters, digits, or . _ : / -",
             )
             .into());
         }

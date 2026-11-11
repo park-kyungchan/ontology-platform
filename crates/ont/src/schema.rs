@@ -165,7 +165,7 @@ fn install_at_default(
         return Err(Refusal::input(
             "invalid_argument",
             "--source-commit",
-            "40 lowercase hexadecimal characters",
+            "40 ASCII hexadecimal characters (0-9, a-f, A-F)",
         )
         .with("argument", json!("--source-commit"))
         .into());
@@ -298,7 +298,7 @@ pub(crate) fn schema_input_refusal(
         "invalid_format" => "must be ontology-schema/v1",
         "invalid_version" => "positive unsigned version integer",
         "invalid_name" => {
-            "1 to 64 characters: lowercase letter first; then lowercase letters, digits or underscore"
+            "1 to 64 ASCII characters: lowercase letter first; then lowercase letters, digits or underscore"
         }
         "unknown_field" => "field must be declared by ontology-schema/v1",
         "missing_field" => "required schema field",

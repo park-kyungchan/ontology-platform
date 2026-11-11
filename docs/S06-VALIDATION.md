@@ -29,8 +29,8 @@ v1 pins and freezes the forward hardening files. Independent acceptance is pendi
   Bundled SQLite header reports 3.46.0, so the Python experiment is not evidence
   for the Rust binding's actual runtime behavior.
 
-Initial `cargo generate-lockfile` failed before dependency resolution because ont-daemon
-had no source target yet (`missing_target@crates/ont-daemon/Cargo.toml:1`). Source targets
+Initial `cargo generate-lockfile` failed before dependency resolution because ontd
+had no source target yet (`missing_target@crates/ontd/Cargo.toml:1`). Source targets
 were then added; native lock generation and fetch completed successfully. The
 system `pkg-config --modversion sqlite3` probe found no sqlite3.pc. Bundled SQLite
 was selected instead of installing a system package. Early observations and command
