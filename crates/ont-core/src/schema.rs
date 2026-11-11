@@ -2462,6 +2462,32 @@ fn check_condition(
         _ => None,
     };
     if let Some((kind, pair)) = pair {
+        if kind != "in" && pair.iter().any(|v| v.as_str() == Some("$now")) {
+            // With an explicit clock operand, unprefixed strings are literals.
+            // Legacy comparisons without $now keep their bare-property syntax.
+            for (i, operand) in pair.iter().enumerate() {
+                let ptr = format!("{pointer}/{kind}/{i}");
+                scan_params(schema, at, operand, &ptr, true, out);
+                let string_typed = match operand.as_str() {
+                    Some("$now") => true,
+                    Some(s) => match s.strip_prefix('$') {
+                        Some(p) => {
+                            let ty = match p.split_once('.') {
+                                Some((name, prop)) => parameter_property(schema, at, name, prop),
+                                None => at.parameters.get(p).map(|p| &p.ty),
+                            };
+                            ty.and_then(|ty| scalar_base(schema, ty)) == Some(ScalarType::String)
+                        }
+                        None => true,
+                    },
+                    None => false,
+                };
+                if !string_typed {
+                    out.push(Violation::new(codes::INVALID_CRITERION, ptr));
+                }
+            }
+            return;
+        }
         if let (Some(ctx), Value::String(first)) = (context, &pair[0])
             && !first.starts_with('$')
         {

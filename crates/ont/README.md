@@ -45,14 +45,29 @@ log's `submitted_at` and the observations' `observed_at`; no log or store format
 changes. Validation returns `"application_time":"set_at_application"` and does
 not fix that time. A retry with the same `request_id` returns the original edits
 and leaves the original value and time intact. `$now` requires a string or
-string-based value-type destination, is only a rule value (not a criterion),
-and reserves the parameter name `now`. Times beyond year 9999 refuse with
+string-based value-type destination, and reserves the parameter name `now`.
+Times beyond year 9999 refuse with
 `application_time_out_of_range`. For a patterned string value type, schema
 checking accepts the canonical UTC shape
 `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z` (also with `\d`,
 optional `^`/`$`), or `.*`. Other patterns refuse `invalid_rule` at the `$now`
 expression: arbitrary regex/time-language intersection is not supported.
 The actual applied value must still satisfy the value type's other constraints.
+
+Submission comparisons `eq`, `ne`, `lt`, `le`, `gt`, and `ge` also accept `$now`
+on either side, for example `{"le":["$observed_at","$now"]}`. The other operand
+must be a string parameter, a string `$parameter.property`, or a string literal
+(string-based value types are accepted, including patterned ones). In these
+comparisons unprefixed strings on either side are literals; name a referenced
+property explicitly with `$parameter.property`. Comparisons use the existing
+string ordering and the same full UTC text that a rule value `$now` stores.
+`validate` evaluates against its validation time and returns
+`"application_time":"set_at_application"`, including when the criterion fails;
+it does not promise the same result at a later apply. Apply evaluates against
+its application time, once inside the write transaction. An applied request's
+retry returns `already_applied` with its original edits without evaluating the
+criteria again. Both `--now` and the library's injected clock drive this value.
+`$now` remains unavailable in view filters and other criterion forms.
 
 A parameter declared `"required":false` accepts omission or JSON null. A rule
 value using that absent parameter leaves its destination unset on create and

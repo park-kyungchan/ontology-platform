@@ -602,6 +602,9 @@ impl Eval<'_> {
     ) -> Result<Option<Value>, Failure> {
         if let Value::String(s) = v {
             if let Some(p) = s.strip_prefix('$') {
+                if p == "now" {
+                    return Ok(Some(json!(application_time(self.now)?)));
+                }
                 if p.contains('.') {
                     return self.resolve_param_ref(p);
                 }
@@ -730,7 +733,7 @@ impl Eval<'_> {
     }
     fn compare_eq(&mut self, p: &[Value; 2], ctx: Option<&SchemaHead>) -> Result<bool, Failure> {
         let a = self
-            .resolve(&p[0], ctx, true)?
+            .resolve(&p[0], ctx, !p.iter().any(|v| v.as_str() == Some("$now")))?
             .ok_or_else(Self::not_evaluable)?;
         let b = self
             .resolve(&p[1], ctx, false)?
@@ -744,7 +747,7 @@ impl Eval<'_> {
         ok: impl Fn(std::cmp::Ordering) -> bool,
     ) -> Result<bool, Failure> {
         let a = self
-            .resolve(&p[0], ctx, true)?
+            .resolve(&p[0], ctx, !p.iter().any(|v| v.as_str() == Some("$now")))?
             .ok_or_else(Self::not_evaluable)?;
         let b = self
             .resolve(&p[1], ctx, false)?
@@ -1363,6 +1366,11 @@ fn uses_now(at: &ActionType) -> bool {
                 .as_ref()
                 .and_then(|r| r.value.as_ref())
                 .is_some_and(contains)
+    }) || at.submission_criteria.iter().any(|c| {
+        [&c.all, &c.any, &c.none]
+            .into_iter()
+            .flatten()
+            .any(|cs| serde_json::to_value(cs).as_ref().is_ok_and(contains))
     })
 }
 fn utc_stamp_now() -> String {
