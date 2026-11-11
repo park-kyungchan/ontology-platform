@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -59,7 +59,8 @@ fn substitute(value: &mut Value, args: &BTreeMap<String, String>) {
     }
 }
 fn escape(s: &str) -> String {
-    s.replace('|', "\\|")
+    s.replace('\\', "\\\\")
+        .replace('|', "\\|")
         .replace("\r\n", " ")
         .replace(['\r', '\n'], " ")
         .replace("<!--", "<\\!--")
@@ -142,35 +143,16 @@ fn table_row(cells: impl IntoIterator<Item = String>) -> String {
     )
 }
 
-pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
-    let mut guard = open_store(&ctx.store, false)?;
-    // A real SELECT establishes a SHARED lock in this store's DELETE journal
-    // mode. Hold it across schema lookup and all search pages, so no writer
-    // can commit a different state between pages.
-    guard
-        .snapshot(|snapshot| {
-            ont_core::Snapshot::get(
-                snapshot,
-                &ont_core::Id {
-                    object_type: "ont_render_snapshot".into(),
-                    namespace: ont_core::Namespace {
-                        instance: "render".into(),
-                        account: "render".into(),
-                    },
-                    native_key: "snapshot".into(),
-                },
-            )?;
-            Ok(render_locked(ctx, req))
-        })
-        .map_err(|e| {
-            if e == ont_core::Error::StoreFailure {
-                Failure::Internal(crate::internal!("store_failure"))
-            } else {
-                Refusal::new(e.code()).into()
-            }
-        })?
+thread_local! {
+    static BETWEEN_PAGES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
-fn render_locked(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
+/// Test seam: run once between search pages on this thread.
+#[doc(hidden)]
+pub fn __set_between_pages_hook(hook: impl FnOnce() + 'static) {
+    BETWEEN_PAGES.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
     let (schema, view) = set
@@ -241,6 +223,10 @@ fn render_locked(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> 
         request.continuation = result["continuation"].as_str().map(str::to_string);
         if request.continuation.is_none() {
             break;
+        }
+        let hook = BETWEEN_PAGES.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
         }
     }
     objects.sort_by(|a, b| {
@@ -331,11 +317,14 @@ fn blocks(text: &[u8]) -> Vec<Block> {
     let mut out = Vec::new();
     let mut offset = 0;
     let mut active: Option<usize> = None;
+    let mut fenced = false;
     for (i, raw) in text.split_inclusive(|b| *b == b'\n').enumerate() {
         let line_bytes = raw.strip_suffix(b"\n").unwrap_or(raw);
         let line_bytes = line_bytes.strip_suffix(b"\r").unwrap_or(line_bytes);
         let line = std::str::from_utf8(line_bytes).unwrap_or("");
-        if line.starts_with("<!-- ont:render") {
+        if line.starts_with("```") || line.starts_with("~~~") {
+            fenced = !fenced;
+        } else if !fenced && line.starts_with("<!-- ont:render") {
             out.push(Block {
                 start: offset,
                 end: None,
@@ -343,7 +332,8 @@ fn blocks(text: &[u8]) -> Vec<Block> {
                 request: parse_open(line),
             });
             active = Some(out.len() - 1);
-        } else if line == "<!-- /ont:render -->"
+        } else if !fenced
+            && line == "<!-- /ont:render -->"
             && let Some(at) = active.take()
         {
             out[at].end = Some(offset + line.len());
@@ -361,7 +351,7 @@ fn target(path: &Path) -> Result<(Vec<u8>, fs::Metadata), Failure> {
     let meta = file
         .metadata()
         .map_err(|_| Refusal::new("render_target_invalid"))?;
-    if !meta.is_file() {
+    if !meta.is_file() || meta.nlink() != 1 {
         return Err(Refusal::new("render_target_invalid").into());
     }
     let mut text = Vec::new();
@@ -380,13 +370,17 @@ pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
     let found = blocks(&text);
     let mut drift = Vec::new();
     for block in &found {
+        let mut refusal_code = None;
         let equal = if let (Some(end), Some(req)) = (block.end, &block.request) {
             match render(ctx, req) {
                 Ok(answer) => {
                     plain(answer)?["markdown"].as_str().map(str::as_bytes)
                         == Some(&text[block.start..end])
                 }
-                Err(Failure::Refused(_)) => false,
+                Err(Failure::Refused(r)) => {
+                    refusal_code = Some(r.code);
+                    false
+                }
                 Err(e) => return Err(e),
             }
         } else {
@@ -403,7 +397,11 @@ pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
                 .as_ref()
                 .map(|r| r.args.clone())
                 .unwrap_or_default();
-            drift.push(json!({"view":view,"args":args,"line":block.line}));
+            let mut entry = json!({"view":view,"args":args,"line":block.line});
+            if let Some(code) = refusal_code {
+                entry["refusal_code"] = json!(code);
+            }
+            drift.push(entry);
         }
     }
     if !drift.is_empty() {
@@ -416,12 +414,52 @@ pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
     ))
 }
 
+/// The persistent sidecar survives target rename, so waiting writers lock
+/// the same inode even after another writer publishes its replacement.
+fn writer_lock(path: &Path) -> Result<std::fs::File, Failure> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| Refusal::new("render_target_invalid"))?;
+    let mut lock_name = name.to_os_string();
+    lock_name.push(".ont-render.lock");
+    let lock_path = path.with_file_name(lock_name);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+        .open(lock_path)
+        .map_err(|_| Refusal::new("render_lock_unavailable"))?;
+    let meta = lock
+        .metadata()
+        .map_err(|_| Refusal::new("render_lock_unavailable"))?;
+    if !meta.is_file() || meta.nlink() != 1 {
+        return Err(Refusal::new("render_lock_unavailable").into());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        match rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(lock),
+            Err(rustix::io::Errno::WOULDBLOCK) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(Refusal::new("render_busy").into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return Err(Refusal::new("render_lock_unavailable").into()),
+        }
+    }
+}
+
 pub fn write_file(
     ctx: &Context,
     path: &Path,
     req: &RenderRequest,
     preimage_dir: &Path,
 ) -> Result<Answer, Failure> {
+    let _lock = writer_lock(path)?;
     let (text, meta) = target(path)?;
     let found = blocks(&text);
     let matches: Vec<_> = found

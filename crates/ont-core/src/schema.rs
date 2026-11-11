@@ -1109,7 +1109,11 @@ fn check_view_filter(
         }
     }
     let valid = |v: &Value| {
-        has_arg(v) || validate_value(schema, &def.ty, v) != Err(codes::WRONG_VALUE_TYPE)
+        if has_arg(v) {
+            base == Some(ScalarType::String) && v.is_string()
+        } else {
+            validate_value(schema, &def.ty, v) != Err(codes::WRONG_VALUE_TYPE)
+        }
     };
     if op == "in" {
         a[1].as_array().is_some_and(|a| a.iter().all(valid))

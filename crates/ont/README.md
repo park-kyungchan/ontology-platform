@@ -112,6 +112,34 @@ An argument-bearing opening line has the form
 More matching rows than the limit add a final table row containing
 `(+N more; limit L)` with the exact omitted count. No timestamp is generated.
 
+Rendering reads schema metadata and each search page in separate short read
+transactions; it holds no read transaction while opening another connection.
+A block is deterministic for an unchanged store and fixed `now`; it is not a
+snapshot across pages: concurrent actions or schema installs can change later
+pages, counts or values. For a coherent whole-block view, render after writers
+have finished. The `(stale)` suffix still follows the trusted clock.
+
+`--write` holds an exclusive advisory lock on the persistent
+`<target file name>.ont-render.lock` sidecar beside the target, from before the
+read through rename. Other render writers wait at most 250 ms and then refuse
+with `render_busy`; an inaccessible or invalid sidecar is `render_lock_unavailable`.
+The sidecar is never removed, so rename does not change the lock inode. Other
+editors must respect the same lock to be serialized. Targets with multiple hard
+links are refused as `render_target_invalid`.
+
+Fenced examples are prose: markers between lines starting with three backticks
+or three tildes and the next such line are ignored by both check and write.
+Cells escape backslashes before pipes, line breaks and comment delimiters.
+In a `render_drift` entry, `refusal_code` is present when rendering was refused
+(for example `store_busy`, `store_not_found`, `unavailable`); pure byte drift
+has no `refusal_code`. Argument placeholders are accepted only as complete
+string comparison values on string properties (including string-based value
+types), or individual elements of `in` on those properties; no coercion or
+placeholders inside arrays/structs are supported.
+Unresolved sort values compare as JSON null; nonscalar values compare by compact
+JSON text. In ascending boolean order, this places `false`, unresolved, `true`;
+other mixed comparisons follow JSON text order. Order ties use the key.
+
 ## binary install script
 
 `scripts/install-ont.sh install <commit>` prints and runs `git fetch origin` in the checkout before checking ancestry; `--dry-run` prints the fetch step without executing it. Run the script directly or with `bash`. The build disk floor is checked on its temporary build directory's file system. Before replacing `ont`, the script verifies the retained previous copy's sha256. After writing `installed.json` it keeps at most three previous copies. A state-write failure after replacement exits nonzero and prints manual recovery commands. `rollback` validates the previous binary's version before replacement. Test directory overrides require `ONT_INSTALL_TEST=1` and must resolve outside the real bin and state directories.

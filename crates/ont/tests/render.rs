@@ -509,7 +509,7 @@ fn sorted_arguments_write_only_matching_section_and_check_all_blocks() {
 }
 
 #[test]
-fn pagination_counts_all_matches_before_sort_and_limit() {
+fn pagination_counts_all_matches_and_concurrent_action_completes() {
     let t = Temp::new();
     let mut s = schema();
     s["views"]["items"]["limit"] = json!(2);
@@ -537,6 +537,27 @@ fn pagination_counts_all_matches_before_sort_and_limit() {
         .collect();
     store.append_schema(&entries, 15).unwrap();
     drop(store);
+    let store_path = t.0.join("store.sqlite");
+    ont::render::__set_between_pages_hook(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let action = std::thread::spawn(move || {
+            let args = vec![
+                "--store".into(),
+                store_path.display().to_string(),
+                "--now".into(),
+                "1000".into(),
+                "action".into(),
+                "apply".into(),
+            ];
+            let req = json!({"action_type":"modify_item","parameters":{"item":id("k0000"),"title":"concurrent"}});
+            tx.send(ont::run(&args, req.to_string().as_bytes(), 0, 0))
+                .unwrap();
+        });
+        let answer = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(answer.code, 0, "{} {}", answer.stdout, answer.stderr);
+        assert!(!answer.stdout.contains("store_busy"));
+        action.join().unwrap();
+    });
     let (code, ans) = t.render("items", json!({}));
     assert_eq!(code, 0, "{ans}");
     assert!(
@@ -576,4 +597,179 @@ fn schema_view_names_and_nested_unknown_keys_and_filter_types() {
             "{s}"
         );
     }
+}
+
+#[test]
+fn descending_order_reverses_key_scan_and_breaks_ties_by_key() {
+    let t = Temp::new();
+    let mut s = schema();
+    s["views"]["items"]["order"][0]["direction"] = json!("desc");
+    t.install(s);
+    append(&t, "a", fields("low", 1), Change::Initial, 2000);
+    append(&t, "z", fields("high", 9), Change::Initial, 2000);
+    append(&t, "y", fields("high", 9), Change::Initial, 2000);
+    let (_, answer) = t.render("items", json!({}));
+    assert_eq!(
+        answer["markdown"],
+        "<!-- ont:render items schema=board@1 -->\n| Key | Title | Rank |\n| --- | --- | --- |\n| y | high | 9 |\n| z | high | 9 |\n| a | low | 1 |\n<!-- /ont:render -->"
+    );
+}
+
+#[test]
+fn check_distinguishes_refusal_from_byte_drift() {
+    let t = Temp::setup();
+    let (_, rendered) = t.render("items", json!({}));
+    let good = rendered["markdown"].as_str().unwrap();
+    let text = format!(
+        "{}\n<!-- ont:render absent schema=board@1 -->\n<!-- /ont:render -->",
+        good.replace("schema=board@1", "schema=board@0")
+    );
+    let file = t.file("check.md", text.as_bytes());
+    let (code, answer) = t.run(&["render", "--check", &file], json!({}));
+    assert_eq!(code, 2);
+    assert_eq!(answer["code"], "render_drift");
+    assert_eq!(answer["drift"][0]["view"], "items");
+    assert!(answer["drift"][0].get("refusal_code").is_none());
+    assert_eq!(answer["drift"][1]["refusal_code"], "unavailable");
+    // A missing store is an operational refusal, with its own cause retained.
+    let empty = Temp::new();
+    let (_, answer) = empty.run(&["render", "--check", &file], json!({}));
+    assert_eq!(answer["drift"][0]["refusal_code"], "store_not_found");
+}
+
+#[test]
+fn fenced_markers_and_readme_examples_are_ignored() {
+    let t = Temp::setup();
+    for fence in ["```markdown", "~~~markdown"] {
+        let text = format!(
+            "{fence}\n<!-- ont:render items schema=board@0 -->\nexample\n<!-- /ont:render -->\n{}\n",
+            &fence[..3]
+        );
+        let file = t.file("fenced.md", text.as_bytes());
+        assert_eq!(
+            t.run(&["render", "--check", &file], json!({})),
+            (0, json!({"status":"ok","blocks":0,"drift":[]}))
+        );
+        assert_eq!(t.write(&file, "items").1["code"], "render_block_missing");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    }
+    let readme = t.file("README.md", include_bytes!("../README.md"));
+    assert_eq!(
+        t.run(&["render", "--check", &readme], json!({})),
+        (0, json!({"status":"ok","blocks":0,"drift":[]}))
+    );
+}
+
+#[test]
+fn writer_lock_wait_is_bounded_and_hardlinks_are_refused() {
+    let t = Temp::setup();
+    let original = b"<!-- ont:render items schema=board@0 -->\nold\n<!-- /ont:render -->";
+    let file = t.file("write.md", original);
+    let lock_path = format!("{file}.ont-render.lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let start = std::time::Instant::now();
+    let (code, answer) = t.write(&file, "items");
+    assert_eq!((code, answer["code"].as_str()), (2, Some("render_busy")));
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(std::fs::read(&file).unwrap(), original);
+    drop(lock);
+    assert_eq!(t.write(&file, "items").0, 0);
+    let linked = t.0.join("alias.md");
+    std::fs::hard_link(&file, &linked).unwrap();
+    let bytes = std::fs::read(&file).unwrap();
+    assert_eq!(t.write(&file, "items").1["code"], "render_target_invalid");
+    assert_eq!(
+        t.run(&["render", "--check", &file], json!({})).1["code"],
+        "render_target_invalid"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    assert_eq!(std::fs::read(linked).unwrap(), bytes);
+}
+
+#[test]
+fn cells_escape_backslashes_pipes_comments_and_crlf_and_headers() {
+    let t = Temp::new();
+    let mut s = schema();
+    s["views"]["items"]["columns"][1]["header"] = json!("<!--Title-->");
+    t.install(s);
+    append(
+        &t,
+        "a",
+        fields("a\\|b\r\n<!--x-->", 1),
+        Change::Initial,
+        2000,
+    );
+    let (code, answer) = t.render("items", json!({}));
+    assert_eq!(code, 0);
+    let markdown = answer["markdown"].as_str().unwrap();
+    assert!(markdown.contains(r"| Key | <\!--Title--\> | Rank |"));
+    assert!(
+        markdown.contains(r"| a | a\\\|b <\!--x--\> | 1 |"),
+        "{markdown}"
+    );
+    assert_eq!(markdown.lines().count(), 5);
+}
+
+#[test]
+fn conflicting_preimage_crlf_and_eof_without_newline() {
+    use sha2::{Digest, Sha256};
+    let t = Temp::setup();
+    let block = "<!-- ont:render items schema=board@0 -->\nold\n<!-- /ont:render -->";
+    let file = t.file("collision.md", block.as_bytes());
+    let hash = format!("{:x}", Sha256::digest(block.as_bytes()));
+    let preimage = t.file(&format!("collision.md.{}", &hash[..12]), b"other bytes");
+    std::fs::set_permissions(&preimage, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(t.write(&file, "items").1["code"], "render_preimage_failed");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), block);
+    assert_eq!(std::fs::read(&preimage).unwrap(), b"other bytes");
+    let eof = t.file("eof.md", block.as_bytes());
+    assert_eq!(t.write(&eof, "items").0, 0);
+    let (_, rendered) = t.render("items", json!({}));
+    assert_eq!(
+        std::fs::read_to_string(&eof).unwrap(),
+        rendered["markdown"].as_str().unwrap()
+    );
+    assert!(!std::fs::read(&eof).unwrap().ends_with(b"\n"));
+    assert_eq!(t.run(&["render", "--check", &eof], json!({})).0, 0);
+    let text = format!("before\r\n{}\r\nafter\r\n", block.replace('\n', "\r\n"));
+    let crlf = t.file("crlf.md", text.as_bytes());
+    assert_eq!(t.write(&crlf, "items").0, 0);
+    let after = std::fs::read(&crlf).unwrap();
+    assert!(after.starts_with(b"before\r\n"));
+    assert!(after.ends_with(b"\r\nafter\r\n"));
+    assert_eq!(t.run(&["render", "--check", &crlf], json!({})).0, 0);
+}
+
+#[test]
+fn schema_argument_type_refusals_name_the_filter_pointer() {
+    for property in ["rank", "flag", "ref", "tags", "meta"] {
+        for filter in [
+            json!({"eq":[property,"$title"]}),
+            json!({"in":[property,["$title"]]}),
+        ] {
+            let t = Temp::new();
+            let mut s = schema();
+            s["views"]["named_items"]["filter"] = filter;
+            let file = t.file("invalid.json", &serde_json::to_vec(&s).unwrap());
+            let (code, answer) = t.run(&["schema", "check", &file], json!({}));
+            assert_eq!(
+                (code, answer["code"].as_str()),
+                (2, Some("schema_violation"))
+            );
+            assert!(
+                answer["violations"].as_array().unwrap().contains(
+                    &json!({"code":"invalid_schema","pointer":"/views/named_items/filter"})
+                ),
+                "{answer}"
+            );
+        }
+    }
+    let t = Temp::new();
+    let mut s = schema();
+    s["value_types"] = json!({"label":{"base":"string"}});
+    s["object_types"]["item"]["properties"]["title"]["type"] = json!({"value_type":"label"});
+    s["views"]["named_items"]["filter"] = json!({"in":["title",["$title"]]});
+    t.install(s);
+    assert_eq!(t.render("named_items", json!({"title":"value"})).0, 0);
 }
