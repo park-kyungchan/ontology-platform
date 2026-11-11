@@ -317,7 +317,7 @@ service calls, runtime tests or Hindsight writes were performed.
 Host policy references: `/docker/hindsight/HINDSIGHT_OFFICIAL_PER_CALL.md`,
 `/docker/hindsight/AGENTS.md`, `/docker/hindsight/README.md`, the installed
 `/root/.hindsight/coding-agents/skill/SKILL.md`, and
-`/root/.agents/runtime-references/RUNTIME-LOADING.md`. These are local operational
+`/root/.agents/runtime-references/CLI-RUNTIMES.md`. These are local operational
 guidance and dated observations; the pinned upstream links above document the
 official APIs. The canonical skill used on this host is also available at
 `/root/.agents/skills/hindsight-coding-agent/SKILL.md`.

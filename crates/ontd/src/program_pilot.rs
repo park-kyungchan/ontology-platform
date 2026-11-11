@@ -478,11 +478,35 @@ fn git_sources<T: program_git::Transport, C: FnMut() -> u64>(
     transport: T,
     mut clock: C,
 ) -> Result<Graph> {
-    git_population(config, capture.population(), transport, &mut clock)
+    git_population(
+        config,
+        capture.population(),
+        &[],
+        &BTreeSet::new(),
+        transport,
+        &mut clock,
+    )
+}
+fn endpoint_measurement(
+    bindings: &[(v2::model::Identity, String, String)],
+    emitted: &BTreeSet<Id>,
+    github_id: u64,
+    full_name: &str,
+    commit: &str,
+) -> Option<Id> {
+    bindings
+        .iter()
+        .find(|(identity, captured, _)| {
+            identity.github_id == github_id && identity.full_name == full_name && captured == commit
+        })
+        .map(|(_, _, measurement_id)| v2::legacy_measurement_id(&namespace(false), measurement_id))
+        .filter(|id| emitted.contains(id))
 }
 fn git_population<T: program_git::Transport, C: FnMut() -> u64>(
     config: &OwnerConfig,
     source_population: &ont_core::program::PathPopulation,
+    bindings: &[(v2::model::Identity, String, String)],
+    emitted: &BTreeSet<Id>,
     transport: T,
     mut clock: C,
 ) -> Result<Graph> {
@@ -555,12 +579,24 @@ fn git_population<T: program_git::Transport, C: FnMut() -> u64>(
                     &population.basis,
                     program_git::EndpointBinding {
                         commit: r.before_commit.clone(),
-                        source_measurement: None,
+                        source_measurement: endpoint_measurement(
+                            bindings,
+                            emitted,
+                            r.github_id,
+                            &format!("{}/{}", r.owner, r.name),
+                            &r.before_commit,
+                        ),
                         observed_at: r.before_observed_at,
                     },
                     program_git::EndpointBinding {
                         commit: r.after_commit.clone(),
-                        source_measurement: None,
+                        source_measurement: endpoint_measurement(
+                            bindings,
+                            emitted,
+                            r.github_id,
+                            &format!("{}/{}", r.owner, r.name),
+                            &r.after_commit,
+                        ),
                         observed_at: r.after_observed_at,
                     },
                 )
@@ -877,9 +913,30 @@ fn execute_v2(
     if failed {
         return Err(err("pilot_clock_failure"));
     }
+    let bindings = capture.endpoint_bindings();
+    let snapshot_now = clock()?;
+    if snapshot_now < previous {
+        return Err(err("pilot_clock_failure"));
+    }
+    previous = snapshot_now;
+    let mut graph = snapshots_v2(&capture, window, snapshot_now)?;
+    let emitted: BTreeSet<Id> = graph
+        .objects
+        .iter()
+        .filter(|o| {
+            o.id.object_type == "measurement"
+                && o.observations.first().is_some_and(|observation| {
+                    observation.fields.get("source_qualified")
+                        == Some(&Knowledge::Value(Value::Bool(true)))
+                })
+        })
+        .map(|o| o.id.clone())
+        .collect();
     let git = git_population(
         config,
         capture.population(),
+        &bindings,
+        &emitted,
         program_git::GhTransport,
         || match clock() {
             Ok(t) if t >= previous => {
@@ -899,7 +956,6 @@ fn execute_v2(
     if now < previous {
         return Err(err("pilot_clock_failure"));
     }
-    let mut graph = snapshots_v2(&capture, window, now)?;
     graph.merge(git)?;
     let output = render_output_version(graph, policy, query, now, answer_record)?;
     retain(output.artifacts, &output.answer, input, config_bytes, now)?;

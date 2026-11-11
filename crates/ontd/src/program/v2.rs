@@ -342,6 +342,51 @@ impl Capture {
     pub fn population(&self) -> &PathPopulation {
         &self.population
     }
+    /// Eligible (repository identity, commit, measurement id) triples only;
+    /// no paths, artifacts or row bytes leave the capture through here.
+    pub(crate) fn endpoint_bindings(&self) -> Vec<(Identity, String, String)> {
+        // Latest capture end wins per (repository, commit); ties by measurement id.
+        let mut chosen: BTreeMap<(u64, String, String), (u64, String)> = BTreeMap::new();
+        for row in &self.rows {
+            if row.snapshot.capture_status == "failed"
+                || !row.snapshot.kpi_legacy_removal.source_qualified
+            {
+                continue;
+            }
+            for repo in &row.snapshot.repositories {
+                if !repo.source_qualified {
+                    continue;
+                }
+                if let Some(commit) = repo.commit_sha.get() {
+                    let key = (
+                        repo.identity.github_id,
+                        repo.identity.full_name.clone(),
+                        commit.clone(),
+                    );
+                    let candidate = (
+                        row.snapshot.capture.end,
+                        row.snapshot.measurement_id.clone(),
+                    );
+                    if chosen.get(&key).is_none_or(|old| candidate > *old) {
+                        chosen.insert(key, candidate);
+                    }
+                }
+            }
+        }
+        chosen
+            .into_iter()
+            .map(|((github_id, full_name, commit), (_, measurement_id))| {
+                (
+                    Identity {
+                        github_id,
+                        full_name,
+                    },
+                    commit,
+                    measurement_id,
+                )
+            })
+            .collect()
+    }
     pub fn artifacts(&self) -> BTreeMap<String, Vec<u8>> {
         let mut out = BTreeMap::from([(self.hash.clone(), self.envelope.clone())]);
         for b in self.evidence.values().flat_map(|m| m.values()) {
@@ -349,6 +394,20 @@ impl Capture {
         }
         out
     }
+}
+pub(crate) fn measurement_object_id(
+    namespace: &Namespace,
+    measurement_id: &str,
+    selector: &str,
+) -> Id {
+    Id {
+        object_type: "measurement".into(),
+        namespace: namespace.clone(),
+        native_key: format!("v2:{measurement_id}:{selector}"),
+    }
+}
+pub(crate) fn legacy_measurement_id(namespace: &Namespace, measurement_id: &str) -> Id {
+    measurement_object_id(namespace, measurement_id, SELECTORS[0])
 }
 fn artifact<'a>(a: &ArtifactRef, bytes: &'a BTreeMap<String, Vec<u8>>) -> Result<&'a [u8]> {
     let b = bytes.get(&a.path).ok_or(IntakeError::InvalidData)?;
@@ -1242,11 +1301,7 @@ impl Capture {
                     ),
                 )?;
                 disclosure_envelope(&mut graph, &mut o, selector, disclosed)?;
-                let id = Id {
-                    object_type: "measurement".into(),
-                    namespace: c.namespace.clone(),
-                    native_key: format!("v2:{}:{selector}", r.snapshot.measurement_id),
-                };
+                let id = measurement_object_id(&c.namespace, &r.snapshot.measurement_id, selector);
                 graph
                     .links
                     .push(edge(metric.clone(), "has_measurement", id.clone()));
