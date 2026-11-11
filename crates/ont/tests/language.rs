@@ -966,15 +966,7 @@ fn skipped_modify_and_reference_rules_still_require_live_targets() {
                         json!({"action_type":action,"parameters":supplied,"request_id":"supplied"}),
                         NOW,
                     );
-                    assert_eq!(
-                        baseline["code"],
-                        if action == "edit_note" {
-                            "rule_reference_unavailable"
-                        } else {
-                            "revision_conflict"
-                        },
-                        "{baseline}"
-                    );
+                    assert_eq!(baseline["code"], "rule_reference_unavailable", "{baseline}");
                     for mut absent in [json!({"note":target}), json!({"note":target,field:null})] {
                         // Both omission and null skip the value, after target resolution.
                         absent["note"] = target.clone();
@@ -1638,7 +1630,7 @@ fn criterion_and_modify_reads_hide_unreadable_heads_cli_and_mcp() {
                         continue;
                     }
                     let mut missing = None;
-                    for visibility in ["missing", "hidden", "readable"] {
+                    for visibility in ["missing", "hidden", "retracted", "readable"] {
                         let t = Temp::new();
                         let mut s = schema();
                         s["scope_keys"] = json!(["tenant"]);
@@ -1691,12 +1683,25 @@ fn criterion_and_modify_reads_hide_unreadable_heads_cli_and_mcp() {
                             if visibility == "missing" && !always_readable {
                                 continue;
                             }
-                            let tenant = if always_readable || visibility == "readable" {
+                            let tenant = if always_readable
+                                || visibility == "readable"
+                                || visibility == "retracted"
+                            {
                                 "allowed"
                             } else {
                                 "blocked"
                             };
-                            put(&t, id, &[("tenant", tenant)], fields, NOW + 10, false);
+                            put(
+                                &t,
+                                id.clone(),
+                                &[("tenant", tenant)],
+                                fields,
+                                NOW + 10,
+                                false,
+                            );
+                            if visibility == "retracted" && !always_readable {
+                                put(&t, id, &[("tenant", tenant)], json!({}), NOW + 11, true);
+                            }
                         }
                         let parameters = if action == "edit_note" {
                             json!({"note":note,"title":"changed"})
@@ -1709,7 +1714,7 @@ fn criterion_and_modify_reads_hide_unreadable_heads_cli_and_mcp() {
                             "missing" => {
                                 missing = Some(line);
                             }
-                            "hidden" => {
+                            "hidden" | "retracted" => {
                                 assert_eq!(
                                     Some(line),
                                     missing,
@@ -1731,4 +1736,383 @@ fn criterion_and_modify_reads_hide_unreadable_heads_cli_and_mcp() {
             }
         }
     }
+}
+
+fn scoped_action_schema() -> Value {
+    let mut s = schema();
+    s["scope_keys"] = json!(["tenant"]);
+    s["grants"][0]["scope"] = json!({"tenant":"allowed"});
+    s["object_types"]["task"]["owner"] = json!("ontology");
+    s["object_types"]["task"]["primary_key"] = json!({"from":"$action_id"});
+    for prop in s["object_types"]["task"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        prop.as_object_mut().unwrap().remove("from");
+    }
+    s
+}
+
+#[test]
+fn remaining_action_reads_admit_before_values_or_mutation_cli_and_mcp() {
+    for mcp in [false, true] {
+        for action in [
+            "bare_title",
+            "delete_note",
+            "link_note",
+            "clear_note_task",
+            "expected_match",
+            "expected_mismatch",
+        ] {
+            for op in ["validate", "apply"] {
+                let mut missing = None;
+                for visibility in [
+                    "missing",
+                    "hidden_match",
+                    "hidden_other",
+                    "retracted",
+                    "readable",
+                ] {
+                    let t = Temp::new();
+                    let mut s = scoped_action_schema();
+                    s["action_types"]["bare_title"] = json!({
+                        "parameters":{"note":{"type":{"ref":"note"},"required":true}},
+                        "submission_criteria":[{"code":"wrong_title","message":"Title differs.","all":[{"eq":["title","source"]}]}]
+                    });
+                    s["action_types"]["expected_only"] = json!({});
+                    s["grants"][0]["actions"]
+                        .as_array_mut()
+                        .unwrap()
+                        .extend([json!("bare_title"), json!("expected_only")]);
+                    t.install(s);
+                    let note = json!({"object_type":"note","namespace":task()["namespace"],"native_key":if visibility == "hidden_other" { "other-target" } else { "target" }});
+                    let id: ont_core::Id = serde_json::from_value(note.clone()).unwrap();
+                    put(
+                        &t,
+                        task(),
+                        &[("tenant", "allowed")],
+                        json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+                        NOW + 10,
+                        false,
+                    );
+                    if visibility != "missing" {
+                        let tenant = if visibility.starts_with("hidden") {
+                            "blocked"
+                        } else {
+                            "allowed"
+                        };
+                        let title = if visibility == "hidden_other" {
+                            "different"
+                        } else {
+                            "source"
+                        };
+                        put(
+                            &t,
+                            note.clone(),
+                            &[("tenant", tenant)],
+                            json!({"title":title,"task":task()}),
+                            NOW + 10,
+                            false,
+                        );
+                        if visibility == "retracted" {
+                            put(
+                                &t,
+                                note.clone(),
+                                &[("tenant", tenant)],
+                                json!({}),
+                                NOW + 11,
+                                true,
+                            );
+                        }
+                    }
+                    let req = if action.starts_with("expected_") {
+                        let revision = if action == "expected_match" {
+                            format!("synthetic-{}-false", NOW + 10)
+                        } else {
+                            "mismatch".into()
+                        };
+                        json!({"action_type":"expected_only","parameters":{},"expected":[{"id":note,"revision":revision}],"request_id":"admission-r1"})
+                    } else {
+                        let mut parameters = json!({"note":note});
+                        if action == "link_note" {
+                            parameters["task"] = task();
+                        }
+                        json!({"action_type":action,"parameters":parameters,"request_id":"admission-r1"})
+                    };
+                    let before_bytes = std::fs::read(t.store()).unwrap();
+                    let before_log = t.logs();
+                    let before_edits = std::fs::read(t.0.join("edits.jsonl")).ok();
+                    let before_head = ont_store::Store::open_schema_existing(&t.store())
+                        .unwrap()
+                        .head(&id)
+                        .unwrap();
+                    let line = t.action_line(mcp, op, req, NOW);
+                    let answer: Value = serde_json::from_str(&line).unwrap();
+                    if visibility != "readable" {
+                        assert_eq!(
+                            answer["code"],
+                            if action == "bare_title" {
+                                "criterion_not_evaluable"
+                            } else {
+                                "rule_reference_unavailable"
+                            },
+                            "{line}"
+                        );
+                        assert!(answer.get("id").is_none(), "{line}");
+                        if let Some(ref missing) = missing {
+                            assert_eq!(&line, missing, "{action} {op} {visibility}");
+                        } else {
+                            missing = Some(line);
+                        }
+                        assert_eq!(t.logs(), before_log);
+                        assert_eq!(std::fs::read(t.0.join("edits.jsonl")).ok(), before_edits);
+                        assert_eq!(
+                            ont_store::Store::open_schema_existing(&t.store())
+                                .unwrap()
+                                .head(&id)
+                                .unwrap(),
+                            before_head
+                        );
+                        assert_eq!(std::fs::read(t.store()).unwrap(), before_bytes);
+                    } else if action == "expected_mismatch" {
+                        assert_eq!(answer["code"], "revision_conflict", "{answer}");
+                    } else {
+                        assert_eq!(answer["status"], "ok", "{answer}");
+                        if op == "validate" {
+                            assert_eq!(answer["result"]["valid"], true, "{answer}");
+                        } else {
+                            assert_eq!(answer["result"]["outcome"], "applied", "{answer}");
+                            let head = ont_store::Store::open_schema_existing(&t.store())
+                                .unwrap()
+                                .head(&id)
+                                .unwrap()
+                                .unwrap();
+                            if action == "delete_note" {
+                                assert!(head.retracted);
+                            }
+                            if action == "clear_note_task" {
+                                assert_eq!(
+                                    head.head.observation.fields["task"],
+                                    ont_core::Knowledge::Missing
+                                );
+                            }
+                            if action == "link_note" {
+                                assert_eq!(
+                                    head.head.observation.fields["task"],
+                                    ont_core::Knowledge::Value(task())
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn stale_values_precede_expected_revision_mismatches_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        for (name, rule, criteria) in [
+            (
+                "stale_rule",
+                json!([{"create_object":"tag","set":{"label":"$source.directory"}}]),
+                json!([]),
+            ),
+            (
+                "stale_criterion",
+                json!([]),
+                json!([{"code":"directory_changed","message":"Directory differs.","all":[{"eq":["$source.directory","/synthetic/task"]}]}]),
+            ),
+        ] {
+            s["action_types"][name] = json!({"parameters":{"source":{"type":{"ref":"task"},"required":true}},"rules":rule,"submission_criteria":criteria});
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(name));
+        }
+        t.install(s);
+        put(
+            &t,
+            task(),
+            &[],
+            json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+            NOW,
+            false,
+        );
+        for action in ["stale_rule", "stale_criterion"] {
+            let req = json!({"action_type":action,"parameters":{"source":task()},"expected":[{"id":task(),"revision":"mismatch"}],"request_id":action});
+            let validate = t.action_line(mcp, "validate", req.clone(), NOW + 1);
+            let apply = t.action_line(mcp, "apply", req.clone(), NOW + 1);
+            assert_eq!(validate, apply);
+            assert_eq!(
+                serde_json::from_str::<Value>(&apply).unwrap()["code"],
+                "rule_value_stale"
+            );
+            for op in ["validate", "apply"] {
+                assert_eq!(
+                    t.call(mcp, op, req.clone(), NOW)["code"],
+                    "revision_conflict"
+                );
+            }
+        }
+        assert!(t.logs().is_empty());
+    }
+}
+
+#[test]
+fn decisive_any_none_still_evaluate_unevaluable_operands_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        for (name, group) in [
+            (
+                "any_error",
+                json!({"any":[{"exists":"$present"},{"eq":["$missing","value"]}]}),
+            ),
+            (
+                "none_error",
+                json!({"none":[{"exists":"$present"},{"eq":["$missing","value"]}]}),
+            ),
+            (
+                "nested_any_error",
+                json!({"all":[{"any":[{"exists":"$present"},{"eq":["$missing","value"]}]}]}),
+            ),
+            (
+                "nested_none_error",
+                json!({"all":[{"none":[{"exists":"$present"},{"eq":["$missing","value"]}]}]}),
+            ),
+        ] {
+            let mut criterion = group;
+            criterion["code"] = json!("own_code");
+            criterion["message"] = json!("Own message.");
+            s["action_types"][name] = json!({"parameters":{"present":{"type":"string","required":true},"missing":{"type":"string"}},"submission_criteria":[criterion]});
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(name));
+        }
+        t.install(s);
+        for action in [
+            "any_error",
+            "none_error",
+            "nested_any_error",
+            "nested_none_error",
+        ] {
+            for op in ["validate", "apply"] {
+                let answer=t.call(mcp,op,json!({"action_type":action,"parameters":{"present":"yes"},"request_id":action}),NOW);
+                assert_eq!(answer["code"], "criterion_not_evaluable", "{answer}");
+            }
+        }
+        assert!(t.logs().is_empty());
+    }
+}
+
+#[test]
+fn linked_where_all_guards_unevaluable_candidate_property_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        s["action_types"]["linked_guard"] = json!({
+            "parameters":{"task":{"type":{"ref":"task"},"required":true},"guard":{"type":"string"}},
+            "submission_criteria":[{"code":"candidate_found","message":"Candidate found.","none":[{"linked":{"from":"$task","link":"notes","where":{"all":[{"exists":"$guard"},{"eq":["label","wanted"]}]}}}]}]
+        });
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("linked_guard"));
+        t.install(s);
+        put(
+            &t,
+            task(),
+            &[],
+            json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+            NOW + 10,
+            false,
+        );
+        t.seed(mcp); // linked note has no label property
+        for present in [false, true] {
+            let mut parameters = json!({"task":task()});
+            if present {
+                parameters["guard"] = json!("yes");
+            }
+            for op in ["validate", "apply"] {
+                let answer=t.call(mcp,op,json!({"action_type":"linked_guard","parameters":parameters,"request_id":format!("linked-guard-{present}")}),NOW);
+                if present {
+                    assert_eq!(answer["code"], "criterion_not_evaluable", "{answer}");
+                } else {
+                    assert_eq!(answer["status"], "ok", "{answer}");
+                    if op == "validate" {
+                        assert_eq!(answer["result"]["valid"], true, "{answer}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn skipped_reverse_link_scans_still_count_toward_snapshot_bound() {
+    let t = Temp::new();
+    let mut s = schema();
+    s["action_types"]["scan_guard"] = json!({
+        "parameters":{"task":{"type":{"ref":"task"},"required":true},"guard":{"type":"string"}},
+        "submission_criteria":[{"code":"candidate_found","message":"Candidate found.","none":[{"all":[{"exists":"$guard"},{"linked":{"from":"$task","link":"notes"}}]}]}]
+    });
+    s["grants"][0]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("scan_guard"));
+    t.install(s);
+    put(
+        &t,
+        task(),
+        &[],
+        json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+        NOW + 10,
+        false,
+    );
+    for key in ["one", "two", "three"] {
+        let id = json!({"object_type":"note","namespace":task()["namespace"],"native_key":key});
+        put(
+            &t,
+            id,
+            &[],
+            json!({"title":key,"task":task()}),
+            NOW + 10,
+            false,
+        );
+    }
+    let request =
+        json!({"action_type":"scan_guard","parameters":{"task":task()},"request_id":"scan-guard"});
+    let validate: ont::action::ValidateActionRequest =
+        serde_json::from_value(request.clone()).unwrap();
+    let apply: ont::action::ApplyActionRequest = serde_json::from_value(request).unwrap();
+    let small = ont::Context::with_snapshot_bounds(t.store(), NOW, 1, 2);
+    for result in [
+        ont::action::validate_action(&small, &validate),
+        ont::action::apply_action(&small, &apply),
+    ] {
+        let Err(ont::Failure::Refused(r)) = result else {
+            panic!("expected snapshot refusal");
+        };
+        assert_eq!(r.code, "snapshot_too_large");
+    }
+    assert!(t.logs().is_empty());
+    let large = ont::Context::with_snapshot_bounds(t.store(), NOW, 1, 10);
+    let ont::Answer::Enveloped { result, .. } =
+        ont::action::validate_action(&large, &validate).unwrap()
+    else {
+        panic!("expected preview");
+    };
+    assert_eq!(result["valid"], true);
+    assert_eq!(
+        result["basis"],
+        json!([]),
+        "neither operand reads a head during evaluation"
+    );
+    assert!(ont::action::apply_action(&large, &apply).is_ok());
 }

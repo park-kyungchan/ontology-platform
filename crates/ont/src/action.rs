@@ -659,11 +659,16 @@ impl Eval<'_> {
         }
         Ok(field_value(&head, prop).cloned().filter(|v| !v.is_null()))
     }
-    fn resolve_property(&mut self, name: &str, ctx: Option<&SchemaHead>) -> Option<Value> {
+    fn resolve_property(
+        &mut self,
+        name: &str,
+        ctx: Option<&SchemaHead>,
+    ) -> Result<Option<Value>, Failure> {
         if let Some(head) = ctx {
+            // linked() admits every candidate before passing it as context.
             let head = head.clone();
             self.note(&head);
-            return field_value(&head, name).cloned().filter(|v| !v.is_null());
+            return Ok(field_value(&head, name).cloned().filter(|v| !v.is_null()));
         }
         // Bare name: only with exactly one reference parameter.
         let mut refs = self
@@ -671,15 +676,20 @@ impl Eval<'_> {
             .parameters
             .iter()
             .filter(|(_, d)| matches!(d.ty, PropertyType::Ref(_)));
-        let (pname, _) = refs.next()?;
+        let Some((pname, _)) = refs.next() else {
+            return Ok(None);
+        };
         if refs.next().is_some() {
-            return None;
+            return Ok(None);
         }
-        let v = self.params.get(pname)?;
-        let id = id_from_value(v)?;
-        let head = self.snap.live(&id)?.clone();
+        let Some(id) = self.params.get(pname).and_then(id_from_value) else {
+            return Ok(None);
+        };
+        let Some(head) = self.visible_head(&id)? else {
+            return Ok(None);
+        };
         self.note(&head);
-        field_value(&head, name).cloned().filter(|v| !v.is_null())
+        Ok(field_value(&head, name).cloned().filter(|v| !v.is_null()))
     }
     fn resolve(
         &mut self,
@@ -698,7 +708,7 @@ impl Eval<'_> {
                 return Ok(self.params.get(p).cloned());
             }
             if property_position {
-                return Ok(self.resolve_property(s, ctx));
+                return self.resolve_property(s, ctx);
             }
         }
         Ok(Some(v.clone()))
@@ -1292,12 +1302,7 @@ impl<'a> Planner<'a> {
                         "an object id parameter whose object_type matches the rule target",
                     )
                 })?;
-                let (fields, head, retracted, scope) =
-                    self.state(&id).ok_or_else(|| revision_conflict(&id))?;
-                let _ = fields;
-                if retracted {
-                    return Err(revision_conflict(&id));
-                }
+                let (_, head, _, scope) = self.target_state(&id)?;
                 edits.push(self.push(id, scope, Change::Retraction, head, BTreeMap::new()));
             } else if let Some(r) = &rule.set_reference {
                 edits.extend(self.do_set_ref(at, r, false)?);
@@ -1381,18 +1386,17 @@ impl<'a> Planner<'a> {
                     "an object id parameter whose object_type matches the rule target",
                 )
             })?;
-        // Earlier rules may have overlaid an existing target; that must not
-        // bypass admission on its original head. Newly created/recreated
-        // objects have no original live head to read.
-        if self.snap.live(&id).is_some() || !self.overlay.contains_key(&Snapshot::key(&id)) {
-            reference_head(&self.snap, &id, self.principal, self.now)?;
+        Ok((id.clone(), self.target_state(&id)?))
+    }
+    // Admit original live heads even after an earlier rule overlaid them. Only
+    // newly created/recreated objects have no original live head to admit.
+    fn target_state(&self, id: &Id) -> Result<ObjectState, Failure> {
+        if self.snap.live(id).is_some() || !self.overlay.contains_key(&Snapshot::key(id)) {
+            reference_head(&self.snap, id, self.principal, self.now)?;
         }
-        let (cur, head, retracted, scope) =
-            self.state(&id).ok_or_else(|| revision_conflict(&id))?;
-        if retracted {
-            return Err(revision_conflict(&id));
-        }
-        Ok((id, (cur, head, retracted, scope)))
+        self.state(id)
+            .filter(|(_, _, retracted, _)| !retracted)
+            .ok_or_else(|| Refusal::new("rule_reference_unavailable").into())
     }
     fn do_modify(
         &mut self,
@@ -1423,11 +1427,7 @@ impl<'a> Planner<'a> {
                     "an object id parameter whose object_type matches the reference rule target",
                 )
             })?;
-        let (cur, head, retracted, scope) =
-            self.state(&id).ok_or_else(|| revision_conflict(&id))?;
-        if retracted {
-            return Err(revision_conflict(&id));
-        }
+        let (cur, head, _, scope) = self.target_state(&id)?;
         let mut fields = cur;
         if clear {
             fields.insert(r.property.clone(), Knowledge::Missing);
@@ -1772,16 +1772,17 @@ fn pins_for(set: &SchemaSet, domain: &str) -> BTreeMap<String, ont_core::schema:
 fn check_expected(
     snap: &Snapshot,
     expected: &Option<Vec<ExpectedHead>>,
+    principal: &Principal,
+    now: u64,
 ) -> Result<Vec<Value>, Failure> {
     let mut basis = Vec::new();
     if let Some(list) = expected {
         for e in list {
-            match snap.head(&e.id) {
-                Some(h) if h.head.observation.revision == e.revision && !h.retracted => {
-                    basis.push(json!({"id":e.id,"revision":e.revision}));
-                }
-                _ => return Err(revision_conflict(&e.id)),
+            let head = reference_head(snap, &e.id, principal, now)?;
+            if head.head.observation.revision != e.revision {
+                return Err(revision_conflict(&e.id));
             }
+            basis.push(json!({"id":e.id,"revision":e.revision}));
         }
     }
     Ok(basis)
@@ -2074,7 +2075,12 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         || criteria
             .iter()
             .any(|c| c["precondition"] == "rule_value_stale");
-    let expected_basis = check_expected(&snap, &req.expected)?;
+    let expected_basis = match check_expected(&snap, &req.expected, &principal, ctx.now) {
+        // Apply gives stale values precedence over expected-revision refusals.
+        // Retain the usual valid:false preview when expected itself passes.
+        Err(Failure::Refused(_)) if stale => return Err(Refusal::new("rule_value_stale").into()),
+        result => result?,
+    };
     let mut basis: Vec<Value> = references.basis.values().cloned().collect();
     for b in basis_map.values() {
         if !basis.contains(b) {
@@ -2243,7 +2249,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             if references.stale || criteria.iter().any(|c| c["precondition"] == "rule_value_stale") {
                 return Err(Refusal::new("rule_value_stale").into());
             }
-            let expected_basis = check_expected(&snap, &req.expected)?;
+            let expected_basis = check_expected(&snap, &req.expected, &tprincipal, ctx.now)?;
             if !failed.is_empty() {
                 let codes: Vec<String> = failed.iter().map(|c| c.code.clone()).collect();
                 let failures: Vec<Value> = failed.iter().map(|c| json!({"code":c.code,"message":c.message})).collect();

@@ -310,10 +310,11 @@ impl SchemaWrite<'_> {
 /// guarantee; SQLite NOFOLLOW separately protects the final database open.
 pub fn check_store_path(path: &Path) -> Result<(), StoreRefusal> {
     let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
-    let mut prefix = std::path::PathBuf::new();
-    for component in path.components() {
-        prefix.push(component.as_os_str());
-        if is_link(&prefix) {
+    // Protect the store and the two directory levels immediately above it.
+    // Host-level aliases above those levels are supported.
+    let absolute = std::path::absolute(path).map_err(|_| StoreRefusal::new("store_failure"))?;
+    for component in absolute.ancestors().take(3) {
+        if is_link(component) {
             return Err(StoreRefusal::new("store_path_is_symlink"));
         }
     }
@@ -333,6 +334,21 @@ pub fn check_store_path(path: &Path) -> Result<(), StoreRefusal> {
     Ok(())
 }
 
+// SQLite NOFOLLOW also rejects unresolved symlinks above the protected levels.
+// Resolve the parent after the guard, while preserving the final filename so
+// NOFOLLOW still rejects a database link swapped in after inspection.
+fn sqlite_store_path(path: &Path) -> Result<std::path::PathBuf, StoreRefusal> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent).map_err(|_| StoreRefusal::new("store_failure"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| StoreRefusal::new("store_failure"))?;
+    Ok(parent.join(name))
+}
+
 impl Store {
     pub fn open_schema(path: &Path) -> Result<Self, StoreRefusal> {
         Self::open_schema_with_busy_timeout(path, Duration::from_secs(10))
@@ -342,8 +358,9 @@ impl Store {
         busy: Duration,
     ) -> Result<Self, StoreRefusal> {
         check_store_path(path)?;
+        let open_path = sqlite_store_path(path)?;
         let mut store = Self::configure_with_busy(
-            open_file(path).map_err(StoreRefusal::from)?,
+            open_file(&open_path).map_err(StoreRefusal::from)?,
             StoreMode::Schema,
             busy,
             true,
@@ -372,10 +389,11 @@ impl Store {
         if !path.exists() {
             return Err(StoreRefusal::new("store_not_found"));
         }
+        let open_path = sqlite_store_path(path)?;
         let connection = if writable {
-            open_file_no_create(path)
+            open_file_no_create(&open_path)
         } else {
-            open_file_read_only(path)
+            open_file_read_only(&open_path)
         }
         .map_err(StoreRefusal::from)?;
         let mut store = Self::configure_with_busy(

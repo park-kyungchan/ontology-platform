@@ -1312,3 +1312,77 @@ fn store_open_refuses_linked_parents_and_adjacent_files() {
         }
     }
 }
+
+#[test]
+fn store_parent_guard_checks_two_levels_but_allows_host_alias_above_them() {
+    for existing in [false, true] {
+        for level in [1, 2, 3] {
+            let t = Temp::new();
+            let file = t.file("schema.json", EXAMPLE);
+            let real = t.0.join("real");
+            let directory = real.join("a/b");
+            std::fs::create_dir_all(&directory).unwrap();
+            let store = directory.join("store.sqlite");
+            if existing {
+                assert_eq!(
+                    run(
+                        &[
+                            "--store",
+                            store.to_str().unwrap(),
+                            "schema",
+                            "install",
+                            &file
+                        ],
+                        b""
+                    )
+                    .0,
+                    0
+                );
+            }
+            let alias = t.0.join("alias");
+            let (target, suffix) = match level {
+                1 => (directory.clone(), "store.sqlite"),
+                2 => (real.join("a"), "b/store.sqlite"),
+                _ => (real.clone(), "a/b/store.sqlite"),
+            };
+            std::os::unix::fs::symlink(target, &alias).unwrap();
+            let linked_store = alias.join(suffix);
+            let before = std::fs::read(&store).ok();
+            let (code, answer) = run(
+                &[
+                    "--store",
+                    linked_store.to_str().unwrap(),
+                    "schema",
+                    "install",
+                    &file,
+                ],
+                b"",
+            );
+            if level <= 2 {
+                assert_eq!(code, 2, "{answer}");
+                assert_eq!(answer["code"], "store_path_is_symlink");
+                assert_eq!(std::fs::read(&store).ok(), before);
+                for result in [
+                    Store::open_schema(&linked_store),
+                    Store::open_schema_existing(&linked_store),
+                    Store::open_schema_existing_writable(&linked_store),
+                ] {
+                    assert_eq!(result.err().unwrap().code, "store_path_is_symlink");
+                }
+            } else {
+                assert_eq!(code, 0, "{answer}");
+                assert_eq!(
+                    run(
+                        &["--store", linked_store.to_str().unwrap(), "describe"],
+                        b""
+                    )
+                    .0,
+                    0
+                );
+                assert!(Store::open_schema(&linked_store).is_ok());
+                assert!(Store::open_schema_existing(&linked_store).is_ok());
+                assert!(Store::open_schema_existing_writable(&linked_store).is_ok());
+            }
+        }
+    }
+}
