@@ -394,6 +394,125 @@ fn unknown_lookup_codes_name_fields_and_do_not_echo_values_cli_and_mcp() {
 }
 
 #[test]
+fn action_parameter_now_is_reserved_but_ordinary_name_is_valid() {
+    let t = Temp::new();
+    for name in ["now", "payload"] {
+        let mut schema: Value =
+            serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+        schema["action_types"]["create_item"]["parameters"][name] = json!({"type":"string"});
+        let file = t.0.join("candidate.json");
+        std::fs::write(&file, schema.to_string()).unwrap();
+        let (exit, answer) = t.cli(&["schema", "check", file.to_str().unwrap()], json!({}));
+        if name == "now" {
+            assert_eq!(exit, 2);
+            diagnostic(
+                &answer,
+                "schema_violation",
+                "/action_types/create_item/parameters/now",
+            );
+            assert_eq!(answer["violations"].as_array().unwrap().len(), 1);
+            assert_eq!(answer["violations"][0]["code"], "invalid_name");
+            assert!(
+                answer["rule"].as_str().unwrap().contains("now is reserved"),
+                "{answer}"
+            );
+            assert!(
+                answer["rule"]
+                    .as_str()
+                    .unwrap()
+                    .contains("1 to 64 ASCII characters")
+            );
+        } else {
+            assert_eq!(exit, 0, "{answer}");
+            assert_eq!(answer["status"], "ok");
+            assert_eq!(answer["violations"], json!([]));
+        }
+    }
+}
+
+#[test]
+fn schema_reserved_and_fixed_vocabulary_rules_state_the_constraint() {
+    let t = Temp::new();
+    for (case, code, field, required_text) in [
+        (
+            "domain",
+            "reserved_domain",
+            "/domain",
+            "program is a reserved domain",
+        ),
+        (
+            "kind",
+            "unknown_source_kind",
+            "/sources/input/kind",
+            "markdown_fields, markdown_table, file_digest, git_local, github_api, json_records or command",
+        ),
+        (
+            "option",
+            "invalid_source_option",
+            "/sources/input/unlisted",
+            "markdown_fields allows only glob, exclude, head_lines, complete_listing, fresh_for_s",
+        ),
+        (
+            "transform",
+            "invalid_transform",
+            "/object_types/item/properties/title/transform",
+            "first_word, parse_integer, {segment_after:string} or {replace_prefix:[from,to]}",
+        ),
+        (
+            "type",
+            "schema_shape",
+            "/object_types/item/properties/title/type",
+            "string, integer, boolean, decimal, timestamp, date",
+        ),
+        (
+            "owner",
+            "schema_shape",
+            "/object_types/item/owner",
+            "ontology",
+        ),
+        (
+            "direction",
+            "schema_shape",
+            "/views/items/order/0/direction",
+            "asc",
+        ),
+    ] {
+        let mut schema: Value =
+            serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+        match case {
+            "domain" => schema["domain"] = json!("program"),
+            "kind" => schema["sources"] = json!({"input":{"kind":"unlisted"}}),
+            "option" => {
+                schema["sources"] = json!({"input":{"kind":"markdown_fields","glob":"/tmp/*.md","fresh_for_s":1,"unlisted":true}})
+            }
+            "transform" => {
+                schema["object_types"]["item"]["properties"]["title"]["transform"] =
+                    json!("unlisted")
+            }
+            "type" => {
+                schema["object_types"]["item"]["properties"]["title"]["type"] = json!("unlisted")
+            }
+            "owner" => schema["object_types"]["item"]["owner"] = json!("unlisted"),
+            "direction" => schema["views"]["items"]["order"][0]["direction"] = json!("unlisted"),
+            _ => unreachable!(),
+        }
+        let file = t.0.join("candidate.json");
+        std::fs::write(&file, schema.to_string()).unwrap();
+        let (exit, answer) = t.cli(&["schema", "check", file.to_str().unwrap()], json!({}));
+        assert_eq!(exit, 2, "{case}: {answer}");
+        diagnostic(&answer, "schema_violation", field);
+        if code != "schema_shape" {
+            assert_eq!(answer["violations"][0]["code"], code, "{case}: {answer}");
+        }
+        assert!(
+            answer["rule"].as_str().unwrap().contains(required_text),
+            "{case}: {answer}"
+        );
+        assert!(!answer["rule"].as_str().unwrap().contains("unlisted"));
+    }
+}
+
+#[test]
 fn source_commit_feedback_matches_ascii_hex_admission() {
     let t = Temp::new();
     let file = t.0.join("schema.json");

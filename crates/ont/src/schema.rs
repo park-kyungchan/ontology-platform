@@ -289,6 +289,17 @@ pub(crate) fn schema_input_refusal(
     violations: &[ont_core::schema::Violation],
 ) -> Refusal {
     if let Err(e) = ont_core::input::parse_json::<Schema>(bytes) {
+        if matches!(
+            e.field.split('/').collect::<Vec<_>>().as_slice(),
+            ["", "object_types", _, "properties", _, "type"]
+                | ["", "action_types", _, "parameters", _, "type"]
+        ) {
+            return Refusal::input(
+                "schema_violation",
+                &e.field,
+                "type must be string, integer, boolean, decimal, timestamp, date, {ref:type_name}, {array:type}, {struct:{field:type}} or {value_type:name}",
+            );
+        }
         return Refusal::input("schema_violation", &e.field, &e.rule);
     }
     let Some(v) = violations.first() else {
@@ -297,8 +308,45 @@ pub(crate) fn schema_input_refusal(
     let rule = match v.code {
         "invalid_format" => "must be ontology-schema/v1",
         "invalid_version" => "positive unsigned version integer",
+        "invalid_name"
+            if matches!(
+                v.pointer.split('/').collect::<Vec<_>>().as_slice(),
+                ["", "action_types", _, "parameters", _]
+            ) =>
+        {
+            "1 to 64 ASCII characters: lowercase letter first; then lowercase letters, digits or underscore; now is reserved for action parameters"
+        }
         "invalid_name" => {
             "1 to 64 ASCII characters: lowercase letter first; then lowercase letters, digits or underscore"
+        }
+        "reserved_domain" => "program is a reserved domain name",
+        "unknown_source_kind" => {
+            "source kind must be markdown_fields, markdown_table, file_digest, git_local, github_api, json_records or command"
+        }
+        "invalid_source_option" => {
+            "markdown_fields allows only glob, exclude, head_lines, complete_listing, fresh_for_s; file_digest allows only paths, exclude, complete_listing, fresh_for_s. glob: required string or 1 to 16 strings; paths: required 1 to 256 strings; exclude: optional 0 to 256 strings; head_lines: optional integer 1 to 10000; complete_listing: optional boolean; fresh_for_s: required integer 1 to 315360000"
+        }
+        "invalid_transform" => {
+            "transform must be first_word, parse_integer, {segment_after:string} or {replace_prefix:[from,to]}; segment_after: at most 1024 UTF-8 bytes, starting and ending with '/'; replace_prefix: nonempty from, each string at most 1024 UTF-8 bytes. Requires a source-owned property with from or template; parse_integer requires integer base, other transforms require string base or ref"
+        }
+        "invalid_glob" => {
+            r"absolute glob at most 4096 UTF-8 bytes; no NUL, empty, '.' or '..' segment, or { } [ ] \; '*' and '?' wildcards allowed; '**' must occupy a whole segment, occur at most 8 times and not be the last segment"
+        }
+        "unknown_source" => "source name must be declared in schema sources",
+        "unknown_type" => "object type name must be declared in this schema",
+        "unknown_value_type" => "value type name must be declared in schema value_types",
+        "unknown_action" => "action name must be declared in schema action_types",
+        "unknown_link" => "link must name a declared forward or reverse link name",
+        "unknown_parameter" => "parameter reference must name a declared action parameter",
+        "unknown_property" => {
+            "property must be declared on the referenced object type; view columns and order also allow $key"
+        }
+        "unknown_scope_key" => "scope key must be declared in schema scope_keys",
+        "unknown_source_field" | "unknown_template_field" => {
+            "field must be produced by the declared source kind"
+        }
+        "template_field_not_string" => {
+            "template placeholder must name a string field produced by the declared source kind"
         }
         "unknown_field" => "field must be declared by ontology-schema/v1",
         "missing_field" => "required schema field",
