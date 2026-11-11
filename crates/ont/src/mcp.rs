@@ -139,6 +139,7 @@ fn take_panic_location() -> String {
 #[derive(Clone, Copy)]
 enum ToolOp {
     Read(Op),
+    ListActions,
     Validate,
     Apply,
 }
@@ -181,6 +182,14 @@ fn tools() -> Vec<Tool> {
             spec: json!({"name":"ont_index",
          "description":"Read the installed sources and append what changed; returns counts per source, a failed source gives isError. sources: names (default all). One run at a time (index_busy). Always carries schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}),
+        },
+        Tool {
+            op: ToolOp::ListActions,
+            spec: json!({
+                "name":"ont_action_list",
+                "description":"List action types with their parameters and criteria codes, optionally limited to an installed domain from ont_describe. Take action_type and parameter names for ont_action_validate and ont_action_apply from this list. Object ids come from ont_search.",
+                "inputSchema":{"type":"object","properties":{"domain":s}}
+            }),
         },
         Tool {
             op: ToolOp::Validate,
@@ -398,6 +407,9 @@ impl<'a> Server<'a> {
         let ran = catch_unwind(AssertUnwindSafe(|| {
             let result = match op {
                 ToolOp::Read(op) => (self.exec)(op, request.as_bytes(), &ctx),
+                ToolOp::ListActions => crate::action::ListActionsRequest::parse(request.as_bytes())
+                    .map_err(Failure::from)
+                    .and_then(|req| crate::action::list_actions(&ctx, &req)),
                 ToolOp::Validate => crate::action::ValidateActionRequest::parse(request.as_bytes())
                     .map_err(Failure::from)
                     .and_then(|mut req| {

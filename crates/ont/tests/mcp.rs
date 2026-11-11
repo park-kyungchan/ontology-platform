@@ -126,17 +126,16 @@ struct Peer {
 }
 impl Peer {
     fn spawn(store: &str) -> Self {
+        Self::spawn_with_client(store, Some("test"))
+    }
+    fn spawn_with_client(store: &str, client: Option<&str>) -> Self {
         if is_root() {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_ont"))
-                .args([
-                    "--store",
-                    store,
-                    "--now",
-                    &NOW.to_string(),
-                    "mcp",
-                    "--client",
-                    "test",
-                ])
+            let mut command = Command::new(env!("CARGO_BIN_EXE_ont"));
+            command.args(["--store", store, "--now", &NOW.to_string(), "mcp"]);
+            if let Some(client) = client {
+                command.args(["--client", client]);
+            }
+            let mut child = command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -154,7 +153,7 @@ impl Peer {
         let config = ont::mcp::Config {
             store: store.into(),
             now: Some(NOW),
-            client: "test".into(),
+            client: client.unwrap_or_default().into(),
         };
         let handle = std::thread::spawn(move || {
             ont::mcp::serve(&config, BufReader::new(request_reader), response_writer)
@@ -275,7 +274,7 @@ fn initialize_notification_and_ping() {
 }
 
 #[test]
-fn tools_list_is_constant_small_and_has_six_tools() {
+fn tools_list_is_constant_small_and_has_seven_tools() {
     let t = Temp::new();
     let mut p = Peer::spawn(&t.store("absent.sqlite"));
     p.send_raw(br#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#);
@@ -293,6 +292,7 @@ fn tools_list_is_constant_small_and_has_six_tools() {
             "ont_get",
             "ont_search",
             "ont_index",
+            "ont_action_list",
             "ont_action_validate",
             "ont_action_apply"
         ]
@@ -691,7 +691,10 @@ fn client_name_uid_and_now_rules() {
         );
     }
     let out = run(&["mcp"], 0);
-    assert!(out.stdout.contains("invalid_request"), "{}", out.stdout);
+    assert_eq!(
+        (out.code, out.stdout.as_str(), out.stderr.as_str()),
+        (0, "", "")
+    );
     let out = run(&["mcp", "--client", "claude"], 1000);
     assert!(
         out.stdout.contains("principal_not_trusted"),
@@ -1092,12 +1095,132 @@ fn every_listed_tool_is_callable_and_unknown_names_are_not_callable() {
             }
         }
     }
-    // The held tool is neither advertised nor callable.
-    assert!(
-        !listing["tools"]
+}
+
+#[test]
+fn action_list_parameters_criteria_domain_and_unknown_argument() {
+    let t = Temp::new();
+    let store = action_fixture::install(&t);
+    let mut peer = Peer::spawn(&store);
+    for arguments in [json!({}), json!({"domain":"work"})] {
+        let text = assert_same(
+            &mut peer,
+            "ont_action_list",
+            &arguments,
+            &store,
+            &["action", "list"],
+            false,
+        );
+        let answer: Value = serde_json::from_str(&text).unwrap();
+        let action = answer["result"]["actions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["name"] == "ont_action_list")
+            .find(|a| a["name"] == "set_hold")
+            .unwrap();
+        assert_eq!(action["domain"], "work");
+        assert!(
+            action["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "task" && p["required"] == true)
+        );
+        assert_eq!(action["criterion_codes"][0], "task_not_current");
+    }
+    for (arguments, code) in [
+        (json!({"domain":"absent"}), "unknown_domain"),
+        (json!({"object_type":"hold"}), "invalid_request"),
+        (json!({"surprise":true}), "invalid_request"),
+    ] {
+        let text = assert_same(
+            &mut peer,
+            "ont_action_list",
+            &arguments,
+            &store,
+            &["action", "list"],
+            true,
+        );
+        let answer: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(answer["code"], code);
+    }
+    let list = ont::mcp::tools_list();
+    let spec = list["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ont_action_list")
+        .unwrap();
+    assert_eq!(
+        spec["inputSchema"]["properties"],
+        json!({"domain":{"type":"string"}})
     );
+    assert_eq!(action_fixture::counts(&store), vec![0; 7]);
+    assert!(!t.0.join("edits.jsonl").exists());
+    assert_eq!(peer.finish(), (Some(0), String::new()));
+}
+
+#[test]
+fn peer_cli_optional_client_uses_initialize_and_explicit_client_wins() {
+    let t = Temp::new();
+    let store = action_fixture::install(&t);
+    for (client, expected, request_id) in [
+        (None, "peer-client", "peer-fallback"),
+        (Some("explicit"), "explicit", "peer-explicit"),
+    ] {
+        let mut peer = Peer::spawn_with_client(&store, client);
+        peer.request(json!(0), "initialize", initialize("2025-11-25"));
+        let (text, failed) = peer.call(
+            "ont_action_apply",
+            json!({"action_type":"create_tag",
+            "parameters":{"label":"peer"},"request_id":request_id}),
+        );
+        assert!(!failed, "{text}");
+        let mut db = ont_store::Store::open_schema_existing(std::path::Path::new(&store)).unwrap();
+        assert_eq!(
+            db.action_log().unwrap().last().unwrap().1.actor["client"],
+            expected
+        );
+        assert_eq!(peer.finish(), (Some(0), String::new()));
+    }
+    // No name is also accepted by the command and the protocol.
+    let mut peer = Peer::spawn_with_client(&store, None);
+    peer.request(
+        json!(0),
+        "initialize",
+        json!({"protocolVersion":"2025-11-25"}),
+    );
+    assert_eq!(
+        peer.request(json!(1), "ping", json!({}))["result"],
+        json!({})
+    );
+    assert_eq!(peer.finish(), (Some(0), String::new()));
+}
+
+#[test]
+fn missing_initialize_client_name_leaves_context_client_empty() {
+    let t = Temp::new();
+    let exec = |_op, _request: &[u8], ctx: &ont::Context| {
+        assert_eq!(ctx.client, "");
+        Ok(ont::Answer::Plain(json!({"client":ctx.client})))
+    };
+    let mut server = ont::mcp::Server::new(action_config(&t.store("absent"), ""), &exec);
+    server
+        .handle_line(
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize",
+        "params":{"protocolVersion":"2025-11-25"}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+    let answer = server
+        .handle_line(
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"ont_describe","arguments":{}}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(answer["result"]["content"][0]["text"], "{\"client\":\"\"}");
 }
