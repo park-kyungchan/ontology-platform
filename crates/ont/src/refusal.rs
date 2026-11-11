@@ -37,6 +37,12 @@ impl Refusal {
             extra: Map::new(),
         }
     }
+    /// A field form/type refusal. Never attach the rejected value.
+    pub fn input(code: &'static str, field: &str, rule: &str) -> Self {
+        Self::new(code)
+            .with("field", json!(field))
+            .with("rule", json!(rule))
+    }
     pub fn with(mut self, key: &str, value: Value) -> Self {
         self.extra.insert(key.to_string(), value);
         self

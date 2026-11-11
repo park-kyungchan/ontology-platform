@@ -1,8 +1,8 @@
 //! Contract-level challenges, separate from the literal process oracle.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use ont_core::{Authority, Change, Error, Knowledge, Policy, Query, Scope, Snapshot};
+use ont_daemon::{Service, synthetic as fixture};
 use ont_store::{Append, Store};
-use ontd::{Service, synthetic as fixture};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -8,11 +8,11 @@ use std::{
     io::{Read, Write},
 };
 const LIMIT: u64 = 65_536;
-const HELP: &str = "Usage: ontd --synthetic [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.";
+const HELP: &str = "Usage: ont-daemon --synthetic [--answer-record]\n--answer-record: ontology-answer/v1; prose answers may only restate record fields.";
 fn output_failure() -> ! {
     let _ = writeln!(
         std::io::stderr().lock(),
-        "output_failure@crates/ontd/src/main.rs:37"
+        "output_failure@crates/ont-daemon/src/main.rs:37"
     );
     std::process::exit(1);
 }
@@ -47,17 +47,20 @@ fn execute(args: &[OsString], answer_record: Option<Version>) -> Result<(String,
         return Err(Error::InvalidRequest);
     }
     let query: Query = serde_json::from_slice(&input).map_err(|_| Error::InvalidRequest)?;
-    let (mut service, session) = ontd::synthetic::setup()?;
+    let (mut service, session) = ont_daemon::synthetic::setup()?;
     if let Some(version) = answer_record {
         let (line, refused) = service.render_answer_record_version_with_status(
             &session,
             query,
-            ontd::synthetic::NOW,
+            ont_daemon::synthetic::NOW,
             version,
         )?;
         Ok((line, if refused { 2 } else { 0 }))
     } else {
-        Ok((service.render(&session, query, ontd::synthetic::NOW)?, 0))
+        Ok((
+            service.render(&session, query, ont_daemon::synthetic::NOW)?,
+            0,
+        ))
     }
 }
 fn main() {
@@ -102,7 +105,7 @@ fn main() {
             // Diagnostic locations are part of the default CLI byte contract.
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "{}@crates/ontd/src/main.rs:25",
+                "{}@crates/ont-daemon/src/main.rs:25",
                 e.code()
             );
             std::process::exit(1);
@@ -112,7 +115,7 @@ fn main() {
             Err(_) => {
                 let _ = writeln!(
                     std::io::stderr().lock(),
-                    "serialization_failure@crates/ontd/src/main.rs:31"
+                    "serialization_failure@crates/ont-daemon/src/main.rs:31"
                 );
                 std::process::exit(1);
             }

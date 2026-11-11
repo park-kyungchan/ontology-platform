@@ -461,6 +461,11 @@ fn refusal_codes() {
         (code, ans["code"].as_str()),
         (2, Some("now_requires_store"))
     );
+    assert_eq!(ans["field"], "--store");
+    assert_eq!(
+        ans["rule"],
+        "must be explicitly supplied when --now is used"
+    );
     // Store not found, unreadable schema file, unknown domain.
     let (code, ans) = run(&["--store", &t.store(), "describe"], b"{}");
     assert_eq!((code, ans["code"].as_str()), (2, Some("store_not_found")));

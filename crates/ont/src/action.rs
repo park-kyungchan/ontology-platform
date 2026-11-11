@@ -90,7 +90,11 @@ impl ListActionsRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "list_actions") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be list_actions when supplied",
+            ));
         }
         Ok(req)
     }
@@ -124,7 +128,11 @@ impl ValidateActionRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "validate_action") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be validate_action when supplied",
+            ));
         }
         Ok(req)
     }
@@ -151,7 +159,11 @@ impl ApplyActionRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "apply_action") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be apply_action when supplied",
+            ));
         }
         Ok(req)
     }
@@ -175,10 +187,14 @@ pub fn canonical(v: &Value) -> Value {
 fn canonical_string(v: &Value) -> String {
     serde_json::to_string(&canonical(v)).unwrap_or_default()
 }
-fn invalid_parameter(name: &str) -> Failure {
-    Refusal::new("invalid_parameter")
-        .with("parameter", json!(name))
-        .into()
+fn invalid_parameter(name: &str, rule: &str) -> Failure {
+    Refusal::input(
+        "invalid_parameter",
+        &crate::input::pointer("/parameters", name),
+        rule,
+    )
+    .with("parameter", json!(name))
+    .into()
 }
 fn find_action_type<'a>(set: &'a SchemaSet, name: &str) -> Option<(&'a Schema, &'a ActionType)> {
     for domain in set.pins().keys() {
@@ -211,17 +227,30 @@ fn check_actor_bounds(
     let client = effective_client(ctx);
     let agent = agent.clone().or_else(|| ctx.agent.clone());
     let session = session.clone().or_else(|| ctx.session.clone());
-    if !valid_actor_field(&client)
-        || agent.as_deref().is_some_and(|a| !valid_actor_field(a))
-        || session.as_deref().is_some_and(|s| !valid_actor_field(s))
-    {
-        return Err(Refusal::new("invalid_request").into());
+    for (field, value) in [
+        ("/client", Some(client.as_str())),
+        ("/agent", agent.as_deref()),
+        ("/session", session.as_deref()),
+    ] {
+        if value.is_some_and(|v| !valid_actor_field(v)) {
+            return Err(Refusal::input(
+                "invalid_request",
+                field,
+                "1 to 64 characters: letters, digits, '.', '_', ':', '-'",
+            )
+            .into());
+        }
     }
     Ok(())
 }
 fn check_parameters_size(params: &Value) -> Result<(), Failure> {
     if serde_json::to_string(&canonical(params)).is_ok_and(|s| s.len() > crate::MAX_REQUEST) {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/parameters",
+            "canonical JSON at most 65536 bytes",
+        )
+        .into());
     }
     Ok(())
 }
@@ -359,11 +388,14 @@ fn validate_parameters(
     params: &Value,
 ) -> Result<BTreeMap<String, Value>, Failure> {
     let Some(obj) = params.as_object() else {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input("invalid_request", "/parameters", "a JSON object").into());
     };
     for key in obj.keys() {
         if !at.parameters.contains_key(key) {
-            return Err(invalid_parameter(key));
+            return Err(invalid_parameter(
+                key,
+                "parameter must be declared by action list",
+            ));
         }
     }
     let mut out = BTreeMap::new();
@@ -371,18 +403,27 @@ fn validate_parameters(
         match obj.get(name) {
             None => {
                 if def.required {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(name, "required parameter"));
                 }
             }
             Some(Value::Null) if !def.required => {}
             Some(v) => {
                 if !value_matches(schema, &def.ty, v) {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(
+                        name,
+                        &format!(
+                            "must satisfy declared type {} and its value-type constraints",
+                            serde_json::to_value(&def.ty).unwrap_or(Value::Null)
+                        ),
+                    ));
                 }
                 if let (Some(limit), Value::String(s)) = (def.max_bytes, v)
                     && s.len() as u64 > limit
                 {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(
+                        name,
+                        &format!("string at most {limit} UTF-8 bytes"),
+                    ));
                 }
                 out.insert(name.clone(), v.clone());
             }
@@ -493,7 +534,9 @@ fn check_reference_inputs(
                 if let Some((name, _)) = s.strip_prefix('$').and_then(|p| p.split_once('.'))
                     && let Some(value) = params.get(name)
                 {
-                    let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+                    let id = id_from_value(value).ok_or_else(|| {
+                        invalid_parameter(name, "an object id of the parameter target type")
+                    })?;
                     let head = reference_head(snap, &id, principal, now)?;
                     inputs.basis.insert(
                         Snapshot::key(&id),
@@ -564,7 +607,8 @@ impl Eval<'_> {
         let Some(value) = self.params.get(name) else {
             return Ok(None);
         };
-        let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+        let id = id_from_value(value)
+            .ok_or_else(|| invalid_parameter(name, "an object id of the parameter target type"))?;
         let head = reference_head(self.snap, &id, self.principal, self.now)?.clone();
         self.note(&head);
         if self.now > head.head.observation.fresh_until {
@@ -921,7 +965,9 @@ impl<'a> Planner<'a> {
                     let Some(value) = self.params.get(name) else {
                         return Ok(None);
                     };
-                    let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+                    let id = id_from_value(value).ok_or_else(|| {
+                        invalid_parameter(name, "an object id of the parameter target type")
+                    })?;
                     let head = reference_head(&self.snap, &id, self.principal, self.now)?;
                     self.basis.insert(
                         Snapshot::key(&id),
@@ -1024,7 +1070,10 @@ impl<'a> Planner<'a> {
             }) {
                 return Ok(v);
             }
-            return Err(invalid_parameter("key"));
+            return Err(invalid_parameter(
+                "key",
+                "a string at the primary-key pointer in a parameter",
+            ));
         }
         Ok(self.action_id.clone())
     }
@@ -1137,9 +1186,12 @@ impl<'a> Planner<'a> {
             } else if let Some(t) = &rule.modify_object {
                 edits.push(self.do_modify(t, &set_map, None)?);
             } else if let Some(t) = &rule.delete_object {
-                let id = self
-                    .ref_target_typed(at, t)
-                    .ok_or_else(|| invalid_parameter(t))?;
+                let id = self.ref_target_typed(at, t).ok_or_else(|| {
+                    invalid_parameter(
+                        t,
+                        "an object id parameter whose object_type matches the rule target",
+                    )
+                })?;
                 let (fields, head, retracted, scope) =
                     self.state(&id).ok_or_else(|| revision_conflict(&id))?;
                 let _ = fields;
@@ -1194,7 +1246,12 @@ impl<'a> Planner<'a> {
                     .values()
                     .find_map(|v| id_from_value(v).filter(|i| i.object_type == t))
             })
-            .ok_or_else(|| invalid_parameter(t))?;
+            .ok_or_else(|| {
+                invalid_parameter(
+                    t,
+                    "an object id parameter whose object_type matches the rule target",
+                )
+            })?;
         let (cur, head, retracted, scope) =
             self.state(&id).ok_or_else(|| revision_conflict(&id))?;
         if retracted {
@@ -1224,7 +1281,12 @@ impl<'a> Planner<'a> {
         let _ = at;
         let id = self
             .ref_target_typed_from_schema(&r.object_type)
-            .ok_or_else(|| invalid_parameter(&r.object_type))?;
+            .ok_or_else(|| {
+                invalid_parameter(
+                    &r.object_type,
+                    "an object id parameter whose object_type matches the reference rule target",
+                )
+            })?;
         let (cur, head, retracted, scope) =
             self.state(&id).ok_or_else(|| revision_conflict(&id))?;
         if retracted {
@@ -1236,7 +1298,7 @@ impl<'a> Planner<'a> {
             let raw = r
                 .value
                 .as_ref()
-                .ok_or_else(|| invalid_parameter(&r.property))?;
+                .ok_or_else(|| invalid_parameter(&r.property, "reference rule requires a value"))?;
             let Some(value) = self.substitute(raw)? else {
                 return Ok(None);
             };
@@ -1246,7 +1308,8 @@ impl<'a> Planner<'a> {
         if clear {
             fields.insert(r.property.clone(), Knowledge::Missing);
         } else {
-            let v = value.ok_or_else(|| invalid_parameter(&r.property))?;
+            let v = value
+                .ok_or_else(|| invalid_parameter(&r.property, "reference rule requires a value"))?;
             // Array ref: add unique.
             let is_array = self
                 .schema
@@ -1290,7 +1353,7 @@ fn check_planned(set: &SchemaSet, planner: &Planner<'_>) -> Result<(), Failure> 
                 .unwrap_or(&v.pointer)
                 .replace("~1", "/")
                 .replace("~0", "~");
-            return Err(Refusal::new("invalid_parameter")
+            return Err(Refusal::input("invalid_parameter", &v.pointer, "planned property must satisfy its declared type, required flag and value-type constraints")
                 .with("parameter", json!(prop.clone()))
                 .with("property", json!(prop))
                 .into());
@@ -1770,9 +1833,12 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
     if let Some(d) = &req.domain
         && set.schema(d).is_none()
     {
-        return Err(Refusal::new("unknown_domain")
-            .with("domain", json!(d))
-            .into());
+        return Err(Refusal::input(
+            "unknown_domain",
+            "/domain",
+            "a domain installed in this store",
+        )
+        .into());
     }
     let domains: Vec<String> = match &req.domain {
         Some(d) => vec![d.clone()],
@@ -1837,8 +1903,13 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
-    let (schema, at) = find_action_type(&set, &req.action_type)
-        .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+    let (schema, at) = find_action_type(&set, &req.action_type).ok_or_else(|| {
+        Failure::from(Refusal::input(
+            "unknown_action",
+            "/action_type",
+            "an installed action type; use action list",
+        ))
+    })?;
     let (schema, at) = (schema.clone(), at.clone());
     if !principal
         .view()
@@ -1852,7 +1923,12 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     if let Some(r) = &req.request_id
         && !valid_request_id(r)
     {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/request_id",
+            "1 to 64 characters: letters, digits, '.', '_', '-'",
+        )
+        .into());
     }
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
@@ -1940,7 +2016,12 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     if let Some(r) = &req.request_id
         && !valid_request_id(r)
     {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/request_id",
+            "1 to 64 characters: letters, digits, '.', '_', '-'",
+        )
+        .into());
     }
     check_actor_bounds(ctx, &req.agent, &req.session)?;
     check_parameters_size(&req.parameters)?;
@@ -1948,8 +2029,13 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
     let revision = principal.revision()?;
-    let (schema, at) = find_action_type(&set, &req.action_type)
-        .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+    let (schema, at) = find_action_type(&set, &req.action_type).ok_or_else(|| {
+        Failure::from(Refusal::input(
+            "unknown_action",
+            "/action_type",
+            "an installed action type; use action list",
+        ))
+    })?;
     let (schema, at) = (schema.clone(), at.clone());
     if !principal
         .view()
@@ -1969,7 +2055,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
         let tx_set = tx.schema_set().clone();
         let run = |tx: &mut ont_store::schema_mode::SchemaWrite<'_>| -> Result<ApplyOutcome, Failure> {
             let (tschema, tat) = find_action_type(&tx_set, &req.action_type)
-                .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+                .ok_or_else(|| Failure::from(Refusal::input("unknown_action", "/action_type", "an installed action type; use action list")))?;
             let (tschema, tat) = (tschema.clone(), tat.clone());
             let tprincipal = Principal::bind(&tx_set)?;
             if !tprincipal.view().action_types(&tschema.domain).contains(&req.action_type) {

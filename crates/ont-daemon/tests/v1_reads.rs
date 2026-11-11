@@ -1,8 +1,8 @@
 //! External SQLite writers must not make schema-v1 readers accept Program scopes.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use ont_core::{Authority, Error, Query, Scope, Snapshot};
+use ont_daemon::{Service, local_fake, synthetic};
 use ont_store::Store;
-use ontd::{Service, local_fake, synthetic};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},

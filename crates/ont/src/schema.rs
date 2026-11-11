@@ -108,7 +108,7 @@ fn check_outcome(
             let pin = Schema::parse(bytes)
                 .ok()
                 .map(|s| json!({"domain":s.domain,"version":s.version,"sha256":sha256_hex(bytes)}));
-            Err(Refusal::new("schema_violation")
+            Err(schema_input_refusal(bytes, &violations)
                 .with("clean", json!(false))
                 .with("pin", pin.unwrap_or(Value::Null))
                 .with("violations", json!(violations))
@@ -155,16 +155,20 @@ fn install_at_default(
     if let Some(repo) = &req.source_repository
         && !valid_slug(repo)
     {
-        return Err(Refusal::new("invalid_argument")
+        return Err(Refusal::input("invalid_argument", "--source-repository", "exactly two nonempty slash-separated parts; each contains ASCII letters, digits, or . _ -")
             .with("argument", json!("--source-repository"))
             .into());
     }
     if let Some(commit) = &req.source_commit
         && !valid_commit(commit)
     {
-        return Err(Refusal::new("invalid_argument")
-            .with("argument", json!("--source-commit"))
-            .into());
+        return Err(Refusal::input(
+            "invalid_argument",
+            "--source-commit",
+            "40 lowercase hexadecimal characters",
+        )
+        .with("argument", json!("--source-commit"))
+        .into());
     }
     let bytes = read_schema_file(&req.file)?;
     install_bytes(
@@ -276,6 +280,35 @@ fn install_bytes(
             "source_path":source_path
         }),
     })
+}
+
+/// Preserve schema violation codes/pointers; add the same outer input feedback
+/// as command requests. Structural errors reuse serde's expected form.
+pub(crate) fn schema_input_refusal(
+    bytes: &[u8],
+    violations: &[ont_core::schema::Violation],
+) -> Refusal {
+    if let Err(e) = ont_core::input::parse_json::<Schema>(bytes) {
+        return Refusal::input("schema_violation", &e.field, &e.rule);
+    }
+    let Some(v) = violations.first() else {
+        return Refusal::input("schema_violation", "", "a valid ontology-schema/v1 schema");
+    };
+    let rule = match v.code {
+        "invalid_format" => "must be ontology-schema/v1",
+        "invalid_version" => "positive unsigned version integer",
+        "invalid_name" => {
+            "1 to 64 characters: lowercase letter first; then lowercase letters, digits or underscore"
+        }
+        "unknown_field" => "field must be declared by ontology-schema/v1",
+        "missing_field" => "required schema field",
+        "duplicate_field" => "field must occur only once",
+        "duplicate_type_name" => "name must be unique across installed object types and views",
+        // Semantic schema refusals already include their full constraint code
+        // and schema pointer in violations, rather than a command request field.
+        _ => "schema field must satisfy the semantic constraint named in violations[].code",
+    };
+    Refusal::input("schema_violation", &v.pointer, rule)
 }
 
 #[cfg(test)]

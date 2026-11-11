@@ -1,6 +1,6 @@
 //! Standalone LOCAL FAKE demonstrator; cannot contact a network/source/account.
 use ont_core::{Error, Response, action::PhysicalField};
-use ontd::{
+use ont_daemon::{
     Service,
     local_fake::{self, ActionCommand},
 };

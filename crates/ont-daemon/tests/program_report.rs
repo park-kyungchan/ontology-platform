@@ -5,8 +5,8 @@ use ont_core::{
     Authority, Change, Coverage, Error, Grant, Id, Knowledge, Lineage, Link, Namespace, Object,
     Observation, Policy, Query, Scope, Snapshot,
 };
+use ont_daemon::Service;
 use ont_store::{Append, Store};
-use ontd::Service;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -694,7 +694,7 @@ fn metric_definition_head_qualification_applies_to_recorded_arithmetic() {
 }
 
 fn pr5_disk_object(outcome: Option<Value>, now: u64) -> Object {
-    use ontd::program_guardrails::{Contract, DiskMinimum, qualify_recording};
+    use ont_daemon::program_guardrails::{Contract, DiskMinimum, qualify_recording};
     let bytes = outcome.map(|outcome| serde_json::to_vec(&json!({
         "source_revision":"synthetic-disk-v1", "capture_start":20, "capture_end":20, "outcome":outcome
     })).unwrap());
@@ -1070,7 +1070,7 @@ fn native_snapshot_stays_coherent_when_another_connection_attempts_a_commit() {
 #[test]
 fn existing_snapshot_intake_keeps_recorded_delta_and_original_pin_gaps() {
     use ont_core::program::{DefinitionRef, Direction, MetricDefinition, MetricRole, Unit};
-    use ontd::program::{Capture, IntakeContract, Projection};
+    use ont_daemon::program::{Capture, IntakeContract, Projection};
     use sha2::{Digest, Sha256};
     let producer = b"synthetic producer never executed";
     let manifest = json!({"schema_version":1,"repos":{"repo-a":{"head":"a".repeat(40),"tracked_file_count":4,"groups":[{"disposition":"DELETE_NOW","count":4,"files":["a.ts","b.ts","c.ts","d.ts"]}]}},"verification":{"exact_non_keep_removal_paths":4}});

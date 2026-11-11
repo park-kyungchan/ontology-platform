@@ -28,7 +28,7 @@ schema; separate concrete fake SQLite target with atomic receipts and absence
 sealing; Service composition and separate `ont-local-fake` binary; focused tests,
 literal subprocess judge, SQL design probe and real old-reader roundtrip tooling.
 Existing S06 query code and frozen oracle/fixtures/pins remain intact. Only its
-synthetic grants acquire an empty action set. `default-run=ontd` preserves the old
+synthetic grants acquire an empty action set. `default-run=ont-daemon` preserves the old
 Cargo invocation after adding a second binary. No new dependencies or lock changes.
 
 `CONTRACT-v1.md` SHA256:
@@ -84,10 +84,10 @@ mkdir -p "$S07_EVIDENCE"
 cargo test --locked --offline --workspace --all-targets -j1 --target-dir "$S07_TARGET"
 cargo clippy --locked --offline --workspace --all-targets -j1 --target-dir "$S07_TARGET" -- -D warnings
 cargo build --locked --offline --workspace --bins -j1 --target-dir "$S07_TARGET"
-python3 conformance/verify.py --candidate "$S07_TARGET/debug/ontd" --out "$S07_EVIDENCE/s06-process"
+python3 conformance/verify.py --candidate "$S07_TARGET/debug/ont-daemon" --out "$S07_EVIDENCE/s06-process"
 python3 conformance/s07/verify_v2.py --binary "$S07_TARGET/debug/ont-local-fake" --results "$S07_EVIDENCE/s07-process"
 python3 conformance/s07/prepare_old_reader.py --out "$S07_EVIDENCE/old-reader-prep"
-cargo build --locked --offline --manifest-path "$S07_EVIDENCE/old-reader-prep/source/Cargo.toml" -p ontd --bin s07-old-reader -j1 --target-dir "$S07_EVIDENCE/old-reader-target"
+cargo build --locked --offline --manifest-path "$S07_EVIDENCE/old-reader-prep/source/Cargo.toml" -p ont-daemon --bin s07-old-reader -j1 --target-dir "$S07_EVIDENCE/old-reader-target"
 python3 conformance/s07/rollback_v1.py --binary "$S07_TARGET/debug/ont-local-fake" --old-reader "$S07_EVIDENCE/old-reader-target/debug/s07-old-reader" --results "$S07_EVIDENCE/old-reader-roundtrip"
 ```
 

@@ -1,6 +1,6 @@
 # ont-core
 
-Consumers: linked ontd Service and future explicitly pinned domain consumers.
+Consumers: linked ont-daemon Service and future explicitly pinned domain consumers.
 Public contract: Id/Namespace/Scope, observation knowledge/lineage, opaque Session,
 Authority/Admission, Snapshot and restricted Query/Response. No internal-platform
 dependency, host user mapping, transport or Academy parser.
@@ -28,7 +28,7 @@ Host UID or principal-string authentication, identity nonce or registry was adde
 Answer publication retains `ontology-answer/v1` through every existing entrypoint.
 `answer::Version::V2` explicitly selects publication-only aggregate and exact
 fixed-decimal fields; native `Response` and `ProgramReport` serialization stay
-unchanged. See [ontd answer record v2](../ontd/README.md#answer-record-v2-explicit-selector)
+unchanged. See [ont-daemon answer record v2](../ont-daemon/README.md#answer-record-v2-explicit-selector)
 for field names, arithmetic units, rounding, unavailable reasons and disclosure
 rules. The closed constructors accept typed native results, never request text.
 
@@ -39,5 +39,5 @@ derivation reads only that basis and its admitted metric membership. Exact
 samples, endpoint identity pins, changes, contributions and residuals carry
 `Available<T>` with closed unavailable reasons. `Version::V3` publishes these
 rational locations with the existing exact decimal renderings. Source qualification
-and the original assessment remain conservative. See the ontd README for selectors,
+and the original assessment remain conservative. See the ont-daemon README for selectors,
 population/period comparability and the unchanged unbound-attribution-endpoint rule.

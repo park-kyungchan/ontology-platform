@@ -72,7 +72,11 @@ impl SearchRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "search") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be search when supplied",
+            ));
         }
         Ok(req)
     }
@@ -97,8 +101,24 @@ impl Tri {
     }
 }
 
-fn refuse_property(code: &'static str, property: &str) -> Failure {
-    Refusal::new(code).with("property", json!(property)).into()
+fn refuse_property(code: &'static str, _property: &str) -> Failure {
+    Refusal::input(
+        code,
+        "/where",
+        match code {
+            "undeclared_property" => {
+                "filter property must be declared on the requested object type"
+            }
+            "invalid_filter_operator" => {
+                "ordering requires string, integer, timestamp or date; prefix requires string"
+            }
+            "wrong_value_type" => {
+                "filter value must satisfy the declared property type; prefix requires a string"
+            }
+            _ => "a valid declared property filter",
+        },
+    )
+    .into()
 }
 
 /// The scalar a property type reduces to (through value types), if any.
@@ -122,7 +142,9 @@ struct Checker<'a> {
 impl Checker<'_> {
     fn walk(&mut self, f: &Filter, depth: usize) -> Result<(), Failure> {
         if depth > MAX_DEPTH {
-            return Err(Refusal::new("filter_too_large").into());
+            return Err(
+                Refusal::input("filter_too_large", "/where", "at most 8 nesting levels").into(),
+            );
         }
         match f {
             Filter::All(v) | Filter::Any(v) | Filter::NoneOf(v) => {
@@ -142,7 +164,12 @@ impl Checker<'_> {
             Filter::In(p, vs) => {
                 self.leaf()?;
                 if vs.len() > MAX_IN_VALUES {
-                    return Err(Refusal::new("filter_too_large").into());
+                    return Err(Refusal::input(
+                        "filter_too_large",
+                        "/where",
+                        "at most 100 values in an in filter",
+                    )
+                    .into());
                 }
                 self.comparison(p, vs, Op::Equality)
             }
@@ -159,7 +186,9 @@ impl Checker<'_> {
     fn leaf(&mut self) -> Result<(), Failure> {
         self.leaves += 1;
         if self.leaves > MAX_LEAVES {
-            return Err(Refusal::new("filter_too_large").into());
+            return Err(
+                Refusal::input("filter_too_large", "/where", "at most 64 leaf conditions").into(),
+            );
         }
         Ok(())
     }
@@ -306,8 +335,16 @@ fn unavailable() -> Failure {
 pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
     let limit = match req.limit {
         None => DEFAULT_LIMIT,
-        Some(0) => return Err(Refusal::new("invalid_request").into()),
-        Some(n) if n > MAX_LIMIT => return Err(Refusal::new("limit_too_large").into()),
+        Some(0) => {
+            return Err(
+                Refusal::input("invalid_request", "/limit", "integer from 1 to 1000").into(),
+            );
+        }
+        Some(n) if n > MAX_LIMIT => {
+            return Err(
+                Refusal::input("limit_too_large", "/limit", "integer from 1 to 1000").into(),
+            );
+        }
         Some(n) => n,
     } as usize;
     let mut store = open_store(&ctx.store, false)?;
@@ -341,7 +378,7 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         None => None,
         Some(token) => {
             let key = decode_continuation(token)
-                .ok_or_else(|| Failure::from(Refusal::new("invalid_continuation")))?;
+                .ok_or_else(|| Failure::from(Refusal::input("invalid_continuation", "/continuation", "c1: followed by nonempty even-length hexadecimal encoding of UTF-8; use the previous result continuation")))?;
             Some(Id {
                 object_type: req.object_type.clone(),
                 namespace: schema.namespace.clone(),

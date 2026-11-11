@@ -1,6 +1,6 @@
 //! One-shot local ProgramReport caller. This is not a human authentication route.
 use ont_core::answer::{AnswerRecord, Version};
-use ontd::program_pilot::{PilotError, TRUST_LIMIT};
+use ont_daemon::program_pilot::{PilotError, TRUST_LIMIT};
 use std::{
     ffi::OsString,
     io::{Read, Write},
@@ -9,7 +9,7 @@ const HELP: &str = "Usage: ont-program-pilot [--answer-record]\n--answer-record:
 fn output_failure() -> ! {
     let _ = writeln!(
         std::io::stderr().lock(),
-        "pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19"
+        "pilot_output_failure@crates/ont-daemon/src/bin/ont-program-pilot.rs:19"
     );
     std::process::exit(1);
 }
@@ -34,9 +34,9 @@ fn run(args: &[OsString], answer_record: Option<Version>) -> Result<(String, boo
         .read_to_end(&mut bytes)
         .map_err(|_| "pilot_input_failure")?;
     if let Some(version) = answer_record {
-        ontd::program_pilot::execute_answer_record_version_with_status(&bytes, version)
+        ont_daemon::program_pilot::execute_answer_record_version_with_status(&bytes, version)
     } else {
-        ontd::program_pilot::execute(&bytes).map(|answer| (answer, false))
+        ont_daemon::program_pilot::execute(&bytes).map(|answer| (answer, false))
     }
     .map_err(PilotError::code)
 }
@@ -81,7 +81,7 @@ fn main() {
             // Preserve base stderr bytes when the new mode is not selected.
             if writeln!(
                 std::io::stderr().lock(),
-                "{code}@crates/ontd/src/bin/ont-program-pilot.rs:24\n{TRUST_LIMIT}"
+                "{code}@crates/ont-daemon/src/bin/ont-program-pilot.rs:24\n{TRUST_LIMIT}"
             )
             .is_err()
             {

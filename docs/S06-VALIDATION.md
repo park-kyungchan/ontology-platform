@@ -29,8 +29,8 @@ v1 pins and freezes the forward hardening files. Independent acceptance is pendi
   Bundled SQLite header reports 3.46.0, so the Python experiment is not evidence
   for the Rust binding's actual runtime behavior.
 
-Initial `cargo generate-lockfile` failed before dependency resolution because ontd
-had no source target yet (`missing_target@crates/ontd/Cargo.toml:1`). Source targets
+Initial `cargo generate-lockfile` failed before dependency resolution because ont-daemon
+had no source target yet (`missing_target@crates/ont-daemon/Cargo.toml:1`). Source targets
 were then added; native lock generation and fetch completed successfully. The
 system `pkg-config --modversion sqlite3` probe found no sqlite3.pc. Bundled SQLite
 was selected instead of installing a system package. Early observations and command
@@ -50,8 +50,8 @@ export CARGO_TARGET_DIR=/home/palantirkc/scratch/rust-s06-build/target
 cargo +1.95.0 check --workspace --all-targets --locked --offline -j1
 cargo +1.95.0 test --workspace --all-targets --locked --offline -j1
 cargo +1.95.0 clippy --workspace --all-targets --locked --offline -j1 -- -D warnings
-cargo +1.95.0 build -p ontd --locked --offline -j1
-python3 conformance/verify.py --candidate "$CARGO_TARGET_DIR/debug/ontd" --out conformance/results/candidate-01
+cargo +1.95.0 build -p ont-daemon --locked --offline -j1
+python3 conformance/verify.py --candidate "$CARGO_TARGET_DIR/debug/ont-daemon" --out conformance/results/candidate-01
 ```
 
 The process comparator preserves all 26 actual frames and exit statuses. Rust

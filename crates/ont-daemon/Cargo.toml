@@ -1,7 +1,7 @@
 [package]
 publish = false
-name = "ontd"
-default-run = "ontd"
+name = "ont-daemon"
+default-run = "ont-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
