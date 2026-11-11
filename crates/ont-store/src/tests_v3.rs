@@ -1596,3 +1596,31 @@ fn admission_metadata_avoids_payloads_and_rechecks_scope_in_one_read() {
         })
         .unwrap();
 }
+
+#[test]
+fn admission_queries_seek_exact_keys_and_page_cursor_ranges() {
+    let store = store_with_work();
+    for exact in [false, true] {
+        let sql = format!("EXPLAIN QUERY PLAN {}", schema_mode::access_sql(exact));
+        let mut stmt = store.connection.prepare(&sql).unwrap();
+        let details: Vec<String> = stmt
+            .query_map(
+                params!["thing", "vps://synthetic", "root", "middle", 1],
+                |r| r.get(3),
+            )
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let objects_plan = details.iter().find(|p| p.contains("SEARCH o ")).unwrap();
+        // A type-prefix-only scan makes repeated admissions quadratic.
+        assert!(
+            objects_plan.contains("instance")
+                && objects_plan.contains("account")
+                && objects_plan.contains("native_key"),
+            "{objects_plan}"
+        );
+        if !exact {
+            assert!(objects_plan.contains('>'), "{objects_plan}");
+        }
+    }
+}

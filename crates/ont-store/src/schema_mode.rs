@@ -824,6 +824,14 @@ fn decode_observation(payload: &str) -> Result<Observation, StoreRefusal> {
     Ok(observation)
 }
 
+pub(crate) fn access_sql(exact: bool) -> &'static str {
+    if exact {
+        "SELECT o.instance,o.account,o.native_key,o.scope,ob.change_kind FROM objects o LEFT JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND o.instance=?2 AND o.account=?3 AND o.native_key=?4 LIMIT ?5"
+    } else {
+        "SELECT o.instance,o.account,o.native_key,o.scope,ob.change_kind FROM objects o LEFT JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND (o.instance,o.account,o.native_key)>(?2,?3,?4) ORDER BY o.instance,o.account,o.native_key LIMIT ?5"
+    }
+}
+
 fn access_in(
     connection: &Connection,
     id: Option<&Id>,
@@ -831,7 +839,8 @@ fn access_in(
     limit: usize,
     after: Option<&Id>,
 ) -> Result<Vec<HeadAccess>, StoreRefusal> {
-    let (inst, acc, key) = after
+    let (inst, acc, key) = id
+        .or(after)
         .map(|i| {
             (
                 i.namespace.instance.as_str(),
@@ -840,21 +849,11 @@ fn access_in(
             )
         })
         .unwrap_or(("", "", ""));
-    let mut stmt = map_db(connection.prepare(
-        "SELECT o.instance,o.account,o.native_key,o.scope,ob.change_kind FROM objects o LEFT JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND ((?2 IS NOT NULL AND o.instance=?2 AND o.account=?3 AND o.native_key=?4) OR (?2 IS NULL AND (o.instance,o.account,o.native_key)>(?5,?6,?7))) ORDER BY o.instance,o.account,o.native_key LIMIT ?8"
-    ))?;
-    let rows = map_db(stmt.query_map(
-        params![
-            ty,
-            id.map(|i| &i.namespace.instance),
-            id.map(|i| &i.namespace.account),
-            id.map(|i| &i.native_key),
-            inst,
-            acc,
-            key,
-            to_i64(limit as u64)?
-        ],
-        |r| {
+    // Keep exact keys and cursor ranges separate so SQLite can seek the full
+    // primary key, rather than rescan the entire type prefix for every head.
+    let mut stmt = map_db(connection.prepare(access_sql(id.is_some())))?;
+    let rows = map_db(
+        stmt.query_map(params![ty, inst, acc, key, to_i64(limit as u64)?], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -862,8 +861,8 @@ fn access_in(
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
             ))
-        },
-    ))?;
+        }),
+    )?;
     let mut out = Vec::new();
     for row in rows {
         let (instance, account, native_key, scope, kind) = map_db(row)?;
