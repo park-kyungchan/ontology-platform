@@ -1080,8 +1080,12 @@ fn describe_discovers_readable_views_and_arguments_on_cli_and_mcp() {
         .iter()
         .find(|c| c["command"] == "describe")
         .unwrap();
+    assert_eq!(
+        describe["fields"],
+        "op?: describe|null; domain?: string|null; object_type?: string|null"
+    );
     assert!(
-        describe["fields"]
+        describe["notes"]
             .as_str()
             .unwrap()
             .contains("lists views and args")
