@@ -146,7 +146,7 @@ impl Admission<'_> {
             .get(self.principal)
             .is_some_and(|grants| {
                 grants.iter().any(|g| {
-                    g.scope == object.scope
+                    g.scope.matches(&object.scope)
                         && g.object_types.contains(&object.id.object_type)
                         && g.read
                         && g.derive

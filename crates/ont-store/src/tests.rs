@@ -189,14 +189,15 @@ fn seed_and_append_roll_back_domain_namespace_and_invalid_scope_failures() {
         };
         let mut foreign = good.scope.clone();
         match &mut foreign {
-            Scope::Education { namespace, .. } | Scope::Program { namespace, .. } => {
-                namespace.account = "foreign".into()
-            }
+            Scope::Education { namespace, .. }
+            | Scope::Program { namespace, .. }
+            | Scope::Domain { namespace, .. } => namespace.account = "foreign".into(),
         }
         let mut empty = good.scope.clone();
         match &mut empty {
             Scope::Education { class_key, .. } => class_key.clear(),
             Scope::Program { program_key, .. } => program_key.clear(),
+            Scope::Domain { domain, .. } => domain.clear(),
         }
         for bad_scope in [object(other, "bad").scope, foreign, empty] {
             let mut store = memory(mode);
@@ -281,9 +282,9 @@ fn external_scope_corruption_refuses_objects_links_and_existing_scope_append() {
         };
         let mut foreign = root.scope.clone();
         match &mut foreign {
-            Scope::Education { namespace, .. } | Scope::Program { namespace, .. } => {
-                namespace.instance = "synthetic://foreign".into()
-            }
+            Scope::Education { namespace, .. }
+            | Scope::Program { namespace, .. }
+            | Scope::Domain { namespace, .. } => namespace.instance = "synthetic://foreign".into(),
         }
         let invalid = [
             serde_json::to_string(&object(other, "unused").scope).unwrap(),
