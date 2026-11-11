@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `action list|validate|apply` over a format 3 store.
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `action list|validate|apply` over a format 3 store.
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -373,3 +373,22 @@ used by `ont-program-pilot`, `ont-local-fake` and the synthetic integration test
 The operational command is `ont`. Pinned contracts, recorded diagnostics and
 commands over archived source retain their historical names. References in the immutable
 `conformance/` evidence and the out-of-scope root README retain the earlier name.
+
+## Linked object-set reads
+
+`ont around` and `ont_search` with `"op":"search_around"` take
+`{"from":{"object_type":"hold","where":{"eq":["status","active"]}},"path":["task"],"limit":100}`.
+`from` uses the search filter grammar; each of 1 to 3 path entries is a forward
+or reverse link name from `describe`. The whole path is checked before loading
+heads. One SQLite snapshot and one native admission cover the request; metadata
+admission precedes every payload load, including reverse scans. Hidden and missing
+targets both contribute to `dangling`, with identical answers. Each hop removes
+duplicate IDs. The final set is sorted by ID, capped at `limit` (default 100,
+maximum 1,000); `matched` counts the full final set, with no continuation token.
+At most 10,000 unique admitted heads per type may be loaded across all hops;
+otherwise the operation refuses `result_too_large`. Basis `scanned`, `stale`
+and `partial` count unique admitted heads used by starting/reverse scans or
+forward lookups. Unresolved filter comparisons contribute `unresolved_excluded`;
+unresolved used filter/link properties also prevent qualification. `qualified`
+requires no stale, partial, unresolved-used/excluded or dangling input. Stale
+source entries name the `ont index --source NAME` refresh command.

@@ -2528,6 +2528,7 @@ fn present_property_value_states_and_ordered_guard_cli_and_mcp() {
     for mcp in [false, true] {
         for state in [
             "omitted",
+            "retracted",
             "absent",
             "value",
             "missing",
@@ -2554,11 +2555,25 @@ fn present_property_value_states_and_ordered_guard_cli_and_mcp() {
                     &t,
                     id.clone(),
                     &[("tenant", "allowed")],
-                    json!({"title":"source"}),
+                    if state == "retracted" {
+                        json!({"title":"source", "task":task()})
+                    } else {
+                        json!({"title":"source"})
+                    },
                     NOW + 10,
                     false,
                 );
-                if state != "absent" {
+                if state == "retracted" {
+                    put(
+                        &t,
+                        id.clone(),
+                        &[("tenant", "allowed")],
+                        json!({}),
+                        NOW + 10,
+                        true,
+                    );
+                }
+                if !matches!(state, "absent" | "retracted") {
                     let mut store =
                         ont_store::Store::open_schema_existing_writable(&t.store()).unwrap();
                     let old = store
@@ -2601,6 +2616,14 @@ fn present_property_value_states_and_ordered_guard_cli_and_mcp() {
             let req =
                 json!({"action_type":"property_present","parameters":params,"request_id":state});
             let preview = t.call(mcp, "validate", req.clone(), NOW);
+            if state == "retracted" {
+                assert_eq!(preview["code"], "rule_reference_unavailable");
+                assert_eq!(
+                    t.call(mcp, "apply", req, NOW)["code"],
+                    "rule_reference_unavailable"
+                );
+                continue;
+            }
             assert_eq!(
                 preview["result"]["valid"],
                 state == "value",

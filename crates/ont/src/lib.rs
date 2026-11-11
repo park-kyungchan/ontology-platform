@@ -25,6 +25,7 @@
 //! function grant exists yet, so `describe` lists the functions of every
 //! listed domain.
 pub mod action;
+pub mod around;
 pub mod backup;
 pub mod cli;
 pub mod describe;

@@ -228,6 +228,14 @@ pub fn execute(op: Op, request: &[u8], ctx: &Context) -> Result<Answer, Failure>
         Op::Describe => describe(ctx, &DescribeRequest::parse(request)?),
         Op::Get => get(ctx, &GetRequest::parse(request)?),
         Op::Search => search(ctx, &SearchRequest::parse(request)?),
+        Op::Around => crate::around::around(ctx, &crate::around::AroundRequest::parse(request)?),
+        Op::SetRead => {
+            let value: Value = parse_request(request)?;
+            match value.get("op").and_then(Value::as_str) {
+                Some("search_around") => execute(Op::Around, request, ctx),
+                _ => execute(Op::Search, request, ctx),
+            }
+        }
         Op::Index => index(ctx, &IndexRequest::parse(request)?),
     }
 }
@@ -238,6 +246,8 @@ pub enum Op {
     Describe,
     Get,
     Search,
+    Around,
+    SetRead,
     Index,
 }
 
@@ -339,6 +349,7 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
             execute(Op::Index, request.to_string().as_bytes(), ctx)
         }
         Search => execute(Op::Search, &read_request(stdin)?, ctx),
+        Around => execute(Op::Around, &read_request(stdin)?, ctx),
         Render => {
             use crate::render::{RenderRequest, write_file};
             let opts = &cli.render_options;

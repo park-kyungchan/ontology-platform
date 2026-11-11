@@ -279,6 +279,7 @@ fn tools_list_is_constant_small_and_has_seven_tools() {
     let mut p = Peer::spawn(&t.store("absent.sqlite"));
     p.send_raw(br#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#);
     let line = p.recv_line();
+    assert!(line.len() <= 5000, "tools/list wire: {}", line.len());
     let r: Value = serde_json::from_str(&line).unwrap();
     let result = r["result"].to_string();
     eprintln!("tools/list result bytes: {}", result.len());

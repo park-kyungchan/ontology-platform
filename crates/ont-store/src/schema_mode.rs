@@ -260,6 +260,34 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool
     Ok(false)
 }
 
+/// A transaction-scoped, read-only schema/head view. Metadata precedes payloads.
+pub struct SchemaRead<'a> {
+    tx: &'a Transaction<'a>,
+    schemas: SchemaSet,
+}
+impl SchemaRead<'_> {
+    pub fn schema_set(&self) -> &SchemaSet {
+        &self.schemas
+    }
+    pub fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
+        access_in(self.tx, Some(id), &id.object_type, 1, None).map(|v| v.into_iter().next())
+    }
+    pub fn scan_head_access(
+        &self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        access_in(self.tx, None, ty, limit, after)
+    }
+    pub fn head_after_access(
+        &self,
+        access: &HeadAccess,
+    ) -> Result<Option<SchemaHead>, StoreRefusal> {
+        head_after_access_in(self.tx, access)
+    }
+}
+
 /// One public write transaction in mode `Schema` (see `Store::write`).
 pub struct SchemaWrite<'a> {
     tx: &'a Transaction<'a>,
@@ -458,6 +486,24 @@ impl Store {
                 .transaction_with_behavior(TransactionBehavior::Immediate),
         )
     }
+    /// Evaluate a read against one SQLite snapshot, including schema refresh.
+    pub fn read_schema<T>(
+        &mut self,
+        read: impl FnOnce(&SchemaRead<'_>) -> T,
+    ) -> Result<T, StoreRefusal> {
+        self.require_schema()?;
+        let cached = self.schemas.clone();
+        let tx = self.read_tx()?;
+        let schemas = refreshed_set(&cached, &tx)?;
+        let result = read(&SchemaRead {
+            tx: &tx,
+            schemas: schemas.clone(),
+        });
+        drop(tx);
+        self.schemas = schemas;
+        Ok(result)
+    }
+
     /// The current schema set, refreshed inside a read transaction first.
     pub fn schema_set(&mut self) -> Result<&SchemaSet, StoreRefusal> {
         self.require_schema()?;
