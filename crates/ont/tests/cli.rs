@@ -1123,3 +1123,56 @@ fn provenance_records_only_certain_remotes_or_checkout_fallback() {
         assert_eq!(got.bytes, EXAMPLE);
     }
 }
+
+#[test]
+fn commit_install_refuses_dangling_and_existing_store_links() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let target = t.0.join("target.sqlite");
+    let link = t.0.join("link.sqlite");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for existing in [false, true] {
+        if existing {
+            assert_eq!(
+                run(
+                    &commit_install_args(
+                        target.to_str().unwrap(),
+                        &repo,
+                        &commit,
+                        "ontology/work.schema.json"
+                    ),
+                    b""
+                )
+                .0,
+                0
+            );
+        }
+        let before = std::fs::read(&target).ok();
+        let (exit, answer) = run(
+            &commit_install_args(
+                link.to_str().unwrap(),
+                &repo,
+                &commit,
+                "ontology/work.schema.json",
+            ),
+            b"",
+        );
+        assert_eq!(exit, 2, "{answer}");
+        assert_eq!(answer["code"], "store_path_is_symlink");
+        assert_eq!(answer["field"], "--store");
+        assert_eq!(std::fs::read(&target).ok(), before);
+    }
+    assert_eq!(
+        run(
+            &commit_install_args(
+                target.to_str().unwrap(),
+                &repo,
+                &commit,
+                "ontology/work.schema.json"
+            ),
+            b""
+        )
+        .0,
+        0
+    );
+}
