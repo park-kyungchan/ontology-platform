@@ -8,10 +8,13 @@ for `describe` and `action list`; commands with required fields report the first
 missing field. Reference search filters require a full Id, obtainable by searching
 the referenced type. Refusals may include a top-level `hint`; submission hints use
 fixed recovery text selected by failed criterion codes (unknown codes get a generic
-repair), without request values. File and commit installs refuse symbolic-link store paths
-with `store_path_is_symlink` and field `--store`; the creating SQLite open uses
-`SQLITE_OPEN_NOFOLLOW` against a swapped final path. Parent-directory symlinks are
-outside this guarantee. Default-store aliases retain
+repair), without request values. Store creation and existing-store opens refuse
+symbolic links in the store path (including parent directories), SQLite sidecars
+(`-journal`, `-wal`, `-shm`), `edits.jsonl` or its lock with
+`store_path_is_symlink` and field `--store`. SQLite opens use
+`SQLITE_OPEN_NOFOLLOW` against a swapped final database path. Parent and adjacent
+file checks are pre-open checks: concurrent replacement after inspection remains
+outside this guarantee; edit-log descriptors separately use `O_NOFOLLOW`. Default-store aliases retain
 `install_requires_commit`. Git provenance strips userinfo only when its host boundary is
 certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
 path as provenance instead; `strip_credentials` returns `None` for ambiguity.
@@ -47,7 +50,8 @@ the referenced type in `read` (`reference_read_forbidden` at the expression's
 schema pointer otherwise). At runtime the native read admission policy also
 checks the object's grant scope. Missing, retracted and inadmissible sources all
 refuse `rule_reference_unavailable` with the same detail-free answer. Availability
-of all referenced inputs is checked before staleness or expected revisions. A
+of all rule reference inputs is checked before staleness or expected revisions.
+Criterion references are checked only when reached in evaluation order. A
 present object whose requested property has no value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
 `rule_value_stale`; `validate` returns `valid:false`, no edits and a failed
 `preconditions` entry with that code, while retaining the criteria results and
@@ -118,10 +122,16 @@ idempotency. Criteria use the existing `{"exists":"$label"}` form to test a
 scalar or array parameter's presence (empty strings and empty arrays are present;
 array elements are not tested for liveness). For a single reference, `exists`
 checks that the referenced object exists and is live. An absent optional reference
-therefore fails `exists`. Comparisons with an absent parameter remain unevaluable
-and refuse. "If present then equal" cannot be written: `all`, `any` and `none`
-evaluate every condition, so a presence branch cannot guard a comparison that
-would be unevaluable. Ordinary properties cannot be cleared by a `set` value:
+therefore fails `exists`; unreadable and missing references give the same result
+for `exists`, `fresh` and `linked`. Modify-target reads use the same detail-free
+`rule_reference_unavailable` refusal as `$parameter.property` for missing,
+retracted or unreadable targets. Comparisons with an absent parameter remain unevaluable
+and refuse when evaluated. `all` evaluates operands in written order and stops
+at the first false operand, so a presence test can guard a later comparison:
+`{"none":[{"all":[{"exists":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}`
+permits an absent optional `supersedes` and refuses self-supersession. `any` and
+`none` keep evaluating every operand; a stale or unevaluable operand still fails
+the criterion even after an earlier operand determines its Boolean result. Ordinary properties cannot be cleared by a `set` value:
 absent/null parameters mean skip, not clear, and no scalar clear rule exists.
 Reference properties can still use the existing explicit `clear_reference` rule.
 
@@ -132,7 +142,7 @@ of at most 300 UTF-8 bytes, for example
 descriptions. The existing MCP response and tool-list bounds still apply.
 
 ## How a criterion names a property
-In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an unevaluable condition anywhere under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
+In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an evaluated unevaluable condition under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
 - `get` and `search` on an Ontology-owned type return what actions wrote, with `basis` and history as for indexed types, and `describe` lists action types.
 
 ## Embedding

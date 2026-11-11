@@ -305,6 +305,34 @@ impl SchemaWrite<'_> {
     }
 }
 
+/// Reject links present at inspection time in the store path or its SQLite
+/// sidecars/edit log. This is a pre-open check, not a directory/sidecar race
+/// guarantee; SQLite NOFOLLOW separately protects the final database open.
+pub fn check_store_path(path: &Path) -> Result<(), StoreRefusal> {
+    let is_link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    let mut prefix = std::path::PathBuf::new();
+    for component in path.components() {
+        prefix.push(component.as_os_str());
+        if is_link(&prefix) {
+            return Err(StoreRefusal::new("store_path_is_symlink"));
+        }
+    }
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        if is_link(Path::new(&sidecar)) {
+            return Err(StoreRefusal::new("store_path_is_symlink"));
+        }
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    for name in ["edits.jsonl", "edits.jsonl.lock"] {
+        if is_link(&parent.join(name)) {
+            return Err(StoreRefusal::new("store_path_is_symlink"));
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn open_schema(path: &Path) -> Result<Self, StoreRefusal> {
         Self::open_schema_with_busy_timeout(path, Duration::from_secs(10))
@@ -313,6 +341,7 @@ impl Store {
         path: &Path,
         busy: Duration,
     ) -> Result<Self, StoreRefusal> {
+        check_store_path(path)?;
         let mut store = Self::configure_with_busy(
             open_file(path).map_err(StoreRefusal::from)?,
             StoreMode::Schema,
@@ -339,6 +368,7 @@ impl Store {
         Self::open_schema_existing_with(path, true)
     }
     fn open_schema_existing_with(path: &Path, writable: bool) -> Result<Self, StoreRefusal> {
+        check_store_path(path)?;
         if !path.exists() {
             return Err(StoreRefusal::new("store_not_found"));
         }

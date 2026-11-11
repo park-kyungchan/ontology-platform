@@ -966,7 +966,15 @@ fn skipped_modify_and_reference_rules_still_require_live_targets() {
                         json!({"action_type":action,"parameters":supplied,"request_id":"supplied"}),
                         NOW,
                     );
-                    assert_eq!(baseline["code"], "revision_conflict", "{baseline}");
+                    assert_eq!(
+                        baseline["code"],
+                        if action == "edit_note" {
+                            "rule_reference_unavailable"
+                        } else {
+                            "revision_conflict"
+                        },
+                        "{baseline}"
+                    );
                     for mut absent in [json!({"note":target}), json!({"note":target,field:null})] {
                         // Both omission and null skip the value, after target resolution.
                         absent["note"] = target.clone();
@@ -1488,5 +1496,239 @@ fn now_string_order_examples_and_full_utc_parameter_pattern_cli_and_mcp() {
         assert_eq!(std::fs::read(typed.store()).unwrap(), before);
         assert!(!typed.0.join("edits.jsonl").exists());
         assert!(typed.logs().is_empty());
+    }
+}
+
+#[test]
+fn ordered_all_guards_optional_and_stale_operands_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        let parameters = json!({
+            "record":{"type":{"ref":"task"},"required":true},
+            "supersedes":{"type":{"ref":"task"}},
+            "label":{"type":"string"}
+        });
+        for (name, criterion) in [
+            (
+                "guard_optional",
+                json!({"none":[{"all":[{"exists":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}),
+            ),
+            (
+                "error_before_false",
+                json!({"all":[{"eq":["$label","value"]},{"exists":"$label"}]}),
+            ),
+            (
+                "top_guard_stale",
+                json!({"all":[{"exists":"$label"},{"eq":["$record.directory","/synthetic/task"]}]}),
+            ),
+            (
+                "nested_guard_stale",
+                json!({"none":[{"all":[{"exists":"$label"},{"eq":["$record.directory","/synthetic/task"]}]}]}),
+            ),
+            (
+                "any_stale",
+                json!({"any":[{"exists":"$record"},{"eq":["$record.directory","/synthetic/task"]}]}),
+            ),
+            (
+                "none_stale",
+                json!({"none":[{"exists":"$record"},{"eq":["$record.directory","/synthetic/task"]}]}),
+            ),
+        ] {
+            let mut criterion = criterion;
+            criterion["code"] = json!("own_code");
+            criterion["message"] = json!("Own criterion message.");
+            s["action_types"][name] =
+                json!({"parameters":parameters,"submission_criteria":[criterion]});
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(name));
+        }
+        t.install(s);
+        let mut other = task();
+        other["native_key"] = json!("other");
+        for id in [task(), other.clone()] {
+            put(
+                &t,
+                id,
+                &[],
+                json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+                NOW - 1,
+                false,
+            );
+        }
+        for (action, parameters, expected) in [
+            ("guard_optional", json!({"record":task()}), "applied"),
+            (
+                "guard_optional",
+                json!({"record":task(),"supersedes":null}),
+                "applied",
+            ),
+            (
+                "guard_optional",
+                json!({"record":task(),"supersedes":task()}),
+                "own_code",
+            ),
+            (
+                "guard_optional",
+                json!({"record":task(),"supersedes":other}),
+                "applied",
+            ),
+            (
+                "error_before_false",
+                json!({"record":task()}),
+                "criterion_not_evaluable",
+            ),
+            ("top_guard_stale", json!({"record":task()}), "own_code"),
+            ("nested_guard_stale", json!({"record":task()}), "applied"),
+            ("any_stale", json!({"record":task()}), "rule_value_stale"),
+            ("none_stale", json!({"record":task()}), "rule_value_stale"),
+        ] {
+            let req = json!({"action_type":action,"parameters":parameters,"request_id":format!("ordered-{action}-{}", t.logs().len())});
+            let before = t.logs().len();
+            let validation = t.call(mcp, "validate", req.clone(), NOW);
+            assert_eq!(t.logs().len(), before, "validation writes nothing");
+            let applied = t.call(mcp, "apply", req, NOW);
+            match expected {
+                "applied" => {
+                    assert_eq!(validation["result"]["valid"], true, "{validation}");
+                    assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                    // A skipped stale operand contributes neither basis nor precondition.
+                    if action == "nested_guard_stale" {
+                        assert_eq!(validation["result"]["basis"], json!([]));
+                    }
+                }
+                "own_code" => {
+                    assert_eq!(validation["result"]["valid"], false, "{validation}");
+                    assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                    assert_eq!(applied["failed"], json!(["own_code"]));
+                    assert_eq!(applied["message"], "Own criterion message.");
+                    assert_eq!(t.logs().len(), before);
+                }
+                "rule_value_stale" => {
+                    assert_eq!(validation["result"]["valid"], false, "{validation}");
+                    assert_eq!(validation["result"]["preconditions"][0]["code"], expected);
+                    assert_eq!(applied["code"], expected, "{applied}");
+                    assert_eq!(t.logs().len(), before);
+                }
+                _ => {
+                    assert_eq!(validation["code"], expected, "{validation}");
+                    assert_eq!(applied["code"], expected, "{applied}");
+                    assert_eq!(t.logs().len(), before);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn criterion_and_modify_reads_hide_unreadable_heads_cli_and_mcp() {
+    for mcp in [false, true] {
+        for action in [
+            "read_exists",
+            "read_fresh",
+            "read_forward",
+            "read_reverse",
+            "edit_note",
+        ] {
+            for op in ["validate", "apply"] {
+                for candidate_only in [false, true] {
+                    if candidate_only && action != "read_forward" && action != "read_reverse" {
+                        continue;
+                    }
+                    let mut missing = None;
+                    for visibility in ["missing", "hidden", "readable"] {
+                        let t = Temp::new();
+                        let mut s = schema();
+                        s["scope_keys"] = json!(["tenant"]);
+                        s["grants"][0]["scope"] = json!({"tenant":"allowed"});
+                        s["object_types"]["task"]["owner"] = json!("ontology");
+                        s["object_types"]["task"]["primary_key"] = json!({"from":"$action_id"});
+                        for prop in s["object_types"]["task"]["properties"]
+                            .as_object_mut()
+                            .unwrap()
+                            .values_mut()
+                        {
+                            prop.as_object_mut().unwrap().remove("from");
+                        }
+                        for (name, condition) in [
+                            ("read_exists", json!({"exists":"$note"})),
+                            ("read_fresh", json!({"fresh":"$note"})),
+                            (
+                                "read_forward",
+                                json!({"linked":{"from":"$note","link":"note_task"}}),
+                            ),
+                            (
+                                "read_reverse",
+                                json!({"linked":{"from":"$task","link":"notes"}}),
+                            ),
+                        ] {
+                            s["action_types"][name] = json!({
+                                "parameters":{"note":{"type":{"ref":"note"},"required":true},"task":{"type":{"ref":"task"},"required":true}},
+                                "submission_criteria":[{"code":"read_denied","message":"Unavailable.","all":[condition]}]
+                            });
+                            s["grants"][0]["actions"]
+                                .as_array_mut()
+                                .unwrap()
+                                .push(json!(name));
+                        }
+                        t.install(s);
+                        let note = json!({"object_type":"note","namespace":task()["namespace"],"native_key":"target"});
+                        for (id, fields, is_source) in [
+                            (
+                                note.clone(),
+                                json!({"title":"source","task":task()}),
+                                action == "read_forward",
+                            ),
+                            (
+                                task(),
+                                json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+                                action == "read_reverse",
+                            ),
+                        ] {
+                            let always_readable = candidate_only && is_source;
+                            if visibility == "missing" && !always_readable {
+                                continue;
+                            }
+                            let tenant = if always_readable || visibility == "readable" {
+                                "allowed"
+                            } else {
+                                "blocked"
+                            };
+                            put(&t, id, &[("tenant", tenant)], fields, NOW + 10, false);
+                        }
+                        let parameters = if action == "edit_note" {
+                            json!({"note":note,"title":"changed"})
+                        } else {
+                            json!({"note":note,"task":task()})
+                        };
+                        let req = json!({"action_type":action,"parameters":parameters,"request_id":"admission"});
+                        let line = t.action_line(mcp, op, req, NOW);
+                        match visibility {
+                            "missing" => {
+                                missing = Some(line);
+                            }
+                            "hidden" => {
+                                assert_eq!(
+                                    Some(line),
+                                    missing,
+                                    "{action} {op} candidate={candidate_only}"
+                                );
+                            }
+                            _ => {
+                                let answer: Value = serde_json::from_str(&line).unwrap();
+                                assert_eq!(answer["status"], "ok", "{answer}");
+                                if op == "validate" {
+                                    assert_eq!(answer["result"]["valid"], true, "{answer}");
+                                } else {
+                                    assert_eq!(answer["result"]["outcome"], "applied", "{answer}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

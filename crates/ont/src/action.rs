@@ -551,9 +551,10 @@ fn reference_head<'a>(
     head.filter(|h| !h.retracted)
         .ok_or_else(|| Refusal::new("rule_reference_unavailable").into())
 }
-// Check reference preconditions before expected revisions, so an unreadable,
+// Check rule reference preconditions before expected revisions, so an unreadable,
 // missing source is never misreported as an ordinary revision race. Availability
-// of every reference is checked before staleness or any other action refusal.
+// of every rule reference is checked before staleness. Criteria resolve their
+// own references in evaluation order, so skipped operands are never prechecked.
 #[derive(Default)]
 struct ReferenceInputs {
     basis: BTreeMap<String, Value>,
@@ -614,16 +615,6 @@ fn check_reference_inputs(
         }
         if let Some(value) = rule.set_reference.as_ref().and_then(|r| r.value.as_ref()) {
             walk(principal, snap, params, now, value, &mut inputs)?;
-        }
-    }
-    for criterion in &at.submission_criteria {
-        for conditions in [&criterion.all, &criterion.any, &criterion.none]
-            .into_iter()
-            .flatten()
-        {
-            let value = serde_json::to_value(conditions)
-                .map_err(|_| internal!("criterion_serialization"))?;
-            walk(principal, snap, params, now, &value, &mut inputs)?;
         }
     }
     Ok(inputs)
@@ -742,11 +733,7 @@ impl Eval<'_> {
         ctx: Option<&SchemaHead>,
     ) -> Result<bool, Failure> {
         if let Some(cs) = all {
-            let mut out = true;
-            for c in cs {
-                out &= self.eval(c, ctx)?;
-            }
-            return Ok(out);
+            return self.eval_all(cs, ctx);
         }
         if let Some(cs) = any {
             let mut out = false;
@@ -764,10 +751,18 @@ impl Eval<'_> {
         }
         Ok(true)
     }
+    fn eval_all(&mut self, cs: &[Condition], ctx: Option<&SchemaHead>) -> Result<bool, Failure> {
+        for c in cs {
+            if !self.eval(c, ctx)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     fn eval(&mut self, c: &Condition, ctx: Option<&SchemaHead>) -> Result<bool, Failure> {
         match c {
-            Condition::Exists(s) => Ok(self.exists_fresh(s, false)),
-            Condition::Fresh(s) => Ok(self.exists_fresh(s, true)),
+            Condition::Exists(s) => self.exists_fresh(s, false),
+            Condition::Fresh(s) => self.exists_fresh(s, true),
             Condition::Eq(p) => self.compare_eq(p, ctx),
             Condition::Ne(p) => Ok(!self.compare_eq(p, ctx)?),
             Condition::In(p) => {
@@ -804,13 +799,7 @@ impl Eval<'_> {
                 })
             }
             Condition::Linked(link) => self.linked(link),
-            Condition::All(cs) => {
-                let mut out = true;
-                for x in cs {
-                    out &= self.eval(x, ctx)?;
-                }
-                Ok(out)
-            }
+            Condition::All(cs) => self.eval_all(cs, ctx),
             Condition::Any(cs) => {
                 let mut out = false;
                 for x in cs {
@@ -850,33 +839,32 @@ impl Eval<'_> {
             .ok_or_else(Self::not_evaluable)?;
         cmp_values(&a, &b).map(&ok).ok_or_else(Self::not_evaluable)
     }
-    fn exists_fresh(&mut self, s: &str, fresh: bool) -> bool {
+    // Presence-style reads hide inadmissible heads exactly as missing heads.
+    // All admission decisions still go through the shared reference boundary.
+    fn visible_head(&self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
+        match reference_head(self.snap, id, self.principal, self.now) {
+            Ok(head) => Ok(Some(head.clone())),
+            Err(Failure::Refused(r)) if r.code == "rule_reference_unavailable" => Ok(None),
+            Err(failure) => Err(failure),
+        }
+    }
+    fn exists_fresh(&mut self, s: &str, fresh: bool) -> Result<bool, Failure> {
         let Some(p) = s.strip_prefix('$') else {
-            return false;
+            return Ok(false);
         };
         let Some(v) = self.params.get(p).cloned() else {
-            return false;
+            return Ok(false);
         };
         if let Some(id) = id_from_value(&v) {
-            match self.snap.live(&id) {
-                Some(h) => {
-                    let is_fresh = self.now <= h.head.observation.fresh_until;
-                    let rev = h.head.observation.revision.clone();
-                    let head_clone = SchemaHead {
-                        id: h.id.clone(),
-                        scope: h.scope.clone(),
-                        head: h.head.clone(),
-                        retracted: h.retracted,
-                        schema_pin: h.schema_pin.clone(),
-                    };
-                    let _ = rev;
-                    self.note(&head_clone);
-                    !fresh || is_fresh
+            match self.visible_head(&id)? {
+                Some(head) => {
+                    self.note(&head);
+                    Ok(!fresh || self.now <= head.head.observation.fresh_until)
                 }
-                None => false,
+                None => Ok(false),
             }
         } else {
-            !v.is_null()
+            Ok(!v.is_null())
         }
     }
     fn linked(&mut self, link: &ont_core::schema::LinkedConditionWire) -> Result<bool, Failure> {
@@ -906,23 +894,26 @@ impl Eval<'_> {
         };
         let mut candidates: Vec<SchemaHead> = Vec::new();
         if lt.names.forward == link.link {
-            if let Some(src) = self.snap.live(&from_id).cloned() {
+            if let Some(src) = self.visible_head(&from_id)? {
                 self.note(&src);
                 if let Some(v) = field_value(&src, &lt.via).cloned() {
                     for tid in ids_from_value(&v) {
-                        if let Some(t) = self.snap.live(&tid).cloned() {
+                        if let Some(t) = self.visible_head(&tid)? {
                             candidates.push(t);
                         }
                     }
                 }
             }
-        } else if let Some(src) = self.snap.live(&from_id).cloned() {
+        } else if let Some(src) = self.visible_head(&from_id)? {
             self.note(&src);
             for h in self.snap.scan_type(&lt.from) {
-                if let Some(v) = field_value(h, &lt.via)
+                let Some(head) = self.visible_head(&h.id)? else {
+                    continue;
+                };
+                if let Some(v) = field_value(&head, &lt.via)
                     && ids_from_value(v).contains(&from_id)
                 {
-                    candidates.push(h.clone());
+                    candidates.push(head);
                 }
             }
         }
@@ -1390,6 +1381,12 @@ impl<'a> Planner<'a> {
                     "an object id parameter whose object_type matches the rule target",
                 )
             })?;
+        // Earlier rules may have overlaid an existing target; that must not
+        // bypass admission on its original head. Newly created/recreated
+        // objects have no original live head to read.
+        if self.snap.live(&id).is_some() || !self.overlay.contains_key(&Snapshot::key(&id)) {
+            reference_head(&self.snap, &id, self.principal, self.now)?;
+        }
         let (cur, head, retracted, scope) =
             self.state(&id).ok_or_else(|| revision_conflict(&id))?;
         if retracted {
@@ -2071,9 +2068,13 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     let actor = actor_json(ctx, &req.agent, &req.session);
     let snap = load_snapshot(ctx, &set, &at, &params, &req.expected, &mut store)?;
     let references = check_reference_inputs(&principal, &snap, &at, &params, ctx.now)?;
-    let expected_basis = check_expected(&snap, &req.expected)?;
     let (criteria, basis_map, failed) =
         eval_criteria(&principal, &set, &snap, &at, &params, &actor, ctx.now)?;
+    let stale = references.stale
+        || criteria
+            .iter()
+            .any(|c| c["precondition"] == "rule_value_stale");
+    let expected_basis = check_expected(&snap, &req.expected)?;
     let mut basis: Vec<Value> = references.basis.values().cloned().collect();
     for b in basis_map.values() {
         if !basis.contains(b) {
@@ -2085,7 +2086,7 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
             basis.push(b);
         }
     }
-    let valid = failed.is_empty() && !references.stale;
+    let valid = failed.is_empty() && !stale;
     let mut edits = Vec::new();
     if valid {
         let log_len = st!(store.action_log()).len();
@@ -2131,7 +2132,7 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     if uses_now(&at) {
         result["application_time"] = json!("set_at_application");
     }
-    if references.stale {
+    if stale {
         result["preconditions"] = json!([{"code":"rule_value_stale","passed":false}]);
     }
     Ok(Answer::Enveloped {
@@ -2238,10 +2239,11 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             }
             let snap = load_snapshot(ctx, &tx_set, &tat, &tparams, &req.expected, tx)?;
             let references = check_reference_inputs(&tprincipal, &snap, &tat, &tparams, ctx.now)?;
-            if references.stale { return Err(Refusal::new("rule_value_stale").into()); }
-            let expected_basis = check_expected(&snap, &req.expected)?;
             let (criteria, basis_map, failed) = eval_criteria(&tprincipal, &tx_set, &snap, &tat, &tparams, &actor, ctx.now)?;
-            let _ = criteria;
+            if references.stale || criteria.iter().any(|c| c["precondition"] == "rule_value_stale") {
+                return Err(Refusal::new("rule_value_stale").into());
+            }
+            let expected_basis = check_expected(&snap, &req.expected)?;
             if !failed.is_empty() {
                 let codes: Vec<String> = failed.iter().map(|c| c.code.clone()).collect();
                 let failures: Vec<Value> = failed.iter().map(|c| json!({"code":c.code,"message":c.message})).collect();

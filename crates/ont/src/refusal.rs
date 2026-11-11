@@ -78,6 +78,14 @@ pub fn store_err(e: StoreRefusal) -> Failure {
             line: at.line(),
         });
     }
+    if e.code == "store_path_is_symlink" {
+        return Refusal::input(
+            "store_path_is_symlink",
+            "--store",
+            "the store path, parent directories and adjacent files must not be symbolic links",
+        )
+        .into();
+    }
     let mut refusal = Refusal::new(e.code);
     if let Some(v) = &e.violation {
         refusal = refusal.with("violation", json!(v));
