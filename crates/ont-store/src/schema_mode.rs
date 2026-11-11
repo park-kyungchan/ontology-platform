@@ -194,6 +194,13 @@ pub struct SchemaObservation {
     pub ingested_at: u64,
     pub schema_pin: SchemaPin,
 }
+/// Admission metadata only: no observation payload or reference values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeadAccess {
+    pub id: Id,
+    pub scope: Scope,
+    pub retracted: bool,
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaHead {
     pub id: Id,
@@ -265,6 +272,24 @@ impl SchemaWrite<'_> {
     }
     pub fn log_action(&mut self, entry: &ActionLogEntry) -> Result<i64, StoreRefusal> {
         append_action_log_in(self.tx, &self.schemas, entry)
+    }
+    /// Fetch a payload only while its metadata still equals the admitted input.
+    pub fn head_after_access(
+        &self,
+        access: &HeadAccess,
+    ) -> Result<Option<SchemaHead>, StoreRefusal> {
+        head_after_access_in(self.tx, access)
+    }
+    pub fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
+        access_in(self.tx, Some(id), &id.object_type, 1, None).map(|v| v.into_iter().next())
+    }
+    pub fn scan_head_access(
+        &self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        access_in(self.tx, None, ty, limit, after)
     }
     pub fn head(&self, id: &Id) -> Result<Option<SchemaHead>, StoreRefusal> {
         head_in(self.tx, id)
@@ -688,6 +713,36 @@ impl Store {
         result
     }
 
+    /// Recheck admitted metadata and fetch the payload in one read transaction.
+    pub fn head_after_access(
+        &mut self,
+        access: &HeadAccess,
+    ) -> Result<Option<SchemaHead>, StoreRefusal> {
+        self.require_schema()?;
+        let tx = self.read_tx()?;
+        head_after_access_in(&tx, access)
+    }
+
+    /// Read only identity, scope and liveness for admission, never fields.
+    pub fn head_access(&mut self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
+        self.require_schema()?;
+        access_in(&self.connection, Some(id), &id.object_type, 1, None)
+            .map(|v| v.into_iter().next())
+    }
+    /// Page admission metadata, including retracted rows, without payloads.
+    pub fn scan_head_access(
+        &mut self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        self.require_schema()?;
+        if limit > 10_000 {
+            return Err(StoreRefusal::new("limit_too_large"));
+        }
+        access_in(&self.connection, None, ty, limit, after)
+    }
+
     /// The full history of one object, in append order.
     pub fn history(&mut self, id: &Id) -> Result<Option<SchemaHistory>, StoreRefusal> {
         self.require_schema()?;
@@ -767,6 +822,80 @@ fn decode_observation(payload: &str) -> Result<Observation, StoreRefusal> {
         .validate()
         .map_err(|_| StoreRefusal::store_failure())?;
     Ok(observation)
+}
+
+pub(crate) fn access_sql(exact: bool) -> &'static str {
+    if exact {
+        "SELECT o.instance,o.account,o.native_key,o.scope,ob.change_kind FROM objects o LEFT JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND o.instance=?2 AND o.account=?3 AND o.native_key=?4 LIMIT ?5"
+    } else {
+        "SELECT o.instance,o.account,o.native_key,o.scope,ob.change_kind FROM objects o LEFT JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND (o.instance,o.account,o.native_key)>(?2,?3,?4) ORDER BY o.instance,o.account,o.native_key LIMIT ?5"
+    }
+}
+
+fn access_in(
+    connection: &Connection,
+    id: Option<&Id>,
+    ty: &str,
+    limit: usize,
+    after: Option<&Id>,
+) -> Result<Vec<HeadAccess>, StoreRefusal> {
+    let (inst, acc, key) = id
+        .or(after)
+        .map(|i| {
+            (
+                i.namespace.instance.as_str(),
+                i.namespace.account.as_str(),
+                i.native_key.as_str(),
+            )
+        })
+        .unwrap_or(("", "", ""));
+    // Keep exact keys and cursor ranges separate so SQLite can seek the full
+    // primary key, rather than rescan the entire type prefix for every head.
+    let mut stmt = map_db(connection.prepare(access_sql(id.is_some())))?;
+    let rows = map_db(
+        stmt.query_map(params![ty, inst, acc, key, to_i64(limit as u64)?], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        }),
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (instance, account, native_key, scope, kind) = map_db(row)?;
+        out.push(HeadAccess {
+            id: Id {
+                object_type: ty.to_string(),
+                namespace: ont_core::Namespace { instance, account },
+                native_key,
+            },
+            scope: decode_scope(&scope)?,
+            retracted: kind == "retraction",
+        });
+    }
+    Ok(out)
+}
+
+fn head_after_access_in(
+    connection: &Connection,
+    access: &HeadAccess,
+) -> Result<Option<SchemaHead>, StoreRefusal> {
+    let current = access_in(
+        connection,
+        Some(&access.id),
+        &access.id.object_type,
+        1,
+        None,
+    )?
+    .into_iter()
+    .next();
+    if access.retracted || current.as_ref() != Some(access) {
+        return Ok(None);
+    }
+    head_in(connection, &access.id)
 }
 
 fn head_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHead>, StoreRefusal> {

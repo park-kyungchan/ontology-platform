@@ -32,7 +32,7 @@ Ordinary ports and local paths remain intact.
 - Attribution: the actor `{principal, client, agent, session}` reaches the log: `client` from `--client NAME` of the command (default `cli`), `agent` from the request field or the environment variable `ONT_AGENT`, `session` if given; all self-reported. The log row and the apply answer mark this with `"actor_trust": "self_reported"`: the actor is a claim, not authentication. On the library path `agent`, `session` and `client` are each 1 to 64 characters of `[A-Za-z0-9._:-]`, and the total size of `parameters` is bounded as on the command path (`invalid_request` otherwise).
 - `edits.jsonl` beside the store (0600, opened without following a symlink): one canonical JSON line per applied action after the commit, with `fsync`. After the commit the action stands whatever happens to the file: the answer is `"outcome":"applied"` with `"edits_log"` = `written`, `pending` (the append failed; the next write repairs it) or `rebuilt`. Every write takes an exclusive `flock` on `edits.jsonl.lock` beside the store around its read-compare-append, writes each line with its newline in one write, and truncates an incomplete trailing line before appending. The file is valid only if its lines equal the table's rows in order, by sequence and by content; a diverged file (extra or changed lines, invalid UTF-8, an unparseable complete line) is renamed to `edits.jsonl.diverged-<UTC yyyymmddThhmmssZ>-<n>` (`n` counting up from 0 until the name is free, never replacing an existing aside) and a fresh file is written from the table (the database wins, nothing is lost). The table is read only after the `flock` is held, so no caller passes a reading taken before the lock. An existing file that is not 0600 owned by the caller is not appended to (`edits_log: pending`, one warning on stderr).
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
-- Snapshot: apply and validate load parameter objects, expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Initial loading and one-hop traversal run before admission, and every loaded head counts against the hard snapshot bound; reaching it refuses with `snapshot_too_large` and writes nothing. Snapshot loading counts the reverse-link scans of every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
+- Snapshot: apply and validate load parameter objects, expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
 
 ## Action values and parameter descriptions
 
@@ -52,8 +52,7 @@ the referenced type in `read` (`reference_read_forbidden` at the expression's
 schema pointer otherwise). At runtime the native read admission policy also
 checks the object's grant scope. At the reference-admission boundary, missing,
 retracted and inadmissible sources refuse `rule_reference_unavailable` with the
-same detail-free answer, subject to the snapshot-loading and creation-scope limits
-below. Availability of all rule reference inputs is checked before staleness or
+same detail-free answer. Availability of all rule reference inputs is checked before staleness or
 expected revisions. Criterion `$parameter.property` admission and freshness
 checks run only when reached in evaluation order, after snapshot loading. A
 present object whose requested property has no value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
@@ -126,13 +125,12 @@ idempotency. Criteria use the existing `{"exists":"$label"}` form to test a
 scalar or array parameter's presence (empty strings and empty arrays are present;
 array elements are not tested for liveness). For a single reference, `exists`
 checks that the referenced object exists and is live. An absent optional reference
-therefore fails `exists`. At their repaired admission/evaluation boundaries,
-bare-parameter `exists`/`fresh`, bare-property comparisons, `linked` source and
+therefore fails `exists`.
+Bare-parameter `exists`/`fresh`, bare-property comparisons, `linked` source and
 candidate reads, modify/delete/`set_reference`/`clear_reference` target reads, and
 `expected` revision reads give byte-equal answers for a missing and an unreadable
-object. This equality applies only once snapshot loading reaches those boundaries;
-it does not cover pre-admission loading or creation-scope inheritance. At the
-target-read boundary, missing, retracted and unreadable modify, delete and
+object, including at the snapshot bound; creation inherits scope only from
+admitted parameter objects. At the target-read boundary, missing, retracted and unreadable modify, delete and
 reference targets refuse with the detail-free `rule_reference_unavailable` used
 by `$parameter.property`. `create_or_modify_object` is an exception:
 it creates when missing and refuses when unreadable, because creating a missing
@@ -150,14 +148,6 @@ its first false operand. Ordinary properties cannot be cleared by a `set` value:
 absent/null parameters mean skip, not clear, and no scalar clear rule exists.
 Reference properties can still use the existing explicit `clear_reference` rule.
 
-Before admission, snapshot loading still follows one reference hop from a named
-object and counts every loaded head against the snapshot bound. An unreadable
-object can therefore cause extra reads and, at a small bound,
-`snapshot_too_large` where a missing object returns `criterion_not_evaluable` or
-`rule_reference_unavailable`. `scope_for_create` still copies the scope of an
-unreadable parameter, which can change a creation's scope or refusal. These loading
-and creation-scope limits are known and not yet repaired.
-
 Object properties and action parameters accept an optional `description` string
 of at most 300 UTF-8 bytes, for example
 `"reason":{"type":"string","required":false,"description":"Why the hold ended."}`.
@@ -168,9 +158,8 @@ descriptions. The existing MCP response and tool-list bounds still apply.
 In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an evaluated unevaluable condition under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
 - `get` and `search` on an Ontology-owned type return what actions wrote, with `basis` and history as for indexed types, and `describe` lists action types.
 
-Wire changes in this pull request at the repaired admission/evaluation boundaries
-(subject to the snapshot-loading and creation-scope limits above): a missing or
-retracted modify, delete, `set_reference` or `clear_reference` target now answers
+Wire behavior: a missing or retracted modify, delete, `set_reference` or
+`clear_reference` target answers
 `rule_reference_unavailable` without `id` (previously `revision_conflict` with
 `id`); unreadable targets give the same refusal. Unavailable `expected` objects
 now give that same detail-free refusal before their revisions are compared.

@@ -1531,3 +1531,96 @@ fn creating_sqlite_open_refuses_final_symlink_at_open_time() {
     }
     assert!(open_file(&target).is_ok());
 }
+
+#[test]
+fn admission_metadata_avoids_payloads_and_rechecks_scope_in_one_read() {
+    let mut store = store_with_work();
+    let target = id("thing", "admission");
+    store
+        .append_schema(
+            &[append(
+                &target,
+                name_obs("r1", Change::Initial, None, "value"),
+            )],
+            100,
+        )
+        .unwrap();
+    let access = store.head_access(&target).unwrap().unwrap();
+    assert_eq!(
+        store.head_after_access(&access).unwrap(),
+        store.head(&target).unwrap()
+    );
+    // A changed scope cannot authorize a payload using the previous admission.
+    let changed_scope = Scope::domain(
+        ns(),
+        "work",
+        BTreeMap::from([("tenant".into(), "other".into())]),
+    )
+    .unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE objects SET scope=?1",
+            [serde_json::to_string(&changed_scope).unwrap()],
+        )
+        .unwrap();
+    // An undecodable payload proves metadata lookup and a stale-admission
+    // rejection never read/decode the observation payload.
+    store
+        .connection
+        .execute("UPDATE observations SET payload='invalid json'", [])
+        .unwrap();
+    assert!(store.head_after_access(&access).unwrap().is_none());
+    let current = store.head_access(&target).unwrap().unwrap();
+    assert_eq!(current.scope, changed_scope);
+    assert_eq!(
+        store.scan_head_access("thing", 1, None).unwrap(),
+        vec![current.clone()]
+    );
+    assert!(
+        store
+            .scan_head_access("thing", 1, Some(&target))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(store.head(&target).is_err());
+    store
+        .write(100, |tx| {
+            assert_eq!(tx.head_access(&target)?, Some(current.clone()));
+            assert_eq!(
+                tx.scan_head_access("thing", 1, None)?,
+                vec![current.clone()]
+            );
+            assert!(tx.head_after_access(&access)?.is_none());
+            Ok::<_, StoreRefusal>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn admission_queries_seek_exact_keys_and_page_cursor_ranges() {
+    let store = store_with_work();
+    for exact in [false, true] {
+        let sql = format!("EXPLAIN QUERY PLAN {}", schema_mode::access_sql(exact));
+        let mut stmt = store.connection.prepare(&sql).unwrap();
+        let details: Vec<String> = stmt
+            .query_map(
+                params!["thing", "vps://synthetic", "root", "middle", 1],
+                |r| r.get(3),
+            )
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let objects_plan = details.iter().find(|p| p.contains("SEARCH o ")).unwrap();
+        // A type-prefix-only scan makes repeated admissions quadratic.
+        assert!(
+            objects_plan.contains("instance")
+                && objects_plan.contains("account")
+                && objects_plan.contains("native_key"),
+            "{objects_plan}"
+        );
+        if !exact {
+            assert!(objects_plan.contains('>'), "{objects_plan}");
+        }
+    }
+}
