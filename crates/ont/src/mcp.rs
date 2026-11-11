@@ -163,7 +163,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Describe),
             spec: json!({"name":"ont_describe",
-         "description":"Call first: object types and properties, links, actions, functions and sources this caller may read. Includes schema pins and authorization_revision.",
+         "description":"Call first: object types and properties, links, actions, views, functions and sources this caller may read. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}}),
         },
         Tool {

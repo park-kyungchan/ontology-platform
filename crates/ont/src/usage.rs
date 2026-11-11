@@ -62,7 +62,7 @@ const SPECS: &[Spec] = &[
         form: "describe",
         options: &[],
         stdin: true,
-        fields: "op?: describe|null; domain?: string|null; object_type?: string|null",
+        fields: "op?: describe|null; domain?: string|null; object_type?: string|null; lists views and args",
         example: "echo '{}' | ont describe",
     },
     Spec {

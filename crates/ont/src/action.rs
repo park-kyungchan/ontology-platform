@@ -2146,6 +2146,32 @@ enum ApplyOutcome {
     Already { action_id: String, edits: Value },
 }
 
+/// Fixed recovery text keyed only by criterion codes, never request values or
+/// interpolated criterion messages. Unknown domain criteria use a generic repair.
+fn submission_hint(codes: &[String]) -> String {
+    let mut hints = Vec::new();
+    for code in codes {
+        let hint = match code.as_str() {
+            "decision_already_current" => {
+                "a current decision already owns the topic and supersede_decision takes its Id"
+            }
+            "duplicate_active_hold" => {
+                "an active hold already covers the effect and lift_hold takes its Id once its condition is satisfied"
+            }
+            "older_measurement" => {
+                "a later observation already exists and record_measurement needs the latest observation time, with equal-time correction allowed"
+            }
+            "task_not_current" => "the task must be current; run ont index --source task_states",
+            "hold_not_active" => "lift_hold requires an active hold",
+            _ => "satisfy the failed criteria listed in failures before retrying",
+        };
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    format!("Resolve the submission criteria: {}.", hints.join("; "))
+}
+
 pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, Failure> {
     if let Some(r) = &req.request_id
         && !valid_request_id(r)
@@ -2221,6 +2247,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                 let failures: Vec<Value> = failed.iter().map(|c| json!({"code":c.code,"message":c.message})).collect();
                 let message = failed.first().map(|c| c.message.clone()).unwrap_or_default();
                 return Err(Refusal::new("submission_criteria")
+                    .with("hint", json!(submission_hint(&codes)))
                     .with("failed", json!(codes)).with("failures", json!(failures)).with("message", json!(message)).into());
             }
             let mut basis: Vec<Value> = references.basis.values().cloned().collect();

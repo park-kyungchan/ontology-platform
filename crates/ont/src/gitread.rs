@@ -41,10 +41,11 @@ pub fn strip_credentials(url: &str) -> String {
         let end = rest.find('/').unwrap_or(rest.len());
         let authority = &rest[..end];
         let at = authority.rfind('@').or_else(|| {
-            // Recover malformed raw-slash passwords, while leaving a host
-            // with a numeric port (and @ in its path) untouched.
-            let (_, password) = authority.split_once(':')?;
-            if authority.starts_with('[') || password.bytes().all(|b| b.is_ascii_digit()) {
+            // Recover raw-slash passwords, including numeric prefixes. The
+            // malformed userinfo and a port followed by @ in a path can be
+            // indistinguishable; redact that ambiguity conservatively.
+            authority.split_once(':')?;
+            if authority.starts_with('[') {
                 return None;
             }
             let first_at = rest.find('@')?;
@@ -56,12 +57,16 @@ pub fn strip_credentials(url: &str) -> String {
         if let Some(at) = at {
             return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
         }
-    } else if let Some(first_at) = url.find('@') {
+    } else if !url.starts_with('/')
+        && let Some(first_at) = url.find('@')
+    {
         // The host separator follows userinfo; @ in the repository path
         // belongs to the path, not to the password.
         if let Some(colon) = url[first_at..].find(':') {
             let host_end = first_at + colon;
-            if let Some(at) = url[..host_end].rfind('@') {
+            if !url[first_at..host_end].contains('/')
+                && let Some(at) = url[..host_end].rfind('@')
+            {
                 return url[at + 1..].to_string();
             }
         }
@@ -230,12 +235,21 @@ mod tests {
             ("https://host/path@name", "https://host/path@name"),
             ("https://TOKEN@host/o/r@x", "https://host/o/r@x"),
             ("user:pw@host:org/re@po", "host:org/re@po"),
-            ("https://host:443/p@n", "https://host:443/p@n"),
+            ("https://host:443/p@n", "https://n"),
             ("https://user:p@ss@host/x", "https://host/x"),
             ("ssh://user:pw@host:22/x", "ssh://host:22/x"),
             ("user:p@ss@host:org/re@po", "host:org/re@po"),
             ("https://user:pa/ss@host/o/r@x", "https://host/o/r@x"),
             ("https://[::1]:443/p@n", "https://[::1]:443/p@n"),
+            ("https://u:12/34@h/x", "https://h/x"),
+            ("https://u:12/34@h", "https://h"),
+            ("https://host:443/p@n/x", "https://n/x"),
+            ("./a@b/c:d", "./a@b/c:d"),
+            ("/a@b/c:d", "/a@b/c:d"),
+            ("git@host:path", "host:path"),
+            ("ssh://user@host:22/x", "ssh://host:22/x"),
+            ("https://host:443/x", "https://host:443/x"),
+            ("ssh://user:password@[::1]:22/x", "ssh://[::1]:22/x"),
         ] {
             assert_eq!(strip_credentials(remote), stripped, "remote: {remote}");
         }

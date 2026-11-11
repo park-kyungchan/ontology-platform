@@ -20,7 +20,7 @@ def main():
   (out/f'static-{i:02d}.stderr').write_text(child.stderr)
   rows.append({'argv':cmd,'exit':child.returncode,'stdout':f'static-{i:02d}.stdout','stderr':f'static-{i:02d}.stderr'})
   assert child.returncode==0,rows[-1]
- meta=json.loads((out/'static-01.stdout').read_text()); assert {x['name'] for x in meta['packages']}=={'ont-core','ont-store','ontd'}
+ meta=json.loads((out/'static-01.stdout').read_text()); assert {x['name'] for x in meta['packages']}=={'ont-core','ont-store','ont-daemon','ont'}
  lock=tomllib.loads((ROOT/'Cargo.lock').read_text())
  expected={'rusqlite':'0.32.1','libsqlite3-sys':'0.30.1','serde':'1.0.228','serde_json':'1.0.145','sha2':'0.10.9'}
  for name,version in expected.items(): assert any(x['name']==name and x['version']==version for x in lock['package'])
@@ -50,6 +50,6 @@ def main():
   elif isinstance(v,list):
    for x in v:clear_synthetic_lineage(x)
  clear_synthetic_lineage(v1);clear_synthetic_lineage(v2);assert exact_json(v1,v2)
- report={'commands':rows,'frozen_pins':len(pins),'packages':3,'s05_exact_audit_pointer_rows':count,'v2_changes_only_verified_synthetic_lineage':True,'rust_compilation':False,'candidate_execution':False,'lockfile_sha256':hashlib.sha256((ROOT/'Cargo.lock').read_bytes()).hexdigest()}
+ report={'commands':rows,'frozen_pins':len(pins),'packages':len(meta['packages']),'s05_exact_audit_pointer_rows':count,'v2_changes_only_verified_synthetic_lineage':True,'rust_compilation':False,'candidate_execution':False,'lockfile_sha256':hashlib.sha256((ROOT/'Cargo.lock').read_bytes()).hexdigest()}
  (out/'static-report.json').write_text(json.dumps(report,indent=2)+'\n'); print(json.dumps(report,indent=2))
 if __name__=='__main__':main()

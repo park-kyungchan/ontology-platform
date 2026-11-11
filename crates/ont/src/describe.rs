@@ -72,6 +72,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
     let mut action_types = Vec::new();
     let mut functions = Vec::new();
     let mut sources = Vec::new();
+    let mut views = Vec::new();
     for domain in &domains {
         let Some(schema) = set.schema(domain) else {
             continue;
@@ -151,6 +152,17 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                 "criterion_codes":at.submission_criteria.iter().map(|c| c.code.clone()).collect::<Vec<_>>()
             }));
         }
+        for (name, definition) in &schema.views {
+            if readable.contains(&definition.object_type)
+                && req
+                    .object_type
+                    .as_ref()
+                    .is_none_or(|t| t == &definition.object_type)
+            {
+                views.push(json!({"domain":domain,"name":name,
+                    "args":definition.args,"object_type":definition.object_type}));
+            }
+        }
         for name in schema.functions.keys() {
             functions.push(json!({"domain":domain,"name":name}));
         }
@@ -195,7 +207,8 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
             "link_types":link_types,
             "action_types":action_types,
             "functions":functions,
-            "sources":sources
+            "sources":sources,
+            "views":views
         }),
         pins,
     })

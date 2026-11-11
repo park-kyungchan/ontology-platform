@@ -937,3 +937,155 @@ fn commit_oversize_refuses_without_a_store() {
     assert_eq!((code, ans["code"].as_str()), (2, Some("invalid_request")));
     assert!(!std::path::Path::new(&t.store()).exists());
 }
+
+#[test]
+fn empty_stdin_defaults_optional_requests_and_names_required_fields() {
+    let t = Temp::new();
+    assert_eq!(install_example(&t).0, 0);
+    for bytes in [&b""[..], &b" \t\r\n"[..]] {
+        for command in [&["describe"][..], &["action", "list"][..]] {
+            let store = t.store();
+            let mut args = vec!["--store", &store];
+            args.extend_from_slice(command);
+            assert_eq!(run(&args, bytes), run(&args, b"{}"));
+            assert_eq!(run(&args, bytes).0, 0);
+        }
+        for (command, field) in [
+            (&["get"][..], "/id"),
+            (&["search"][..], "/object_type"),
+            (&["render"][..], "/view"),
+            (&["action", "validate"][..], "/action_type"),
+            (&["action", "apply"][..], "/action_type"),
+        ] {
+            let store = t.store();
+            let mut args = vec!["--store", &store];
+            args.extend_from_slice(command);
+            let (code, answer) = run(&args, bytes);
+            assert_eq!(code, 2, "{answer}");
+            assert_eq!(answer["code"], "invalid_request");
+            assert_eq!(answer["field"], field, "{answer}");
+        }
+    }
+}
+
+#[test]
+fn file_install_refuses_dangling_and_existing_store_links() {
+    let t = Temp::new();
+    let file = t.file("example.json", EXAMPLE);
+    let target = t.0.join("target.sqlite");
+    let link = t.0.join("link.sqlite");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for existing in [false, true] {
+        if existing {
+            assert_eq!(
+                run(
+                    &[
+                        "--store",
+                        target.to_str().unwrap(),
+                        "schema",
+                        "install",
+                        &file
+                    ],
+                    b""
+                )
+                .0,
+                0
+            );
+        }
+        let before = std::fs::read(&target).ok();
+        let (code, answer) = run(
+            &[
+                "--store",
+                link.to_str().unwrap(),
+                "schema",
+                "install",
+                &file,
+            ],
+            b"",
+        );
+        assert_eq!(code, 2, "{answer}");
+        assert_eq!(answer["code"], "store_path_is_symlink");
+        assert_eq!(answer["field"], "--store");
+        assert_eq!(std::fs::read(&target).ok(), before);
+    }
+    assert_eq!(
+        run(
+            &[
+                "--store",
+                target.to_str().unwrap(),
+                "schema",
+                "install",
+                &file
+            ],
+            b""
+        )
+        .0,
+        0
+    );
+}
+
+// Each hostile environment is confined to a child test process; the parallel
+// test runner's environment never changes (and no unsafe set_var is needed).
+#[test]
+fn git_env_read_child() {
+    let Some(repo) = std::env::var_os("ONT_TEST_GIT_REPO") else {
+        return;
+    };
+    let commit = std::env::var("ONT_TEST_GIT_COMMIT").unwrap();
+    let got = ont::gitread::read_schema(
+        std::path::Path::new(&repo),
+        &commit,
+        "ontology/work.schema.json",
+    )
+    .unwrap();
+    assert_eq!(got.bytes, EXAMPLE);
+    assert_eq!(got.repository, "example.com:park/repo.git");
+}
+
+#[test]
+fn git_reads_committed_bytes_despite_every_local_environment_override() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let names = git(
+        std::path::Path::new(&repo),
+        &["rev-parse", "--local-env-vars"],
+    );
+    let mut hostile: BTreeMap<String, String> = names
+        .lines()
+        .map(|s| (s.into(), "/absent-o17b-hostile".into()))
+        .collect();
+    hostile.extend([
+        (
+            "GIT_CONFIG_PARAMETERS".into(),
+            "'core.repositoryformatversion=999'".into(),
+        ),
+        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        (
+            "GIT_CONFIG_KEY_0".into(),
+            "core.repositoryformatversion".into(),
+        ),
+        ("GIT_CONFIG_VALUE_0".into(), "999".into()),
+        ("GIT_OBJECT_DIRECTORY".into(), "/absent-o17b-objects".into()),
+    ]);
+    for variables in hostile
+        .iter()
+        .map(|(k, v)| BTreeMap::from([(k.clone(), v.clone())]))
+        .chain(std::iter::once(hostile.clone()))
+    {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "git_env_read_child", "--nocapture"])
+            .env("ONT_TEST_GIT_REPO", &repo)
+            .env("ONT_TEST_GIT_COMMIT", &commit)
+            .envs(&variables)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "variables {:?}: {} {}",
+            variables.keys(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+    }
+}

@@ -712,3 +712,142 @@ fn planned_field_origins_are_request_pointers_cli_and_mcp() {
         assert!(!t.0.join("edits.jsonl").exists());
     }
 }
+
+#[test]
+fn string_reference_filter_hint_preserves_refusal_and_full_id_admission() {
+    let t = Temp::new();
+    for filter in [
+        json!({"eq":["ref","secret-native-key"]}),
+        json!({"ne":["ref","secret-native-key"]}),
+        json!({"all":[{"in":["ref",["secret-native-key"]]}]}),
+    ] {
+        let input = json!({"object_type":"item","where":filter});
+        let (exit, answer) = t.cli(&["search"], input.clone());
+        assert_eq!(exit, 2);
+        diagnostic(&answer, "wrong_value_type", "/where");
+        assert_eq!(t.mcp("ont_search", input), answer);
+        let hint = answer["hint"].as_str().unwrap();
+        for text in [
+            "full Id",
+            "object_type",
+            "namespace",
+            "native_key",
+            "search on the referenced type",
+        ] {
+            assert!(hint.contains(text), "{answer}");
+        }
+        assert!(!answer.to_string().contains("secret-native-key"));
+    }
+    let id = json!({"object_type":"item","namespace":{"instance":"test","account":"root"},"native_key":"key"});
+    assert_eq!(
+        t.cli(
+            &["search"],
+            json!({"object_type":"item","where":{"eq":["ref",id]}})
+        )
+        .0,
+        0
+    );
+    let (_, answer) = t.cli(
+        &["search"],
+        json!({"object_type":"item","where":{"eq":["rank","secret-native-key"]}}),
+    );
+    assert!(answer.get("hint").is_none());
+}
+
+#[test]
+fn submission_hints_use_only_fixed_code_text_and_keep_failure_details() {
+    for codes in [
+        vec!["decision_already_current"],
+        vec!["older_measurement"],
+        vec!["decision_already_current", "duplicate_active_hold"],
+        vec!["private_custom_code"],
+    ] {
+        let t = Temp::new();
+        let mut schema: Value =
+            serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+        schema["version"] = json!(2);
+        schema["action_types"]["create_item"]["submission_criteria"] = json!(codes.iter().map(|code| json!({"code":code,"message":"Fixed failure message.","all":[{"eq":["$title","expected"]}]})).collect::<Vec<_>>());
+        let file = t.0.join("candidate.json");
+        std::fs::write(&file, schema.to_string()).unwrap();
+        assert_eq!(
+            t.cli(&["schema", "install", file.to_str().unwrap()], json!({}))
+                .0,
+            0
+        );
+        let request = json!({"action_type":"create_item","request_id":"hint-test","parameters":{"title":"private-parameter-value","rank":1}});
+        let (exit, answer) = t.cli(&["action", "apply"], request.clone());
+        assert_eq!(exit, 2, "{answer}");
+        assert_eq!(answer["code"], "submission_criteria");
+        assert_eq!(answer["failed"], json!(codes));
+        assert_eq!(
+            answer["failures"],
+            json!(
+                codes
+                    .iter()
+                    .map(|code| json!({"code":code,"message":"Fixed failure message."}))
+                    .collect::<Vec<_>>()
+            )
+        );
+        assert_eq!(t.mcp("ont_action_apply", request), answer);
+        let hint = answer["hint"].as_str().unwrap();
+        assert!(!hint.contains("private-parameter-value"));
+        assert!(!hint.contains("Fixed failure message"));
+        if codes.contains(&"decision_already_current") {
+            assert!(hint.contains("supersede_decision takes its Id"));
+        }
+        if codes.contains(&"older_measurement") {
+            assert!(hint.contains("latest observation time"));
+        }
+        if codes.contains(&"duplicate_active_hold") {
+            assert!(hint.contains("lift_hold takes its Id"));
+        }
+        if codes.contains(&"private_custom_code") {
+            assert!(hint.contains("failed criteria listed in failures"));
+        }
+    }
+}
+
+#[test]
+fn transform_feedback_distinguishes_primary_keys_and_parameters() {
+    let t = Temp::new();
+    for parameter in [false, true] {
+        let mut schema: Value =
+            serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+        let pointer = if parameter {
+            schema["action_types"]["create_item"]["parameters"]["title"]["transform"] =
+                json!("first_word");
+            "/action_types/create_item/parameters/title/transform"
+        } else {
+            schema["sources"] = json!({"input":{"kind":"json_records"}});
+            schema["object_types"]["item"]["owner"] = json!({"source":"input"});
+            schema["object_types"]["item"]["primary_key"] =
+                json!({"from":"/key","transform":"parse_integer"});
+            "/object_types/item/primary_key/transform"
+        };
+        let file = t.0.join("transform.json");
+        std::fs::write(&file, schema.to_string()).unwrap();
+        let (exit, answer) = t.cli(&["schema", "check", file.to_str().unwrap()], json!({}));
+        assert_eq!(exit, 2, "{answer}");
+        assert!(
+            answer["violations"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"code":"invalid_transform","pointer":pointer})),
+            "{answer}"
+        );
+        if parameter {
+            assert_eq!(
+                answer["rule"],
+                "transform is forbidden on action parameters"
+            );
+        } else {
+            assert!(
+                answer["rule"]
+                    .as_str()
+                    .unwrap()
+                    .contains("parse_integer is forbidden"),
+                "{answer}"
+            );
+        }
+    }
+}

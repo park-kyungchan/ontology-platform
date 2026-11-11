@@ -150,7 +150,20 @@ fn install_at_default(
     default: &std::path::Path,
 ) -> Result<Answer, Failure> {
     if same_store_path(&ctx.store, default) {
-        return Err(Refusal::new("install_requires_commit").into());
+        return Err(Refusal::input(
+            "install_requires_commit",
+            "--store",
+            "default store schema install requires a merged commit",
+        )
+        .into());
+    }
+    if std::fs::symlink_metadata(&ctx.store).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Refusal::input(
+            "store_path_is_symlink",
+            "--store",
+            "file install requires a store path that is not a symbolic link",
+        )
+        .into());
     }
     if let Some(repo) = &req.source_repository
         && !valid_slug(repo)
@@ -414,7 +427,7 @@ pub(crate) fn schema_input_refusal(
         "invalid_name"
             if matches!(
                 v.pointer.split('/').collect::<Vec<_>>().as_slice(),
-                ["", "action_types", _, "parameters", _]
+                ["", "action_types", _, "parameters", "now"]
             ) =>
         {
             "1 to 64 ASCII characters: lowercase letter first; then lowercase letters, digits or underscore; now is reserved for action parameters"
@@ -521,7 +534,7 @@ mod tests {
             };
             assert!(same_store_path(&ctx.store, &default), "{alias}");
             assert!(
-                matches!(install_at_default(&ctx, &req, &default), Err(Failure::Refused(r)) if r.code == "install_requires_commit")
+                matches!(install_at_default(&ctx, &req, &default), Err(Failure::Refused(r)) if r.code == "install_requires_commit" && r.extra["field"] == "--store")
             );
             assert_eq!(std::fs::read(&default).unwrap(), before);
             assert!(!root.join("real/backup").exists());
