@@ -107,3 +107,11 @@ The busy timeout is 250 ms for the old modes (unchanged) and 10 s for mode
 `Schema` at open (`open_schema_with_busy_timeout` selects another value). A
 writer that cannot take the lock within it refuses with `store_busy`; it is
 not retried automatically.
+
+`Store::backup_to(target)` runs `VACUUM INTO` with a bound parameter and
+refuses an existing target with `backup_target_exists`; the caller chooses
+the path, verifies the copy and rotates old copies. `log_action` refuses an
+entry whose `domain` differs from its schema domain
+(`action_domain_mismatch`) or whose schema version is not the current pin of
+that domain in the transaction's set (`action_schema_mismatch`); a duplicate
+`action_id` is recognised by the unique-constraint extended result code.

@@ -38,6 +38,13 @@ pub(crate) fn open_file(path: &Path) -> Result<Connection, Error> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ))
 }
+/// Open an existing file read-only: no create flag, no write.
+pub(crate) fn open_file_read_only(path: &Path) -> Result<Connection, Error> {
+    db(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ))
+}
 /// A store's domain and version are selected explicitly, never inferred from rows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StoreMode {
@@ -122,12 +129,13 @@ impl Store {
         } else {
             Duration::from_millis(250)
         };
-        Self::configure_with_busy(connection, mode, busy)
+        Self::configure_with_busy(connection, mode, busy, true)
     }
     fn configure_with_busy(
         mut connection: Connection,
         mode: StoreMode,
         busy: Duration,
+        init: bool,
     ) -> Result<Self, Error> {
         db_mode(connection.busy_timeout(busy), mode)?;
         let app: i64 = db_mode(
@@ -147,6 +155,10 @@ impl Store {
             mode,
         )?;
         if app == 0 && version == 0 && count == 0 {
+            if !init {
+                // An empty file is not a store: never initialise it here.
+                return Err(Error::StoreFailure);
+            }
             let transaction = db_mode(
                 connection.transaction_with_behavior(TransactionBehavior::Immediate),
                 mode,

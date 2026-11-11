@@ -32,6 +32,7 @@ pub mod codes {
     pub const UNKNOWN_ACTION: &str = "unknown_action";
     pub const UNKNOWN_SCOPE_KEY: &str = "unknown_scope_key";
     pub const INVALID_PRINCIPAL: &str = "invalid_principal";
+    pub const INVALID_GRANT_SCOPE: &str = "invalid_grant_scope";
     pub const INVALID_PRIMARY_KEY: &str = "invalid_primary_key";
     pub const INVALID_FROM_POINTER: &str = "invalid_from_pointer";
     pub const ONTOLOGY_PROPERTY_FROM: &str = "ontology_property_from";
@@ -79,6 +80,7 @@ pub mod codes {
         UNKNOWN_ACTION,
         UNKNOWN_SCOPE_KEY,
         INVALID_PRINCIPAL,
+        INVALID_GRANT_SCOPE,
         INVALID_PRIMARY_KEY,
         INVALID_FROM_POINTER,
         ONTOLOGY_PROPERTY_FROM,
@@ -1158,6 +1160,14 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
+        // A grant scope the policy could not build (an empty key or value)
+        // would be skipped silently by every consumer: refuse it here.
+        if g.scope
+            .iter()
+            .any(|(k, val)| k.is_empty() || val.is_empty())
+        {
+            v(codes::INVALID_GRANT_SCOPE, format!("{gp}/scope"), &mut out);
+        }
         for key in g.scope.keys() {
             if !schema.scope_keys.contains(key) {
                 v(
@@ -1649,6 +1659,17 @@ impl SchemaSet {
     }
     pub fn schema(&self, domain: &str) -> Option<&Schema> {
         self.domains.get(domain)
+    }
+    /// This set with one domain replaced (or added) by a checked schema.
+    pub fn with_domain(&self, checked: CheckedSchema) -> Result<Self, Vec<Violation>> {
+        let mut entries: Vec<(Schema, Option<SchemaPin>)> = self
+            .domains
+            .iter()
+            .filter(|(d, _)| *d != &checked.schema.domain)
+            .map(|(d, s)| (s.clone(), self.pins.get(d).cloned()))
+            .collect();
+        entries.push((checked.schema, Some(checked.pin)));
+        Self::build(entries)
     }
     pub fn pin(&self, domain: &str) -> Option<&SchemaPin> {
         self.pins.get(domain)

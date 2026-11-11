@@ -6,7 +6,7 @@
 //! every transaction (read or write) first compares the latest
 //! `schema_installs` rows with the cache and rebuilds the set inside that
 //! transaction when they differ.
-use super::{Append, Store, StoreMode, db, decode, open_file};
+use super::{Append, Store, StoreMode, db, decode, open_file, open_file_read_only};
 use ont_core::schema::{PropertyType, Schema, SchemaPin, SchemaSet, Violation, codes};
 use ont_core::{Change, Error, Id, Knowledge, Observation, Scope};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -241,7 +241,7 @@ impl SchemaWrite<'_> {
         append_schema_in(self.tx, &self.schemas, item, self.now)
     }
     pub fn log_action(&mut self, entry: &ActionLogEntry) -> Result<i64, StoreRefusal> {
-        append_action_log_in(self.tx, entry)
+        append_action_log_in(self.tx, &self.schemas, entry)
     }
     pub fn head(&self, id: &Id) -> Result<Option<SchemaHead>, StoreRefusal> {
         head_in(self.tx, id)
@@ -263,6 +263,25 @@ impl Store {
             open_file(path).map_err(StoreRefusal::from)?,
             StoreMode::Schema,
             busy,
+            true,
+        )
+        .map_err(StoreRefusal::from)?;
+        store.schemas = load_schema_set(&store.connection)?;
+        Ok(store)
+    }
+    /// Open a store that must already exist and already be a format 3
+    /// store. The connection is read-only, there is no create flag, and an
+    /// empty or foreign file refuses with `store_failure` and keeps its
+    /// bytes. A missing file is `store_not_found`.
+    pub fn open_schema_existing(path: &Path) -> Result<Self, StoreRefusal> {
+        if !path.exists() {
+            return Err(StoreRefusal::new("store_not_found"));
+        }
+        let mut store = Self::configure_with_busy(
+            open_file_read_only(path).map_err(StoreRefusal::from)?,
+            StoreMode::Schema,
+            Duration::from_secs(10),
+            false,
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
@@ -398,7 +417,14 @@ impl Store {
             ],
         ))?;
         map_db(tx.commit())?;
-        self.schemas = load_schema_set(&self.connection)?;
+        // No reload outside a transaction: reuse the set read in this
+        // transaction plus the new install. If that cannot be built, the
+        // next transaction refreshes from the table anyway.
+        if let Ok(next) = set.with_domain(checked) {
+            self.schemas = next;
+        } else {
+            self.schemas = set;
+        }
         Ok(pin)
     }
 
@@ -472,6 +498,20 @@ impl Store {
             self.schemas = set;
         }
         result
+    }
+
+    /// Copy the whole store to `target` with `VACUUM INTO` (bound
+    /// parameter). The target must not exist.
+    pub fn backup_to(&mut self, target: &Path) -> Result<(), StoreRefusal> {
+        self.require_schema()?;
+        if target.exists() {
+            return Err(StoreRefusal::new("backup_target_exists"));
+        }
+        let target = target
+            .to_str()
+            .ok_or_else(|| StoreRefusal::from(Error::StoreFailure))?;
+        map_db(self.connection.execute("VACUUM INTO ?1", params![target]))?;
+        Ok(())
     }
 
     pub fn action_log(&mut self) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
@@ -751,8 +791,24 @@ fn action_log_in(connection: &Connection) -> Result<Vec<(i64, ActionLogEntry)>, 
 
 pub(crate) fn append_action_log_in(
     tx: &Transaction<'_>,
+    schemas: &SchemaSet,
     entry: &ActionLogEntry,
 ) -> Result<i64, StoreRefusal> {
+    if entry.domain != entry.schema_domain {
+        return Err(StoreRefusal::new("action_domain_mismatch"));
+    }
+    let current = schemas.pin(&entry.schema_domain);
+    if current.is_none_or(|p| p.version != entry.schema_version) {
+        return Err(StoreRefusal::new("action_schema_mismatch"));
+    }
+    let exists = map_db(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM action_log WHERE action_id=?1)",
+        params![entry.action_id],
+        |r| r.get::<_, bool>(0),
+    ))?;
+    if exists {
+        return Err(StoreRefusal::new("duplicate_action_id"));
+    }
     let text =
         |v: &Value| serde_json::to_string(v).map_err(|_| StoreRefusal::from(Error::StoreFailure));
     let result = tx.execute(
@@ -773,9 +829,8 @@ pub(crate) fn append_action_log_in(
     );
     match result {
         Ok(_) => Ok(tx.last_insert_rowid()),
-        Err(e)
-            if e.to_string()
-                .contains("UNIQUE constraint failed: action_log.action_id") =>
+        Err(rusqlite::Error::SqliteFailure(f, _))
+            if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE =>
         {
             Err(StoreRefusal::new("duplicate_action_id"))
         }
