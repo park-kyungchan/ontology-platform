@@ -163,13 +163,13 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Describe),
             spec: json!({"name":"ont_describe",
-         "description":"Call first: lists the object types with their properties, plus links, actions, functions and sources this caller may read. Always carries schema pins and authorization_revision.",
+         "description":"Call first: object types and properties, links, actions, functions and sources this caller may read. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}}),
         },
         Tool {
             op: ToolOp::Read(Op::Get),
             spec: json!({"name":"ont_get",
-         "description":"One object with its full history. id: an objects[].id value from ont_search. Hidden and missing answer alike (unavailable). Always carries schema pins and authorization_revision.",
+         "description":"One object's full history. id: objects[].id from ont_search. Hidden and missing both return unavailable. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}}),
         },
         Tool {
@@ -183,7 +183,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Index),
             spec: json!({"name":"ont_index",
-         "description":"Read the installed sources and append what changed; returns counts per source, a failed source gives isError. sources: names (default all). One run at a time (index_busy). Always carries schema pins and authorization_revision.",
+         "description":"Index installed sources and append what changed; counts per source; failed source gives isError. sources: names (default all). One run at a time (index_busy). Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}),
         },
         Tool {
@@ -487,12 +487,28 @@ impl<'a> Server<'a> {
 fn check_request_id(arguments: &Value, required: bool) -> Result<(), Failure> {
     match arguments.get("request_id") {
         None if !required => Ok(()),
-        Some(Value::String(id)) if !id.is_empty() && id.len() <= 64
-            && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) => Ok(()),
-        _ => Err(Refusal::new("invalid_argument")
-            .with("argument", json!("request_id"))
-            .with("message", json!("request_id must be 1-64 characters of A-Z a-z 0-9 . _ - (^[A-Za-z0-9._-]{1,64}$)"))
-            .into()),
+        Some(Value::String(id))
+            if !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) =>
+        {
+            Ok(())
+        }
+        _ => Err(Refusal::input(
+            "invalid_argument",
+            "/request_id",
+            "1 to 64 ASCII characters: letters, digits, '.', '_', '-'",
+        )
+        .with("argument", json!("request_id"))
+        .with(
+            "message",
+            json!(
+                "request_id must be 1-64 characters of A-Z a-z 0-9 . _ - (^[A-Za-z0-9._-]{1,64}$)"
+            ),
+        )
+        .into()),
     }
 }
 

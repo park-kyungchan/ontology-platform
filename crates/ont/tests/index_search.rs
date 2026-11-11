@@ -731,7 +731,9 @@ fn refusal_codes_of_index_and_search() {
         br#"{"object_type":"task","where":{"eq":["nope",1]}}"#,
         "undeclared_property",
     );
-    assert_eq!(ans["property"], "nope");
+    assert_eq!(ans["field"], "/where");
+    assert!(ans["rule"].is_string());
+    assert!(!ans.to_string().contains("nope"));
     expect(
         br#"{"object_type":"task","where":{"eq":["count","x"]}}"#,
         "wrong_value_type",
@@ -755,8 +757,8 @@ fn refusal_codes_of_index_and_search() {
     // Index: unknown source, bad request, missing store (with its path).
     let (code, ans) = run(&["--store", &t.store(), "index", "--source", "nope"], b"");
     assert_eq!(
-        (code, ans["code"].as_str(), ans["source"].as_str()),
-        (2, Some("unknown_source"), Some("nope"))
+        (code, ans["code"].as_str(), ans["field"].as_str()),
+        (2, Some("unknown_source"), Some("/sources"))
     );
     let (code, ans) = run(
         &[

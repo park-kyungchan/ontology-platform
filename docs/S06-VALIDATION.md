@@ -50,8 +50,8 @@ export CARGO_TARGET_DIR=/home/palantirkc/scratch/rust-s06-build/target
 cargo +1.95.0 check --workspace --all-targets --locked --offline -j1
 cargo +1.95.0 test --workspace --all-targets --locked --offline -j1
 cargo +1.95.0 clippy --workspace --all-targets --locked --offline -j1 -- -D warnings
-cargo +1.95.0 build -p ontd --locked --offline -j1
-python3 conformance/verify.py --candidate "$CARGO_TARGET_DIR/debug/ontd" --out conformance/results/candidate-01
+cargo +1.95.0 build -p ont-daemon --locked --offline -j1
+python3 conformance/verify.py --candidate "$CARGO_TARGET_DIR/debug/ont-daemon" --out conformance/results/candidate-01
 ```
 
 The process comparator preserves all 26 actual frames and exit statuses. Rust

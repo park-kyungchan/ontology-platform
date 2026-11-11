@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, Weak};
 
 pub mod action;
 pub mod answer;
+pub mod input;
 pub mod program;
 pub mod report;
 pub mod schema;

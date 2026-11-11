@@ -153,10 +153,20 @@ fn repository_of(checkout: &Path) -> String {
 /// `commit_not_merged`, `schema_path_not_found`.
 pub fn read_schema(checkout: &Path, commit: &str, path: &str) -> Result<GitSchema, Failure> {
     if !valid_commit(commit) {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "--commit",
+            "40 lowercase hexadecimal characters",
+        )
+        .into());
     }
     if !valid_repo_path(path) {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "--path",
+            "nonempty relative repository path without a parent (..) component",
+        )
+        .into());
     }
     let ancestor = run_git(
         checkout,
@@ -183,7 +193,14 @@ pub fn read_schema(checkout: &Path, commit: &str, path: &str) -> Result<GitSchem
         MAX_SCHEMA_BYTES,
     ) {
         Ok(o) => o,
-        Err(GitFail::TooLarge) => return Err(Refusal::new("invalid_request").into()),
+        Err(GitFail::TooLarge) => {
+            return Err(Refusal::input(
+                "invalid_request",
+                "--path",
+                "schema file at most 16777216 bytes",
+            )
+            .into());
+        }
         Err(e) => return Err(e.into_failure()),
     };
     if !shown.success {

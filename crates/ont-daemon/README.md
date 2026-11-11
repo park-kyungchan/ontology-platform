@@ -1,7 +1,7 @@
-# ontd
+# ont-daemon
 
 Consumer: harmless local demonstration and process conformance. Service links
-ont-core and ont-store; `ontd --synthetic` reads one <=64KiB strict JSON query until
+ont-core and ont-store; `ont-daemon --synthetic` reads one <=64KiB strict JSON query until
 EOF with a fixed synthetic principal/clock. No daemon, socket, credential lookup,
 root probe or caller-supplied source path. See repository contract for the narrow
 S05 recorded-frame adapter; the copied S05 expectations are input evidence and
@@ -11,8 +11,8 @@ are distinct from independent S06 conformance expectations.
 effect and serialized output. The separate `ont-local-fake --root ABSOLUTE_PATH`
 binary initializes/opens only explicit synthetic files. Its selectable fixture
 profiles and administrative `perturb` command are test facilities, not production
-authentication or public domain APIs. Default `cargo run -p ontd` still selects
-the original ontd binary. S07's separate CLI cannot perform network/Academy calls.
+authentication or public domain APIs. Default `cargo run -p ont-daemon` still selects
+the original ont-daemon binary. S07's separate CLI cannot perform network/Academy calls.
 
 ## Program pilot (PR7)
 
@@ -74,7 +74,7 @@ Lead release.
 
 ## Typed answer records
 
-`ontd --synthetic --answer-record` and `ont-program-pilot --answer-record`
+`ont-daemon --synthetic --answer-record` and `ont-program-pilot --answer-record`
 explicitly select `ontology-answer/v1`. `--help` describes the contract: **prose
 answers may only restate record fields**. Defaults retain native output bytes.
 The pilot option has the same fixed identity, source acquisition, live-run release
@@ -118,7 +118,7 @@ Both CLIs read OS arguments fallibly. With `--answer-record`, every invalid or
 non-UTF-8 argument yields only `invalid_request`, empty stderr and exit 2,
 regardless of argument/help order. Default pilot invalid arguments preserve the
 base static diagnostic and exit 2. One explicit compatibility exception removes
-a legacy leak: default ontd non-UTF-8 arguments now also yield the code-only
+a legacy leak: default ont-daemon non-UTF-8 arguments now also yield the code-only
 `invalid_request` record and exit 2 instead of a panic containing argument bytes.
 
 Both CLIs use fallible stdout/stderr writes for help, results and diagnostics.
@@ -129,7 +129,7 @@ exit status (help/success 0, refusal 2, operational/output error 1).
 
 ### Answer record v2 (explicit selector)
 
-`ontd --synthetic --answer-record=v2` and `ont-program-pilot --answer-record=v2`
+`ont-daemon --synthetic --answer-record=v2` and `ont-program-pilot --answer-record=v2`
 select `ontology-answer/v2`. `--answer-record` and `--answer-record=v1` select
 v1; omitting the flag keeps native output. Existing help/native/v1 bytes stay
 unchanged. The pilot retains the same selected bytes it publishes. Source

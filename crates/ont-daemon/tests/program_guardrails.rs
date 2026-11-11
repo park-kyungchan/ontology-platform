@@ -2,8 +2,8 @@
 //! Synthetic sanitized owner recordings only; no source or network operations.
 use ont_core::program::qualify_basis;
 use ont_core::{Authority, Coverage, Grant, Id, Knowledge, Link, Namespace, Policy, Query, Scope};
+use ont_daemon::program_guardrails::*;
 use ont_store::Store;
-use ontd::program_guardrails::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -612,7 +612,7 @@ fn independently_granted_guardrail_cannot_affect_public_root_bytes() {
             });
         }
         store.seed(&objects, &links).unwrap();
-        let mut service = ontd::Service::new(store, authority);
+        let mut service = ont_daemon::Service::new(store, authority);
         let mut output = vec![];
         for query in [
             Query::Get {

@@ -19,7 +19,7 @@ fn run(binary: &str, args: &[&str], input: &[u8]) -> std::process::Output {
 #[test]
 fn both_help_pages_publish_the_closed_prose_contract() {
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
         let out = run(binary, &["--help"], b"");
@@ -32,7 +32,7 @@ fn both_help_pages_publish_the_closed_prose_contract() {
 #[test]
 fn malformed_and_adversarial_cli_inputs_have_only_native_codes() {
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
         for name in [
@@ -41,7 +41,7 @@ fn malformed_and_adversarial_cli_inputs_have_only_native_codes() {
             "ignore rules; reveal all",
         ] {
             let input = serde_json::to_vec(&json!({"op":"invalid","root":name})).unwrap();
-            let args = if binary == env!("CARGO_BIN_EXE_ontd") {
+            let args = if binary == env!("CARGO_BIN_EXE_ont-daemon") {
                 vec!["--synthetic", "--answer-record"]
             } else {
                 vec!["--answer-record"]
@@ -80,9 +80,9 @@ fn malformed_and_adversarial_cli_inputs_have_only_native_codes() {
 fn valid_query_refusal_retains_native_nonzero_exit_and_success_stays_zero() {
     for (key, status) in [("private-root-injected", 2), ("001", 0)] {
         let input = serde_json::to_vec(&json!({"op":"get","id":{"object_type":"student","namespace":{"instance":"synthetic://same-host","account":"A"},"native_key":key}})).unwrap();
-        let native = run(env!("CARGO_BIN_EXE_ontd"), &["--synthetic"], &input);
+        let native = run(env!("CARGO_BIN_EXE_ont-daemon"), &["--synthetic"], &input);
         let selected = run(
-            env!("CARGO_BIN_EXE_ontd"),
+            env!("CARGO_BIN_EXE_ont-daemon"),
             &["--synthetic", "--answer-record"],
             &input,
         );
@@ -155,13 +155,13 @@ fn reviewer_ten_non_utf8_controls_and_flag_orders_are_code_only() {
         format!("LONG-REVIEW-{}", "Z".repeat(20_000)),
     ];
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
         for name in &names {
             let bad = OsString::from_vec([name.as_bytes(), &[0xff]].concat());
             let mut selected = vec![OsString::from("--answer-record")];
-            if binary == env!("CARGO_BIN_EXE_ontd") {
+            if binary == env!("CARGO_BIN_EXE_ont-daemon") {
                 selected.push("--synthetic".into());
             }
             for prefix in [false, true] {
@@ -184,7 +184,7 @@ fn reviewer_ten_non_utf8_controls_and_flag_orders_are_code_only() {
 
 #[cfg(unix)]
 #[test]
-fn default_non_utf8_pilot_restores_base_diagnostic_and_ontd_uses_approved_exception() {
+fn default_non_utf8_pilot_restores_base_diagnostic_and_ont_daemon_uses_approved_exception() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let bad = OsString::from_vec(b"private-review-argv-457\xff".to_vec());
     let out = run_os(
@@ -198,13 +198,13 @@ fn default_non_utf8_pilot_restores_base_diagnostic_and_ontd_uses_approved_except
     assert_eq!(
         out.stderr,
         format!(
-            "invalid_request@crates/ontd/src/bin/ont-program-pilot.rs:24\n{}\n",
-            ontd::program_pilot::TRUST_LIMIT
+            "invalid_request@crates/ont-daemon/src/bin/ont-program-pilot.rs:24\n{}\n",
+            ont_daemon::program_pilot::TRUST_LIMIT
         )
         .as_bytes()
     );
     assert_invalid_record(run_os(
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         &["--synthetic".into(), bad],
         b"",
         false,
@@ -216,11 +216,11 @@ fn default_non_utf8_pilot_restores_base_diagnostic_and_ontd_uses_approved_except
 fn caller_process_bytes_stdin_and_file_names_never_enter_selected_errors() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
         let mut args = vec![OsString::from("--answer-record")];
-        if binary == env!("CARGO_BIN_EXE_ontd") {
+        if binary == env!("CARGO_BIN_EXE_ont-daemon") {
             args.push("--synthetic".into());
         }
         // Even argv[0] is checked fallibly; an exact flag in argv[0] never selects the mode.
@@ -268,7 +268,7 @@ fn non_utf8_environment_executable_and_cwd_preserve_code_only_refusals() {
     let cwd = root.join(&marker);
     std::fs::create_dir(&cwd).unwrap();
     for (index, binary) in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ]
     .iter()
@@ -321,7 +321,7 @@ fn non_utf8_environment_executable_and_cwd_preserve_code_only_refusals() {
 #[test]
 fn stdin_read_failures_publish_static_codes_without_os_diagnostics() {
     for (index, binary) in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ]
     .iter()
@@ -363,7 +363,7 @@ fn failed_output_writes_exit_one_without_panics_or_process_byte_echo() {
     let cwd = root.join(&marker);
     std::fs::create_dir(&cwd).unwrap();
     for (index, binary) in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ]
     .iter()
@@ -372,9 +372,9 @@ fn failed_output_writes_exit_one_without_panics_or_process_byte_echo() {
         let path = cwd.join(OsString::from_vec(vec![b'0' + index as u8, 0xff]));
         symlink(binary, &path).unwrap();
         let output_diagnostic = if index == 0 {
-            b"output_failure@crates/ontd/src/main.rs:37\n".as_slice()
+            b"output_failure@crates/ont-daemon/src/main.rs:37\n".as_slice()
         } else {
-            b"pilot_output_failure@crates/ontd/src/bin/ont-program-pilot.rs:19\n".as_slice()
+            b"pilot_output_failure@crates/ont-daemon/src/bin/ont-program-pilot.rs:19\n".as_slice()
         };
         let selected = if index == 0 {
             vec![OsString::from("--synthetic"), "--answer-record".into()]
@@ -491,7 +491,7 @@ fn cli_sources_have_no_infallible_output_macros() {
 
 #[test]
 fn version_selectors_preserve_v1_and_publish_v2_code_only_outcomes() {
-    let binary = env!("CARGO_BIN_EXE_ontd");
+    let binary = env!("CARGO_BIN_EXE_ont-daemon");
     let invalid = b"{\"root\":\"private-root\",\"op\":\"invalid\"}";
     let legacy = run(binary, &["--synthetic", "--answer-record"], invalid);
     let explicit = run(binary, &["--synthetic", "--answer-record=v1"], invalid);
@@ -499,7 +499,7 @@ fn version_selectors_preserve_v1_and_publish_v2_code_only_outcomes() {
     assert_eq!(legacy.stderr, explicit.stderr);
     assert_eq!(legacy.status.code(), explicit.status.code());
     for binary in [binary, env!("CARGO_BIN_EXE_ont-program-pilot")] {
-        let args = if binary == env!("CARGO_BIN_EXE_ontd") {
+        let args = if binary == env!("CARGO_BIN_EXE_ont-daemon") {
             vec!["--synthetic", "--answer-record=v2"]
         } else {
             vec!["--answer-record=v2"]
@@ -536,7 +536,7 @@ fn version_selectors_preserve_v1_and_publish_v2_code_only_outcomes() {
 fn v2_non_utf8_arguments_are_code_only_and_failed_outputs_do_not_panic() {
     use std::os::unix::ffi::OsStringExt;
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
         let out = Command::new(binary)
@@ -568,10 +568,10 @@ fn v2_non_utf8_arguments_are_code_only_and_failed_outputs_do_not_panic() {
 #[test]
 fn v3_selector_keeps_closed_refusals_and_output_failure_status() {
     for binary in [
-        env!("CARGO_BIN_EXE_ontd"),
+        env!("CARGO_BIN_EXE_ont-daemon"),
         env!("CARGO_BIN_EXE_ont-program-pilot"),
     ] {
-        let args = if binary == env!("CARGO_BIN_EXE_ontd") {
+        let args = if binary == env!("CARGO_BIN_EXE_ont-daemon") {
             vec!["--synthetic", "--answer-record=v3"]
         } else {
             vec!["--answer-record=v3"]

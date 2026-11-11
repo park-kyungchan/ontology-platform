@@ -21,7 +21,7 @@ fn untrusted_cli_inputs_do_not_reach_fixed_sources_or_live_transport() {
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.starts_with("invalid_request@") || stderr.starts_with("pilot_uid_refused@"));
-        assert!(stderr.contains(ontd::program_pilot::TRUST_LIMIT));
+        assert!(stderr.contains(ont_daemon::program_pilot::TRUST_LIMIT));
     }
     let output = Command::new(env!("CARGO_BIN_EXE_ont-program-pilot"))
         .args(["--profile", "root"])

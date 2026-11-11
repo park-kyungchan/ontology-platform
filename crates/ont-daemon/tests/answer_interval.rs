@@ -4,8 +4,8 @@ use ont_core::{
     Authority, Change, Coverage, Grant, Id, Knowledge, Lineage, Link, Namespace, Object,
     Observation, Policy, Query, Scope, Session, answer::Version, report::ReportWindow,
 };
+use ont_daemon::Service;
 use ont_store::Store;
-use ontd::Service;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 fn id(kind: &str, key: &str, account: &str) -> Id {

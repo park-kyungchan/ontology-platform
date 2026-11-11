@@ -23,7 +23,11 @@ impl GetRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "get") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be get when non-null",
+            ));
         }
         Ok(req)
     }
@@ -81,7 +85,23 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
         Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => {
             return Err(not_found());
         }
-        Err(ont_core::Error::InvalidRequest) => return Err(Refusal::new("invalid_request").into()),
+        Err(ont_core::Error::InvalidRequest) => {
+            let (field, _) = [
+                ("/id/object_type", &req.id.object_type),
+                ("/id/namespace/instance", &req.id.namespace.instance),
+                ("/id/namespace/account", &req.id.namespace.account),
+                ("/id/native_key", &req.id.native_key),
+            ]
+            .into_iter()
+            .find(|(_, v)| v.is_empty() || v.len() > 512)
+            .unwrap_or(("/id", &req.id.native_key));
+            return Err(Refusal::input(
+                "invalid_request",
+                field,
+                "each id component is a nonempty string of at most 512 UTF-8 bytes",
+            )
+            .into());
+        }
         Err(_) => return Err(Failure::Internal(internal!("authority_failure"))),
     };
     let policy_revision = principal.revision()?;

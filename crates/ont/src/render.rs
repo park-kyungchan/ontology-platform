@@ -26,13 +26,22 @@ impl RenderRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "render") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be render when non-null",
+            ));
         }
         Ok(req)
     }
 }
-fn invalid(name: &str) -> Refusal {
-    Refusal::new("invalid_argument").with("argument", json!(name))
+fn invalid(name: &str, rule: &str) -> Refusal {
+    Refusal::input(
+        "invalid_argument",
+        &crate::input::pointer("/args", name),
+        rule,
+    )
+    .with("argument", json!(name))
 }
 fn safe_value(s: &str) -> bool {
     !s.is_empty()
@@ -249,7 +258,7 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
     )?;
     for name in &view.args {
         if !req.args.contains_key(name) {
-            return Err(invalid(name).into());
+            return Err(invalid(name, "required argument declared by the view").into());
         }
     }
     let mut ref_args = Vec::new();
@@ -258,12 +267,20 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
     }
     for (name, value) in &req.args {
         if ref_args.contains(name) && !safe_value(value) {
-            return Err(Refusal::new("reference_argument_unrepresentable")
-                .with("argument", json!(name))
-                .into());
+            return Err(Refusal::input(
+                "reference_argument_unrepresentable",
+                &crate::input::pointer("/args", name),
+                "nonempty ASCII letters, digits, or . _ : / -",
+            )
+            .with("argument", json!(name))
+            .into());
         }
         if !view.args.contains(name) || !safe_value(value) {
-            return Err(invalid(name).into());
+            return Err(invalid(
+                name,
+                "declared view argument; nonempty ASCII letters, digits, or . _ : / -",
+            )
+            .into());
         }
     }
     let filter = view
@@ -271,7 +288,13 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
         .clone()
         .map(|mut f| {
             substitute_filter(&mut f, &req.args, schema, view);
-            serde_json::from_value::<Filter>(f).map_err(|_| Refusal::new("invalid_request"))
+            serde_json::from_value::<Filter>(f).map_err(|_| {
+                Refusal::input(
+                    "invalid_request",
+                    "/args",
+                    "substituted view filter must have the search filter form",
+                )
+            })
         })
         .transpose()?;
     // Enforce search's bound on raw heads, including objects admission hides.
@@ -478,6 +501,14 @@ fn plain(answer: Answer) -> Result<Value, Failure> {
     }
 }
 pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
+    check_file_count(ctx, path, None)
+}
+/// Check the caller's recorded count before checking the generated contents.
+pub fn check_file_count(
+    ctx: &Context,
+    path: &Path,
+    expected: Option<usize>,
+) -> Result<Answer, Failure> {
     let (text, _) = target(path)?;
     let found = blocks(&text).map_err(|line| {
         Refusal::new("render_drift").with(
@@ -487,6 +518,14 @@ pub fn check_file(ctx: &Context, path: &Path) -> Result<Answer, Failure> {
             }]),
         )
     })?;
+    if let Some(expected) = expected
+        && found.len() != expected
+    {
+        return Err(Refusal::new("render_block_count")
+            .with("expected", json!(expected))
+            .with("found", json!(found.len()))
+            .into());
+    }
     let mut drift = Vec::new();
     for block in &found {
         let mut refusal_code = None;
@@ -695,14 +734,24 @@ pub(crate) fn check_view_names(ctx: &Context, file: &Path) -> Result<(), Failure
         return Ok(());
     }
     let bytes = fs::read(file).map_err(|_| Refusal::new("schema_file_unreadable"))?;
-    let candidate = Schema::parse(&bytes).map_err(|_| Refusal::new("schema_violation"))?;
+    let candidate =
+        Schema::parse(&bytes).map_err(|_| crate::schema::schema_input_refusal(&bytes, &[]))?;
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set());
     for domain in set.pins().keys().filter(|d| *d != &candidate.domain) {
         if let Some(schema) = set.schema(domain) {
             for name in candidate.views.keys() {
                 if schema.views.contains_key(name) {
-                    return Err(Refusal::new("schema_violation").with("violations", json!([{"code":"duplicate_type_name","pointer":format!("/views/{name}")}])).into());
+                    return Err(Refusal::input(
+                        "schema_violation",
+                        &crate::input::pointer("/views", name),
+                        "view name must be unique across installed object types and views",
+                    )
+                    .with(
+                        "violations",
+                        json!([{"code":"duplicate_type_name","pointer":format!("/views/{name}")}]),
+                    )
+                    .into());
                 }
             }
         }

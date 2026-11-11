@@ -6,7 +6,7 @@ use ont_core::program::{
 use ont_core::{
     Authority, Coverage, Grant, Id, Knowledge, Namespace, Policy, Query, Scope, Snapshot,
 };
-use ontd::program_git::*;
+use ont_daemon::program_git::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -635,7 +635,7 @@ fn aggregate_has_separate_grant_and_hidden_repository_does_not_leak() {
         principals: BTreeMap::from([("worker".into(), vec![grant])]),
     });
     let session = authority.bind_trusted("worker").unwrap();
-    let mut service = ontd::Service::new(store, authority);
+    let mut service = ont_daemon::Service::new(store, authority);
     assert_eq!(
         service
             .render(
@@ -737,7 +737,7 @@ fn public_source_bytes_are_identical_when_an_unbound_hidden_repository_is_added(
             )]),
         });
         let session = authority.bind_trusted("worker").unwrap();
-        let mut service = ontd::Service::new(projection.memory_store().unwrap(), authority);
+        let mut service = ont_daemon::Service::new(projection.memory_store().unwrap(), authority);
         serialized.push([
             service
                 .render(
@@ -887,7 +887,8 @@ fn render_root_scope(
         principals: BTreeMap::from([("worker".into(), grants)]),
     });
     let session = authority.bind_trusted("worker").unwrap();
-    ontd::Service::new(projection.memory_store().unwrap(), authority).render(&session, query, 100)
+    ont_daemon::Service::new(projection.memory_store().unwrap(), authority)
+        .render(&session, query, 100)
 }
 fn assert_root_bytes_equal(reduced: &Projection, full: &Projection) {
     let mut queries = vec![Query::Get {
@@ -1167,7 +1168,7 @@ fn program_report_publishes_native_attribution_without_reassigning_missing_pins(
             principals: BTreeMap::from([("reader".into(), grants)]),
         });
         let session = authority.bind_trusted("reader").unwrap();
-        let mut service = ontd::Service::new(projected.memory_store().unwrap(), authority);
+        let mut service = ont_daemon::Service::new(projected.memory_store().unwrap(), authority);
         let wire = service
             .render(
                 &session,
@@ -1243,7 +1244,7 @@ fn producer_to_service_preserves_qualified_unique_and_empty_attributions() {
             principals: BTreeMap::from([("reader".into(), grants)]),
         });
         let session = authority.bind_trusted("reader").unwrap();
-        let mut service = ontd::Service::new(projected.memory_store().unwrap(), authority);
+        let mut service = ont_daemon::Service::new(projected.memory_store().unwrap(), authority);
         let window = ReportWindow { start: 0, end: 100 };
         let native: Value = serde_json::from_str(
             &service

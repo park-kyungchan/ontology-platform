@@ -891,6 +891,11 @@ fn reference_view_argument_native_key_without_mirror_and_unsafe_key_refusal() {
         let (code, answer) = t.render("named_items", json!({"title":key}));
         assert_eq!(code, 2, "{answer}");
         assert_eq!(answer["code"], "reference_argument_unrepresentable");
+        assert_eq!(answer["field"], "/args/title");
+        assert_eq!(
+            answer["rule"],
+            "nonempty ASCII letters, digits, or . _ : / -"
+        );
     }
     // The bounded addition is eq on a single reference, not in/ne/prefix,
     // reference arrays, nested placeholders or ordered reference comparisons.
@@ -914,5 +919,120 @@ fn reference_view_argument_native_key_without_mirror_and_unsafe_key_refusal() {
                 .contains(&json!({"code":"invalid_schema","pointer":"/views/named_items/filter"})),
             "{answer}"
         );
+    }
+}
+
+#[test]
+fn expect_blocks_detects_balanced_fence_hiding_a_real_block() {
+    let t = Temp::setup();
+    let (_, rendered) = t.render("items", json!({}));
+    let block = rendered["markdown"].as_str().unwrap();
+    // The inserted fence consumes the real block and closes at the bash
+    // example's closing fence; this is syntactically balanced Markdown.
+    let hidden = format!("```\n{block}\n```bash\nprintf example\n```\n");
+    let file = t.file("balanced.md", hidden.as_bytes());
+    assert_eq!(
+        t.run(&["render", "--check", &file], json!({})),
+        (0, json!({"status":"ok","blocks":0,"drift":[]}))
+    );
+    let (code, answer) = t.run(
+        &["render", "--check", &file, "--expect-blocks", "1"],
+        json!({}),
+    );
+    assert_eq!(
+        (code, answer["code"].as_str()),
+        (2, Some("render_block_count"))
+    );
+    assert_eq!(answer["expected"], 1);
+    assert_eq!(answer["found"], 0);
+    assert_eq!(
+        t.run(
+            &["render", "--check", &file, "--expect-blocks", "0"],
+            json!({})
+        )
+        .0,
+        0
+    );
+    let real = t.file("real-count.md", block.as_bytes());
+    assert_eq!(
+        t.run(
+            &["render", "--check", &real, "--expect-blocks", "1"],
+            json!({})
+        )
+        .0,
+        0
+    );
+    let (code, answer) = t.run(
+        &["render", "--check", &real, "--expect-blocks", "2"],
+        json!({}),
+    );
+    assert_eq!(
+        (code, answer["expected"].as_u64(), answer["found"].as_u64()),
+        (2, Some(2), Some(1))
+    );
+    for n in ["-1", "1.5", "18446744073709551616"] {
+        let (code, answer) = t.run(
+            &["render", "--check", &real, "--expect-blocks", n],
+            json!({}),
+        );
+        assert_eq!(code, 2);
+        assert_eq!(answer["field"], "--expect-blocks");
+        assert!(answer["rule"].is_string());
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), hidden);
+}
+
+#[test]
+fn expect_blocks_matching_count_still_detects_content_drift() {
+    let t = Temp::setup();
+    let (_, rendered) = t.render("items", json!({}));
+    let drifted = rendered["markdown"].as_str().unwrap().replace(
+        "<!-- /ont:render -->",
+        "changed content\n<!-- /ont:render -->",
+    );
+    let file = t.file("drift-count.md", drifted.as_bytes());
+    let (code, answer) = t.run(
+        &["render", "--check", &file, "--expect-blocks", "1"],
+        json!({}),
+    );
+    assert_eq!((code, answer["code"].as_str()), (2, Some("render_drift")));
+    assert_eq!(answer["drift"].as_array().unwrap().len(), 1);
+    assert_eq!(std::fs::read_to_string(file).unwrap(), drifted);
+}
+
+#[test]
+fn expect_blocks_refuses_write_and_section_combinations_without_writing() {
+    let t = Temp::setup();
+    let original = b"<!-- ont:render items schema=board@0 -->\nold\n<!-- /ont:render -->";
+    let file = t.file("write-count.md", original);
+    for command in [
+        vec![
+            "render",
+            "--write",
+            &file,
+            "--section",
+            "items",
+            "--preimage-dir",
+            t.0.to_str().unwrap(),
+            "--expect-blocks",
+            "1",
+        ],
+        vec!["render", "--section", "items", "--expect-blocks", "1"],
+        vec![
+            "render",
+            "--check",
+            &file,
+            "--section",
+            "items",
+            "--expect-blocks",
+            "1",
+        ],
+    ] {
+        let (code, answer) = t.run(&command, json!({}));
+        assert_eq!(
+            (code, answer["code"].as_str()),
+            (2, Some("invalid_argument"))
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), original);
     }
 }

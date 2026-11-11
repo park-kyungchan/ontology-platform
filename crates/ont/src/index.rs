@@ -47,7 +47,11 @@ impl IndexRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "index") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be index when non-null",
+            ));
         }
         Ok(req)
     }
@@ -92,7 +96,12 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
     if let Some(names) = &req.sources {
         let distinct: BTreeSet<&String> = names.iter().collect();
         if names.is_empty() || distinct.len() != names.len() {
-            return Err(Refusal::new("invalid_request").into());
+            return Err(Refusal::input(
+                "invalid_request",
+                "/sources",
+                "a nonempty array of distinct source names",
+            )
+            .into());
         }
     }
     let mut store = open_store(&ctx.store, true)?;
@@ -123,9 +132,12 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
                     }
                 }
                 if plan.len() == before {
-                    return Err(Refusal::new("unknown_source")
-                        .with("source", json!(name))
-                        .into());
+                    return Err(Refusal::input(
+                        "unknown_source",
+                        "/sources",
+                        "source names declared in installed schemas; use describe",
+                    )
+                    .into());
                 }
             }
         }

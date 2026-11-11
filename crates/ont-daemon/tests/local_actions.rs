@@ -3,14 +3,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use ont_core::action::{ActionInput, COPY_RECOMMENDATION, RequestKey};
 use ont_core::{Authority, Change, Error, Grant, Knowledge, Policy, Session, Snapshot};
+use ont_daemon::{
+    Service,
+    local_fake::{self as fixture, ActionCommand},
+};
 use ont_store::{
     Append, Store,
     actions::{Boundary, Evidence},
     fake::{FakeTarget, SeedCell},
-};
-use ontd::{
-    Service,
-    local_fake::{self as fixture, ActionCommand},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -606,18 +606,20 @@ fn revocation_linearizes_after_actual_effect_and_output_serialization() {
 fn additive_extension_keeps_existing_s06_graph_and_serialized_reads_unchanged() {
     let temp = Temp::new();
     let path = temp.0.join("existing-s06.sqlite");
-    let (objects, links) = ontd::synthetic::graph().unwrap();
+    let (objects, links) = ont_daemon::synthetic::graph().unwrap();
     let mut legacy = Store::open(&path).unwrap();
     legacy.seed(&objects, &links).unwrap();
     drop(legacy);
-    let authority = Authority::new(ontd::synthetic::policy());
-    let session = authority.bind_trusted(ontd::synthetic::PRINCIPAL).unwrap();
+    let authority = Authority::new(ont_daemon::synthetic::policy());
+    let session = authority
+        .bind_trusted(ont_daemon::synthetic::PRINCIPAL)
+        .unwrap();
     let query = ont_core::Query::Decide {
-        root: ontd::synthetic::student(),
+        root: ont_daemon::synthetic::student(),
         relation: "learning".into(),
     };
     let before = Service::new(Store::open(&path).unwrap(), authority.clone())
-        .render(&session, query.clone(), ontd::synthetic::NOW)
+        .render(&session, query.clone(), ont_daemon::synthetic::NOW)
         .unwrap();
     let mut upgraded = Store::open(&path).unwrap();
     upgraded.prepare_local_actions().unwrap();
@@ -626,7 +628,7 @@ fn additive_extension_keeps_existing_s06_graph_and_serialized_reads_unchanged() 
     assert_eq!(upgraded.local_journal_id().unwrap(), identity);
     drop(upgraded);
     let after = Service::new(Store::open(&path).unwrap(), authority)
-        .render(&session, query, ontd::synthetic::NOW)
+        .render(&session, query, ont_daemon::synthetic::NOW)
         .unwrap();
     assert_eq!(before, after);
 }

@@ -90,7 +90,11 @@ impl ListActionsRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "list_actions") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be list_actions when non-null",
+            ));
         }
         Ok(req)
     }
@@ -124,7 +128,11 @@ impl ValidateActionRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "validate_action") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be validate_action when non-null",
+            ));
         }
         Ok(req)
     }
@@ -151,7 +159,11 @@ impl ApplyActionRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "apply_action") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be apply_action when non-null",
+            ));
         }
         Ok(req)
     }
@@ -175,11 +187,57 @@ pub fn canonical(v: &Value) -> Value {
 fn canonical_string(v: &Value) -> String {
     serde_json::to_string(&canonical(v)).unwrap_or_default()
 }
-fn invalid_parameter(name: &str) -> Failure {
-    Refusal::new("invalid_parameter")
-        .with("parameter", json!(name))
-        .into()
+fn parameter_field(name: &str) -> String {
+    crate::input::pointer("/parameters", name)
 }
+fn parameter_refusal(field: &str, rule: &str) -> Refusal {
+    let mut refusal = Refusal::input("invalid_parameter", field, rule);
+    if let Some(name) = field
+        .strip_prefix("/parameters/")
+        .and_then(|s| s.split('/').next())
+    {
+        refusal = refusal.with(
+            "parameter",
+            json!(name.replace("~1", "/").replace("~0", "~")),
+        );
+    }
+    refusal
+}
+fn invalid_parameter(field: &str, rule: &str) -> Failure {
+    parameter_refusal(field, rule).into()
+}
+/// A rule expression identifies an input only when exactly one supplied
+/// parameter feeds it. A referenced object's property is not in the request:
+/// its origin is the supplied reference id, not an invented child field.
+fn rule_input(params: &BTreeMap<String, Value>, expression: &Value) -> Option<String> {
+    fn collect(params: &BTreeMap<String, Value>, value: &Value, names: &mut BTreeSet<String>) {
+        match value {
+            Value::String(s) => {
+                if let Some(name) = s.strip_prefix('$').and_then(|p| p.split('.').next())
+                    && params.contains_key(name)
+                {
+                    names.insert(name.to_string());
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    collect(params, value, names);
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    collect(params, value, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut names = BTreeSet::new();
+    collect(params, expression, &mut names);
+    (names.len() == 1)
+        .then(|| parameter_field(names.iter().next().map(String::as_str).unwrap_or("")))
+}
+
 fn find_action_type<'a>(set: &'a SchemaSet, name: &str) -> Option<(&'a Schema, &'a ActionType)> {
     for domain in set.pins().keys() {
         if let Some(schema) = set.schema(domain)
@@ -211,17 +269,30 @@ fn check_actor_bounds(
     let client = effective_client(ctx);
     let agent = agent.clone().or_else(|| ctx.agent.clone());
     let session = session.clone().or_else(|| ctx.session.clone());
-    if !valid_actor_field(&client)
-        || agent.as_deref().is_some_and(|a| !valid_actor_field(a))
-        || session.as_deref().is_some_and(|s| !valid_actor_field(s))
-    {
-        return Err(Refusal::new("invalid_request").into());
+    for (field, value) in [
+        ("/client", Some(client.as_str())),
+        ("/agent", agent.as_deref()),
+        ("/session", session.as_deref()),
+    ] {
+        if value.is_some_and(|v| !valid_actor_field(v)) {
+            return Err(Refusal::input(
+                "invalid_request",
+                field,
+                "1 to 64 ASCII characters: letters, digits, '.', '_', ':', '-'",
+            )
+            .into());
+        }
     }
     Ok(())
 }
 fn check_parameters_size(params: &Value) -> Result<(), Failure> {
     if serde_json::to_string(&canonical(params)).is_ok_and(|s| s.len() > crate::MAX_REQUEST) {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/parameters",
+            "canonical JSON at most 65536 bytes",
+        )
+        .into());
     }
     Ok(())
 }
@@ -359,11 +430,14 @@ fn validate_parameters(
     params: &Value,
 ) -> Result<BTreeMap<String, Value>, Failure> {
     let Some(obj) = params.as_object() else {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input("invalid_request", "/parameters", "a JSON object").into());
     };
     for key in obj.keys() {
         if !at.parameters.contains_key(key) {
-            return Err(invalid_parameter(key));
+            return Err(invalid_parameter(
+                &parameter_field(key),
+                "parameter must be declared by action list",
+            ));
         }
     }
     let mut out = BTreeMap::new();
@@ -371,18 +445,30 @@ fn validate_parameters(
         match obj.get(name) {
             None => {
                 if def.required {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(
+                        &parameter_field(name),
+                        "required parameter",
+                    ));
                 }
             }
             Some(Value::Null) if !def.required => {}
             Some(v) => {
                 if !value_matches(schema, &def.ty, v) {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(
+                        &parameter_field(name),
+                        &format!(
+                            "must satisfy declared type {} and its value-type constraints",
+                            serde_json::to_value(&def.ty).unwrap_or(Value::Null)
+                        ),
+                    ));
                 }
                 if let (Some(limit), Value::String(s)) = (def.max_bytes, v)
                     && s.len() as u64 > limit
                 {
-                    return Err(invalid_parameter(name));
+                    return Err(invalid_parameter(
+                        &parameter_field(name),
+                        &format!("string at most {limit} UTF-8 bytes"),
+                    ));
                 }
                 out.insert(name.clone(), v.clone());
             }
@@ -493,7 +579,12 @@ fn check_reference_inputs(
                 if let Some((name, _)) = s.strip_prefix('$').and_then(|p| p.split_once('.'))
                     && let Some(value) = params.get(name)
                 {
-                    let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+                    let id = id_from_value(value).ok_or_else(|| {
+                        invalid_parameter(
+                            &parameter_field(name),
+                            "an object id of the parameter target type",
+                        )
+                    })?;
                     let head = reference_head(snap, &id, principal, now)?;
                     inputs.basis.insert(
                         Snapshot::key(&id),
@@ -564,7 +655,12 @@ impl Eval<'_> {
         let Some(value) = self.params.get(name) else {
             return Ok(None);
         };
-        let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+        let id = id_from_value(value).ok_or_else(|| {
+            invalid_parameter(
+                &parameter_field(name),
+                "an object id of the parameter target type",
+            )
+        })?;
         let head = reference_head(self.snap, &id, self.principal, self.now)?.clone();
         self.note(&head);
         if self.now > head.head.observation.fresh_until {
@@ -893,6 +989,7 @@ struct Planned {
     supersedes: Option<String>,
     fields: BTreeMap<String, Knowledge>,
     revision: String,
+    inputs: BTreeMap<String, String>,
 }
 struct Planner<'a> {
     principal: &'a Principal,
@@ -921,7 +1018,12 @@ impl<'a> Planner<'a> {
                     let Some(value) = self.params.get(name) else {
                         return Ok(None);
                     };
-                    let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+                    let id = id_from_value(value).ok_or_else(|| {
+                        invalid_parameter(
+                            &parameter_field(name),
+                            "an object id of the parameter target type",
+                        )
+                    })?;
                     let head = reference_head(&self.snap, &id, self.principal, self.now)?;
                     self.basis.insert(
                         Snapshot::key(&id),
@@ -997,6 +1099,22 @@ impl<'a> Planner<'a> {
         }
         self.ref_target(object_type)
     }
+    fn target_field(&self, at: &ActionType, object_type: &str) -> String {
+        let names: Vec<_> = at
+            .parameters
+            .iter()
+            .filter(|(name, def)| {
+                self.params.contains_key(*name)
+                    && matches!(&def.ty, PropertyType::Ref(r) if r.target == object_type)
+            })
+            .map(|(name, _)| name)
+            .collect();
+        if names.len() == 1 {
+            parameter_field(names[0])
+        } else {
+            "/parameters".to_string()
+        }
+    }
     fn create_key(
         &self,
         at: &ActionType,
@@ -1024,7 +1142,35 @@ impl<'a> Planner<'a> {
             }) {
                 return Ok(v);
             }
-            return Err(invalid_parameter("key"));
+            let present: Vec<_> = self
+                .params
+                .iter()
+                .filter(|(_, value)| value.pointer(from).is_some())
+                .collect();
+            let containers: Vec<_> = self
+                .params
+                .iter()
+                .filter(|(_, value)| value.is_object() || value.is_array())
+                .collect();
+            let candidates = if present.is_empty() {
+                &containers
+            } else {
+                &present
+            };
+            let field = if candidates.len() == 1 {
+                let parent = parameter_field(candidates[0].0);
+                if present.is_empty() {
+                    parent
+                } else {
+                    format!("{parent}{from}")
+                }
+            } else {
+                "/parameters".to_string()
+            };
+            return Err(invalid_parameter(
+                &field,
+                "schema rule requires a string at the primary-key pointer in a parameter",
+            ));
         }
         Ok(self.action_id.clone())
     }
@@ -1070,6 +1216,16 @@ impl<'a> Planner<'a> {
                 scope.clone(),
             ),
         );
+        let inputs = if change == Change::Update {
+            self.planned
+                .iter()
+                .rev()
+                .find(|p| p.id == id)
+                .map(|p| p.inputs.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
         self.planned.push(Planned {
             id: id.clone(),
             scope,
@@ -1077,12 +1233,14 @@ impl<'a> Planner<'a> {
             supersedes,
             fields,
             revision: revision.clone(),
+            inputs,
         });
         json!({"id":id,"revision":revision,"change":serde_json::to_value(change).unwrap_or(Value::Null)})
     }
     fn plan(&mut self, at: &ActionType) -> Result<Vec<Value>, Failure> {
         let mut edits = Vec::new();
         for rule in &at.rules {
+            let first_edit = self.planned.len();
             // Defensive: only Ontology-owned types.
             let targets: Vec<String> = [
                 rule.create_object.clone(),
@@ -1119,7 +1277,7 @@ impl<'a> Planner<'a> {
                     || rule.create_or_modify_object.is_some())
             {
                 if let Some(t) = &rule.modify_object {
-                    self.modify_target(t, None)?;
+                    self.modify_target(at, t, None)?;
                 }
                 continue;
             }
@@ -1130,16 +1288,19 @@ impl<'a> Planner<'a> {
                 if let Some(id) = self.ref_target_typed(at, t)
                     && self.state(&id).is_some_and(|(_, _, r, _)| !r)
                 {
-                    edits.push(self.do_modify(t, &set_map, Some(id))?);
+                    edits.push(self.do_modify(at, t, &set_map, Some(id))?);
                 } else {
                     edits.push(self.do_create(at, t, &set_map, true)?);
                 }
             } else if let Some(t) = &rule.modify_object {
-                edits.push(self.do_modify(t, &set_map, None)?);
+                edits.push(self.do_modify(at, t, &set_map, None)?);
             } else if let Some(t) = &rule.delete_object {
-                let id = self
-                    .ref_target_typed(at, t)
-                    .ok_or_else(|| invalid_parameter(t))?;
+                let id = self.ref_target_typed(at, t).ok_or_else(|| {
+                    invalid_parameter(
+                        &self.target_field(at, t),
+                        "an object id parameter whose object_type matches the rule target",
+                    )
+                })?;
                 let (fields, head, retracted, scope) =
                     self.state(&id).ok_or_else(|| revision_conflict(&id))?;
                 let _ = fields;
@@ -1151,6 +1312,30 @@ impl<'a> Planner<'a> {
                 edits.extend(self.do_set_ref(at, r, false)?);
             } else if let Some(r) = &rule.clear_reference {
                 edits.extend(self.do_set_ref(at, r, true)?);
+            }
+            let mut assignments: BTreeMap<String, Option<String>> = rule
+                .set
+                .iter()
+                .filter(|(property, _)| set_map.contains_key(*property))
+                .map(|(property, value)| (property.clone(), rule_input(self.params, value)))
+                .collect();
+            if let Some(r) = &rule.set_reference {
+                assignments.insert(
+                    r.property.clone(),
+                    r.value.as_ref().and_then(|v| rule_input(self.params, v)),
+                );
+            }
+            if let Some(r) = &rule.clear_reference {
+                assignments.insert(r.property.clone(), None);
+            }
+            for planned in &mut self.planned[first_edit..] {
+                for (property, input) in &assignments {
+                    if let Some(input) = input {
+                        planned.inputs.insert(property.clone(), input.clone());
+                    } else {
+                        planned.inputs.remove(property);
+                    }
+                }
             }
         }
         Ok(edits)
@@ -1175,7 +1360,7 @@ impl<'a> Planner<'a> {
             if or_modify {
                 // The key (from a parameter or a pointer) names an
                 // existing object: plan a modification, as in validate.
-                return self.do_modify(t, set_map, Some(id));
+                return self.do_modify(at, t, set_map, Some(id));
             }
             return Err(revision_conflict(&id));
         }
@@ -1187,14 +1372,24 @@ impl<'a> Planner<'a> {
             .collect();
         Ok(self.push(id, scope, Change::Initial, None, fields))
     }
-    fn modify_target(&self, t: &str, target: Option<Id>) -> Result<(Id, ObjectState), Failure> {
+    fn modify_target(
+        &self,
+        at: &ActionType,
+        t: &str,
+        target: Option<Id>,
+    ) -> Result<(Id, ObjectState), Failure> {
         let id = target
             .or_else(|| {
                 self.params
                     .values()
                     .find_map(|v| id_from_value(v).filter(|i| i.object_type == t))
             })
-            .ok_or_else(|| invalid_parameter(t))?;
+            .ok_or_else(|| {
+                invalid_parameter(
+                    &self.target_field(at, t),
+                    "an object id parameter whose object_type matches the rule target",
+                )
+            })?;
         let (cur, head, retracted, scope) =
             self.state(&id).ok_or_else(|| revision_conflict(&id))?;
         if retracted {
@@ -1204,11 +1399,12 @@ impl<'a> Planner<'a> {
     }
     fn do_modify(
         &mut self,
+        at: &ActionType,
         t: &str,
         set_map: &BTreeMap<String, Value>,
         target: Option<Id>,
     ) -> Result<Value, Failure> {
-        let (id, (cur, head, _, scope)) = self.modify_target(t, target)?;
+        let (id, (cur, head, _, scope)) = self.modify_target(at, t, target)?;
         let mut fields = cur;
         for (k, v) in set_map {
             fields.insert(k.clone(), Knowledge::Value(v.clone()));
@@ -1224,29 +1420,27 @@ impl<'a> Planner<'a> {
         let _ = at;
         let id = self
             .ref_target_typed_from_schema(&r.object_type)
-            .ok_or_else(|| invalid_parameter(&r.object_type))?;
+            .ok_or_else(|| {
+                invalid_parameter(
+                    &self.target_field(at, &r.object_type),
+                    "an object id parameter whose object_type matches the reference rule target",
+                )
+            })?;
         let (cur, head, retracted, scope) =
             self.state(&id).ok_or_else(|| revision_conflict(&id))?;
         if retracted {
             return Err(revision_conflict(&id));
         }
-        let value = if clear {
-            None
-        } else {
-            let raw = r
-                .value
-                .as_ref()
-                .ok_or_else(|| invalid_parameter(&r.property))?;
-            let Some(value) = self.substitute(raw)? else {
-                return Ok(None);
-            };
-            Some(value)
-        };
         let mut fields = cur;
         if clear {
             fields.insert(r.property.clone(), Knowledge::Missing);
         } else {
-            let v = value.ok_or_else(|| invalid_parameter(&r.property))?;
+            let raw = r.value.as_ref().ok_or_else(|| {
+                invalid_parameter("/parameters", "schema rule requires a reference value")
+            })?;
+            let Some(v) = self.substitute(raw)? else {
+                return Ok(None);
+            };
             // Array ref: add unique.
             let is_array = self
                 .schema
@@ -1290,10 +1484,13 @@ fn check_planned(set: &SchemaSet, planner: &Planner<'_>) -> Result<(), Failure> 
                 .unwrap_or(&v.pointer)
                 .replace("~1", "/")
                 .replace("~0", "~");
-            return Err(Refusal::new("invalid_parameter")
-                .with("parameter", json!(prop.clone()))
-                .with("property", json!(prop))
-                .into());
+            let field = p
+                .inputs
+                .get(&prop)
+                .map(String::as_str)
+                .unwrap_or("/parameters");
+            return Err(parameter_refusal(field, "schema rule produces a property that must satisfy its declared type, required flag and value-type constraints")
+                .with("property", json!(prop)).into());
         }
     }
     Ok(())
@@ -1770,9 +1967,12 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
     if let Some(d) = &req.domain
         && set.schema(d).is_none()
     {
-        return Err(Refusal::new("unknown_domain")
-            .with("domain", json!(d))
-            .into());
+        return Err(Refusal::input(
+            "unknown_domain",
+            "/domain",
+            "a domain installed in this store",
+        )
+        .into());
     }
     let domains: Vec<String> = match &req.domain {
         Some(d) => vec![d.clone()],
@@ -1837,8 +2037,13 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
-    let (schema, at) = find_action_type(&set, &req.action_type)
-        .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+    let (schema, at) = find_action_type(&set, &req.action_type).ok_or_else(|| {
+        Failure::from(Refusal::input(
+            "unknown_action",
+            "/action_type",
+            "an installed action type; use action list",
+        ))
+    })?;
     let (schema, at) = (schema.clone(), at.clone());
     if !principal
         .view()
@@ -1852,7 +2057,12 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     if let Some(r) = &req.request_id
         && !valid_request_id(r)
     {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/request_id",
+            "1 to 64 ASCII characters: letters, digits, '.', '_', '-'",
+        )
+        .into());
     }
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
@@ -1940,7 +2150,12 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     if let Some(r) = &req.request_id
         && !valid_request_id(r)
     {
-        return Err(Refusal::new("invalid_request").into());
+        return Err(Refusal::input(
+            "invalid_request",
+            "/request_id",
+            "1 to 64 ASCII characters: letters, digits, '.', '_', '-'",
+        )
+        .into());
     }
     check_actor_bounds(ctx, &req.agent, &req.session)?;
     check_parameters_size(&req.parameters)?;
@@ -1948,8 +2163,13 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
     let revision = principal.revision()?;
-    let (schema, at) = find_action_type(&set, &req.action_type)
-        .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+    let (schema, at) = find_action_type(&set, &req.action_type).ok_or_else(|| {
+        Failure::from(Refusal::input(
+            "unknown_action",
+            "/action_type",
+            "an installed action type; use action list",
+        ))
+    })?;
     let (schema, at) = (schema.clone(), at.clone());
     if !principal
         .view()
@@ -1969,7 +2189,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
         let tx_set = tx.schema_set().clone();
         let run = |tx: &mut ont_store::schema_mode::SchemaWrite<'_>| -> Result<ApplyOutcome, Failure> {
             let (tschema, tat) = find_action_type(&tx_set, &req.action_type)
-                .ok_or_else(|| Failure::from(Refusal::new("unknown_action")))?;
+                .ok_or_else(|| Failure::from(Refusal::input("unknown_action", "/action_type", "an installed action type; use action list")))?;
             let (tschema, tat) = (tschema.clone(), tat.clone());
             let tprincipal = Principal::bind(&tx_set)?;
             if !tprincipal.view().action_types(&tschema.domain).contains(&req.action_type) {
@@ -2142,5 +2362,282 @@ mod tests {
             derive_request_action_id("a", Some("b:"), "rid-1")
         );
         assert!(derive_request_action_id("a:b", None, "rid-1").starts_with("act-rq-"));
+    }
+    // Private planner guards are exercised directly where typed request/schema
+    // admission would otherwise reject the malformed input first.
+    fn with_feedback_planner(params: BTreeMap<String, Value>, run: impl FnOnce(&mut Planner<'_>)) {
+        let checked = Schema::check_bytes(
+            include_bytes!("../tests/fixtures/render-board.json"),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        let schema = checked.schema().clone();
+        let set = SchemaSet::new(vec![checked]).unwrap();
+        let principal = Principal::bind(&set).unwrap();
+        let mut planner = Planner {
+            principal: &principal,
+            schema: &schema,
+            set: &set,
+            snap: Snapshot::default(),
+            params: &params,
+            action_id: "act-feedback".into(),
+            now: 1000,
+            basis: BTreeMap::new(),
+            edit_index: 0,
+            planned: Vec::new(),
+            overlay: BTreeMap::new(),
+        };
+        run(&mut planner);
+    }
+    fn feedback_action(rule: Value) -> ActionType {
+        serde_json::from_value(json!({"parameters":{"subject":{"type":{"ref":"item"},"required":false},"payload":{"type":"string","required":false}},"rules":[rule]})).unwrap()
+    }
+    fn assert_parameter_field(err: Failure, field: &str) -> Refusal {
+        let Failure::Refused(r) = err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(r.code, "invalid_parameter");
+        assert_eq!(r.extra["field"], field);
+        assert!(r.extra["rule"].is_string());
+        r
+    }
+    #[test]
+    fn primary_key_feedback_names_nested_spec_key() {
+        with_feedback_planner(
+            BTreeMap::from([("spec".into(), json!({"key":42}))]),
+            |planner| {
+                let mut schema = planner.schema.clone();
+                schema
+                    .object_types
+                    .get_mut("item")
+                    .unwrap()
+                    .primary_key
+                    .from = Some("/key".into());
+                let key_planner = Planner {
+                    schema: &schema,
+                    ..Planner {
+                        principal: planner.principal,
+                        schema: planner.schema,
+                        set: planner.set,
+                        snap: planner.snap.clone(),
+                        params: planner.params,
+                        action_id: planner.action_id.clone(),
+                        now: planner.now,
+                        basis: BTreeMap::new(),
+                        edit_index: 0,
+                        planned: Vec::new(),
+                        overlay: BTreeMap::new(),
+                    }
+                };
+                let err = key_planner
+                    .create_key(
+                        &feedback_action(json!({"create_object":"item"})),
+                        "item",
+                        &BTreeMap::new(),
+                    )
+                    .unwrap_err();
+                assert_parameter_field(err, "/parameters/spec/key");
+            },
+        );
+    }
+    #[test]
+    fn delete_target_feedback_uses_subject_not_item() {
+        with_feedback_planner(
+            BTreeMap::from([("subject".into(), json!("not-an-id"))]),
+            |planner| {
+                assert_parameter_field(
+                    planner
+                        .plan(&feedback_action(json!({"delete_object":"item"})))
+                        .unwrap_err(),
+                    "/parameters/subject",
+                );
+            },
+        );
+    }
+    #[test]
+    fn modify_target_feedback_uses_subject_not_item() {
+        with_feedback_planner(
+            BTreeMap::from([("subject".into(), json!("not-an-id"))]),
+            |planner| {
+                assert_parameter_field(
+                    planner
+                        .plan(&feedback_action(
+                            json!({"modify_object":"item","set":{"title":"literal"}}),
+                        ))
+                        .unwrap_err(),
+                    "/parameters/subject",
+                );
+            },
+        );
+    }
+    #[test]
+    fn reference_target_feedback_uses_subject_not_type_or_property() {
+        with_feedback_planner(
+            BTreeMap::from([("subject".into(), json!("not-an-id"))]),
+            |planner| {
+                assert_parameter_field(planner.plan(&feedback_action(json!({"set_reference":{"object_type":"item","property":"ref","value":"$subject"}}))).unwrap_err(), "/parameters/subject");
+            },
+        );
+    }
+    #[test]
+    fn missing_reference_rule_value_feedback_points_at_parameters() {
+        let id = Id {
+            object_type: "item".into(),
+            namespace: ont_core::Namespace {
+                instance: "test".into(),
+                account: "root".into(),
+            },
+            native_key: "target".into(),
+        };
+        with_feedback_planner(BTreeMap::from([("subject".into(), json!(id))]), |planner| {
+            planner.overlay.insert(
+                Snapshot::key(&id),
+                (
+                    BTreeMap::new(),
+                    None,
+                    false,
+                    Scope::Domain {
+                        namespace: id.namespace.clone(),
+                        domain: "board".into(),
+                        keys: BTreeMap::new(),
+                    },
+                ),
+            );
+            let r = assert_parameter_field(
+                planner
+                    .plan(&feedback_action(
+                        json!({"set_reference":{"object_type":"item","property":"ref"}}),
+                    ))
+                    .unwrap_err(),
+                "/parameters",
+            );
+            assert!(r.extra["rule"].as_str().unwrap().contains("schema rule"));
+        });
+    }
+    #[test]
+    fn planned_property_feedback_names_payload_not_title() {
+        with_feedback_planner(BTreeMap::from([("payload".into(), json!(7))]), |planner| {
+            planner
+                .plan(&feedback_action(
+                    json!({"create_object":"item","set":{"title":"$payload"}}),
+                ))
+                .unwrap();
+            let r = assert_parameter_field(
+                check_planned(planner.set, planner).unwrap_err(),
+                "/parameters/payload",
+            );
+            assert!(r.extra["rule"].as_str().unwrap().contains("schema rule"));
+        });
+    }
+
+    #[test]
+    fn unresolved_optional_reference_value_skips_and_clear_needs_no_value() {
+        let id = Id {
+            object_type: "item".into(),
+            namespace: ont_core::Namespace {
+                instance: "test".into(),
+                account: "root".into(),
+            },
+            native_key: "target".into(),
+        };
+        with_feedback_planner(BTreeMap::from([("subject".into(), json!(id))]), |planner| {
+            planner.overlay.insert(
+                Snapshot::key(&id),
+                (
+                    BTreeMap::new(),
+                    None,
+                    false,
+                    Scope::Domain {
+                        namespace: id.namespace.clone(),
+                        domain: "board".into(),
+                        keys: BTreeMap::new(),
+                    },
+                ),
+            );
+            assert!(planner.plan(&feedback_action(json!({"set_reference":{"object_type":"item","property":"ref","value":"$payload"}}))).unwrap().is_empty());
+            assert!(planner.planned.is_empty());
+            assert_eq!(
+                planner
+                    .plan(&feedback_action(
+                        json!({"clear_reference":{"object_type":"item","property":"ref"}})
+                    ))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(planner.planned[0].fields["ref"], Knowledge::Missing);
+        });
+    }
+    #[test]
+    fn planned_literal_failure_has_no_invented_parameter() {
+        with_feedback_planner(
+            BTreeMap::from([("payload".into(), json!("unrelated"))]),
+            |planner| {
+                planner
+                    .plan(&feedback_action(
+                        json!({"create_object":"item","set":{"title":7}}),
+                    ))
+                    .unwrap();
+                let r = assert_parameter_field(
+                    check_planned(planner.set, planner).unwrap_err(),
+                    "/parameters",
+                );
+                assert!(r.extra["rule"].as_str().unwrap().contains("schema rule"));
+                assert!(!r.extra.contains_key("parameter"));
+            },
+        );
+    }
+    #[test]
+    fn primary_key_feedback_uses_present_parent_or_aggregate_for_ambiguity() {
+        for (params, expected) in [
+            (
+                BTreeMap::from([("spec".into(), json!({}))]),
+                "/parameters/spec",
+            ),
+            (
+                BTreeMap::from([
+                    ("spec".into(), json!({"key":1})),
+                    ("other".into(), json!({"key":2})),
+                ]),
+                "/parameters",
+            ),
+        ] {
+            with_feedback_planner(params, |planner| {
+                let mut schema = planner.schema.clone();
+                schema
+                    .object_types
+                    .get_mut("item")
+                    .unwrap()
+                    .primary_key
+                    .from = Some("/key".into());
+                let key_planner = Planner {
+                    schema: &schema,
+                    principal: planner.principal,
+                    set: planner.set,
+                    snap: planner.snap.clone(),
+                    params: planner.params,
+                    action_id: planner.action_id.clone(),
+                    now: planner.now,
+                    basis: BTreeMap::new(),
+                    edit_index: 0,
+                    planned: Vec::new(),
+                    overlay: BTreeMap::new(),
+                };
+                let err = key_planner
+                    .create_key(
+                        &feedback_action(json!({"create_object":"item"})),
+                        "item",
+                        &BTreeMap::new(),
+                    )
+                    .unwrap_err();
+                let r = assert_parameter_field(err, expected);
+                let request = json!({"parameters": planner.params});
+                assert!(
+                    request
+                        .pointer(r.extra["field"].as_str().unwrap())
+                        .is_some()
+                );
+            });
+        }
     }
 }

@@ -33,7 +33,11 @@ impl DescribeRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         let req: Self = crate::cli::parse_request(bytes)?;
         if req.op.as_deref().is_some_and(|op| op != "describe") {
-            return Err(Refusal::new("invalid_request"));
+            return Err(Refusal::input(
+                "invalid_request",
+                "/op",
+                "must be describe when non-null",
+            ));
         }
         Ok(req)
     }
@@ -51,9 +55,12 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
     {
         // A domain that is not installed and one that is not admitted look
         // the same.
-        return Err(Refusal::new("unknown_domain")
-            .with("domain", json!(domain))
-            .into());
+        return Err(Refusal::input(
+            "unknown_domain",
+            "/domain",
+            "a readable domain listed by describe",
+        )
+        .into());
     }
     let domains: Vec<String> = match &req.domain {
         Some(d) => vec![d.clone()],
