@@ -420,7 +420,14 @@ impl Admission<'_> {
                     });
                 }
                 samples.sort_by(|a, b| (a.observed_at, &a.id).cmp(&(b.observed_at, &b.id)));
+                // Staleness is published only on the latest sample of the
+                // series; an earlier sample is a past observation.
                 let latest_stale = samples.last().is_some_and(|s| s.stale);
+                if let Some((_, earlier)) = samples.split_last_mut() {
+                    for sample in earlier {
+                        sample.stale = false;
+                    }
+                }
                 if latest_stale {
                     limitations.insert(Limitation::StaleSource);
                 }

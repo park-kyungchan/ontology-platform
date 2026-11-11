@@ -413,7 +413,7 @@ fn earlier_stale_sample_keeps_qualification_and_latest_fresh_qualifies_metric() 
     assert_eq!(metric["delta"], json!({"numerator":"2","denominator":4}));
     let samples = metric["samples"].as_array().unwrap();
     assert_eq!(samples[0]["source_qualified"], true);
-    assert_eq!(samples[0]["stale"], true);
+    assert!(samples[0].get("stale").is_none());
     assert_eq!(samples[1]["source_qualified"], true);
     assert!(samples[1].get("stale").is_none());
     assert!(
@@ -520,7 +520,7 @@ fn earlier_unqualified_and_stale_sample_disqualifies_metric() {
     let v: Value = serde_json::from_str(&out).unwrap();
     let samples = report(&v)["metrics"][0]["samples"].as_array().unwrap();
     assert_eq!(samples[0]["source_qualified"], false);
-    assert_eq!(samples[0]["stale"], true);
+    assert!(samples[0].get("stale").is_none());
     assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
 }
 #[test]
@@ -542,6 +542,63 @@ fn fresh_until_boundary_is_not_stale_until_the_next_second() {
         .as_array()
         .unwrap();
     assert_eq!(samples[1]["stale"], true);
+}
+
+#[test]
+fn three_samples_with_two_stale_earlier_ones_publish_no_stale_key() {
+    let (mut objects, mut links) = graph();
+    objects.push(obj(
+        "measurement",
+        "middle",
+        1000,
+        json!({"removed":2,"total":4,"source_unit":"fraction","definition_revision":"d1","manifest_sha256":"c".repeat(64),"algorithm":"exact_utf8_paths_v1"}),
+    ));
+    links.push(edge(
+        id("metric", "legacy"),
+        "has_measurement",
+        id("measurement", "middle"),
+    ));
+    for o in &mut objects {
+        o.observations[0].fresh_until = 100_000;
+    }
+    let b = mutate(&mut objects, "measurement", "before");
+    b.observed_at = 0;
+    b.fresh_until = 900;
+    let m = mutate(&mut objects, "measurement", "middle");
+    m.observed_at = 1000;
+    m.fresh_until = 1900;
+    let a = mutate(&mut objects, "measurement", "after");
+    a.observed_at = 2000;
+    a.fresh_until = 2900;
+    let authority = Authority::new(policy(&objects));
+    let s = authority.bind_trusted("reader").unwrap();
+    let out = Service::new(store(&objects, &links), authority)
+        .render(
+            &s,
+            Query::ProgramReport {
+                root: id("program", "root"),
+                window: ReportWindow {
+                    start: 0,
+                    end: 10_000,
+                },
+            },
+            2000,
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        !serde_json::to_string(&report(&v)["metrics"])
+            .unwrap()
+            .contains("\"stale\"")
+    );
+    assert_eq!(
+        report(&v)["metrics"][0]["samples"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(report(&v)["metrics"][0]["source_qualified"], true);
 }
 
 #[test]
