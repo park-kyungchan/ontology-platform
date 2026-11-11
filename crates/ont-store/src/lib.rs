@@ -11,10 +11,21 @@ pub mod fake;
 pub mod schema_mode;
 
 pub const SCHEMA: &str = include_str!("../schema.sql");
-pub const SCHEMA_V3: &str = include_str!("../schema-v3.sql");
+pub(crate) const SCHEMA_V3: &str = include_str!("../schema-v3.sql");
 const APPLICATION_ID: i64 = 1_330_533_430;
 fn db<T>(result: rusqlite::Result<T>) -> Result<T, Error> {
     result.map_err(|_| Error::StoreFailure)
+}
+fn db_mode<T>(result: rusqlite::Result<T>, mode: StoreMode) -> Result<T, Error> {
+    result.map_err(|e| {
+        if mode == StoreMode::Schema
+            && matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ffi::ErrorCode::DatabaseBusy)
+        {
+            Error::StoreBusy
+        } else {
+            Error::StoreFailure
+        }
+    })
 }
 fn decode<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Error> {
     serde_json::from_str(s).map_err(|_| Error::StoreFailure)
@@ -118,28 +129,45 @@ impl Store {
         mode: StoreMode,
         busy: Duration,
     ) -> Result<Self, Error> {
-        db(connection.busy_timeout(busy))?;
-        let app: i64 = db(connection.query_row("PRAGMA application_id", [], |r| r.get(0)))?;
-        let version: i64 = db(connection.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
-        let count: i64 = db(connection.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |r| r.get(0),
-        ))?;
+        db_mode(connection.busy_timeout(busy), mode)?;
+        let app: i64 = db_mode(
+            connection.query_row("PRAGMA application_id", [], |r| r.get(0)),
+            mode,
+        )?;
+        let version: i64 = db_mode(
+            connection.query_row("PRAGMA user_version", [], |r| r.get(0)),
+            mode,
+        )?;
+        let count: i64 = db_mode(
+            connection.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |r| r.get(0),
+            ),
+            mode,
+        )?;
         if app == 0 && version == 0 && count == 0 {
-            let transaction =
-                db(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
-            db(transaction.execute_batch(if mode == StoreMode::Schema {
-                SCHEMA_V3
-            } else {
-                SCHEMA
-            }))?;
-            db(transaction.pragma_update(None, "user_version", mode.version()))?;
-            db(transaction.commit())?;
+            let transaction = db_mode(
+                connection.transaction_with_behavior(TransactionBehavior::Immediate),
+                mode,
+            )?;
+            db_mode(
+                transaction.execute_batch(if mode == StoreMode::Schema {
+                    SCHEMA_V3
+                } else {
+                    SCHEMA
+                }),
+                mode,
+            )?;
+            db_mode(
+                transaction.pragma_update(None, "user_version", mode.version()),
+                mode,
+            )?;
+            db_mode(transaction.commit(), mode)?;
         } else if app != APPLICATION_ID || version != mode.version() {
             return Err(Error::StoreFailure);
         }
-        db(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"))?;
+        db_mode(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"), mode)?;
         Ok(Self {
             connection,
             mode,

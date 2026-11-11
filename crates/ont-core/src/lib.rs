@@ -33,6 +33,7 @@ pub enum Error {
     FieldFenced,
     RetryForbidden,
     SchemaViolation,
+    StoreBusy,
 }
 impl Error {
     pub fn code(self) -> &'static str {
@@ -55,6 +56,7 @@ impl Error {
             Self::FieldFenced => "field_fenced",
             Self::RetryForbidden => "retry_forbidden",
             Self::SchemaViolation => "schema_violation",
+            Self::StoreBusy => "store_busy",
         }
     }
 }
