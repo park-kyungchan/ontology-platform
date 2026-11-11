@@ -60,3 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --workspace --locked
+      - name: Install script test
+        if: steps.scope.outputs.run_rust == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/test-install-ont.sh

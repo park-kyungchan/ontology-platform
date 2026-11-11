@@ -8,6 +8,7 @@ CREATE TABLE schema_installs (
  installed_at INTEGER NOT NULL,
  source_repository TEXT,
  source_commit TEXT,
+ source_path TEXT,
  PRIMARY KEY(domain, version)
 ) WITHOUT ROWID;
 CREATE TABLE objects (

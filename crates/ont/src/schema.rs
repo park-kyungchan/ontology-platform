@@ -20,6 +20,18 @@ pub struct InstallRequest {
     pub source_repository: Option<String>,
     pub source_commit: Option<String>,
 }
+#[derive(Debug, Clone)]
+pub struct CommitInstallRequest {
+    pub checkout: PathBuf,
+    pub commit: String,
+    pub path: String,
+}
+
+/// True when `store` is the default store path: the file form is refused
+/// there with `install_requires_commit`; only a merged commit may install.
+pub fn install_requires_commit(store: &std::path::Path) -> bool {
+    store == std::path::Path::new(crate::DEFAULT_STORE)
+}
 
 fn valid_slug(s: &str) -> bool {
     let parts: Vec<&str> = s.split('/').collect();
@@ -115,6 +127,9 @@ pub fn check(ctx: &Context, req: &CheckRequest) -> Result<Answer, Failure> {
 /// file is created with mode 0600 (`create_new`) before SQLite opens it, and
 /// only when its parent directory exists.
 pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
+    if install_requires_commit(&ctx.store) {
+        return Err(Refusal::new("install_requires_commit").into());
+    }
     if let Some(repo) = &req.source_repository
         && !valid_slug(repo)
     {
@@ -130,12 +145,40 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
             .into());
     }
     let bytes = read_schema_file(&req.file)?;
+    install_bytes(
+        ctx,
+        &bytes,
+        req.source_repository.clone(),
+        req.source_commit.clone(),
+        None,
+    )
+}
+
+/// Install the schema at a merged commit of a repository checkout.
+pub fn install_commit(ctx: &Context, req: &CommitInstallRequest) -> Result<Answer, Failure> {
+    let got = crate::gitread::read_schema(&req.checkout, &req.commit, &req.path)?;
+    install_bytes(
+        ctx,
+        &got.bytes,
+        Some(got.repository),
+        Some(req.commit.clone()),
+        Some(req.path.clone()),
+    )
+}
+
+fn install_bytes(
+    ctx: &Context,
+    bytes: &[u8],
+    source_repository: Option<String>,
+    source_commit: Option<String>,
+    source_path: Option<String>,
+) -> Result<Answer, Failure> {
     let store_exists = ctx.store.exists();
     let mut store = if store_exists {
         st!(Store::open_schema(&ctx.store))
     } else {
         // Check first; a refused check must not create a store.
-        check_outcome(&bytes, &BTreeSet::new(), Vec::new(), false)?;
+        check_outcome(bytes, &BTreeSet::new(), Vec::new(), false)?;
         let parent = ctx.store.parent();
         if parent.is_some_and(|p| !p.as_os_str().is_empty() && !p.exists()) {
             return Err(Refusal::new("store_parent_missing")
@@ -157,12 +200,12 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
         st!(Store::open_schema(&ctx.store))
     };
     let set = st!(store.schema_set()).clone();
-    let checked = match Schema::check_bytes(&bytes, &others_for(&set, &candidate_domain(&bytes))) {
+    let checked = match Schema::check_bytes(bytes, &others_for(&set, &candidate_domain(bytes))) {
         Ok(c) => c,
         Err(_) => {
             return check_outcome(
-                &bytes,
-                &others_for(&set, &candidate_domain(&bytes)),
+                bytes,
+                &others_for(&set, &candidate_domain(bytes)),
                 set.pins().keys().cloned().collect(),
                 true,
             );
@@ -181,13 +224,14 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
         backup_path = Some(taken.path.display().to_string());
         backup_retention_failure = taken.retention_failure;
     }
-    st!(store.install_schema(
-        &bytes,
+    st!(store.install_schema_with_provenance(
+        bytes,
         InstallArgs {
             installed_at: ctx.now,
-            source_repository: req.source_repository.clone(),
-            source_commit: req.source_commit.clone(),
+            source_repository: source_repository.clone(),
+            source_commit: source_commit.clone(),
         },
+        source_path.clone(),
     ));
     Ok(Answer::Enveloped {
         pins: st!(store.schema_pins()),
@@ -199,7 +243,10 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
             "pin":pin_json(&pin),
             "changed":changed,
             "backup":backup_path,
-            "backup_retention_failure":backup_retention_failure
+            "backup_retention_failure":backup_retention_failure,
+            "source_repository":source_repository,
+            "source_commit":source_commit,
+            "source_path":source_path
         }),
     })
 }

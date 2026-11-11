@@ -683,6 +683,160 @@ fn request_size_op_and_source_option_rules() {
     assert_eq!(code, 0, "{ans}");
 }
 
+fn git(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("/usr/bin/git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn setup_git(t: &Temp) -> (String, String) {
+    let repo = t.0.join("repo");
+    std::fs::create_dir_all(repo.join("ontology")).unwrap();
+    std::fs::write(repo.join("ontology/work.schema.json"), EXAMPLE).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@example.com/park/repo.git",
+        ],
+    );
+    git(&repo, &["add", "ontology/work.schema.json"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let commit = git(&repo, &["rev-parse", "HEAD"]);
+    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    (repo.display().to_string(), commit)
+}
+
+fn commit_install_args<'a>(
+    store: &'a str,
+    repo: &'a str,
+    commit: &'a str,
+    path: &'a str,
+) -> Vec<&'a str> {
+    vec![
+        "--store", store, "schema", "install", "--from", repo, "--commit", commit, "--path", path,
+    ]
+}
+
+#[test]
+fn commit_install_installs_and_describe_shows_provenance() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let store = t.store();
+    let (code, ans) = run(
+        &commit_install_args(&store, &repo, &commit, "ontology/work.schema.json"),
+        b"",
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(
+        ans["result"]["source_repository"],
+        "https://example.com/park/repo.git"
+    );
+    assert_eq!(ans["result"]["source_commit"], commit);
+    assert_eq!(ans["result"]["source_path"], "ontology/work.schema.json");
+    // Same bytes installed twice by commit are idempotent.
+    let (code, ans) = run(
+        &commit_install_args(&store, &repo, &commit, "ontology/work.schema.json"),
+        b"",
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["changed"], false);
+    let (code, ans) = run(&["--store", &store, "describe"], b"{}");
+    assert_eq!(code, 0, "{ans}");
+    let domain = &ans["result"]["domains"][0];
+    assert_eq!(domain["domain"], "work");
+    assert_eq!(domain["version"], 1);
+    assert_eq!(domain["sha256"], sha256_hex(EXAMPLE));
+    assert_eq!(domain["repository"], "https://example.com/park/repo.git");
+    assert_eq!(domain["commit"], commit);
+    assert_eq!(domain["path"], "ontology/work.schema.json");
+}
+
+#[test]
+fn commit_install_refusals_write_nothing() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let store = t.store();
+    let store_path = std::path::Path::new(&store);
+    // An unmerged commit: HEAD moves past the pinned origin/main.
+    let mut v2: Value = serde_json::from_slice(EXAMPLE).unwrap();
+    v2["version"] = json!(2);
+    std::fs::write(
+        t.0.join("repo/ontology/work.schema.json"),
+        serde_json::to_vec(&v2).unwrap(),
+    )
+    .unwrap();
+    let repo_path = std::path::Path::new(&repo);
+    git(repo_path, &["add", "ontology/work.schema.json"]);
+    git(repo_path, &["commit", "-q", "-m", "two"]);
+    let unmerged = git(repo_path, &["rev-parse", "HEAD"]);
+    for (commit_arg, path, expected) in [
+        (
+            unmerged.as_str(),
+            "ontology/work.schema.json",
+            "commit_not_merged",
+        ),
+        ("not-hex", "ontology/work.schema.json", "invalid_request"),
+        (
+            commit.to_uppercase().as_str(),
+            "ontology/work.schema.json",
+            "invalid_request",
+        ),
+        (
+            commit.as_str(),
+            "ontology/nope.json",
+            "schema_path_not_found",
+        ),
+        (commit.as_str(), "../work.schema.json", "invalid_request"),
+        (
+            commit.as_str(),
+            "ontology/../work.schema.json",
+            "invalid_request",
+        ),
+        (
+            commit.as_str(),
+            "/ontology/work.schema.json",
+            "invalid_request",
+        ),
+    ] {
+        let (code, ans) = run(&commit_install_args(&store, &repo, commit_arg, path), b"");
+        assert_eq!(
+            (code, ans["code"].as_str()),
+            (2, Some(expected)),
+            "{commit_arg} {path}: {ans}"
+        );
+        assert!(!store_path.exists(), "refusal wrote a store: {path}");
+    }
+}
+
+#[test]
+fn file_install_on_default_store_path_is_refused_by_the_decision() {
+    assert_eq!(
+        ont::DEFAULT_STORE,
+        "/var/lib/ontology-platform/ont/ontology.sqlite"
+    );
+    assert!(ont::schema::install_requires_commit(std::path::Path::new(
+        ont::DEFAULT_STORE
+    )));
+    assert!(!ont::schema::install_requires_commit(std::path::Path::new(
+        "/tmp/example/ontology.sqlite"
+    )));
+}
+
 #[test]
 fn schema_check_against_an_existing_store_reports_what_it_checked() {
     let t = Temp::new();

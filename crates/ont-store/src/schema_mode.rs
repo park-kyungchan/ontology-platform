@@ -232,6 +232,26 @@ pub struct InstallArgs {
     pub source_commit: Option<String>,
 }
 
+/// The provenance recorded for the latest install of one domain. `path`
+/// is `None` on a store written before that column existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstallProvenance {
+    pub repository: Option<String>,
+    pub commit: Option<String>,
+    pub path: Option<String>,
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, StoreRefusal> {
+    let mut stmt = map_db(connection.prepare(&format!("PRAGMA table_info({table})")))?;
+    let rows = map_db(stmt.query_map([], |r| r.get::<_, String>(1)))?;
+    for row in rows {
+        if map_db(row)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// One public write transaction in mode `Schema` (see `Store::write`).
 pub struct SchemaWrite<'a> {
     tx: &'a Transaction<'a>,
@@ -347,6 +367,44 @@ impl Store {
         Ok(self.schema_set()?.pins().clone())
     }
 
+    /// The provenance of the latest install of each domain. A store
+    /// written before the `source_path` column existed still reads, with
+    /// `path: None`.
+    pub fn schema_provenance(
+        &mut self,
+    ) -> Result<BTreeMap<String, InstallProvenance>, StoreRefusal> {
+        self.require_schema()?;
+        let tx = self.read_tx()?;
+        let has_path = has_column(&tx, "schema_installs", "source_path")?;
+        let sql = if has_path {
+            "SELECT domain,source_repository,source_commit,source_path FROM schema_installs ORDER BY domain,version"
+        } else {
+            "SELECT domain,source_repository,source_commit,NULL FROM schema_installs ORDER BY domain,version"
+        };
+        let mut stmt = map_db(tx.prepare(sql))?;
+        let rows = map_db(stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        }))?;
+        let mut out: BTreeMap<String, InstallProvenance> = BTreeMap::new();
+        for row in rows {
+            let (domain, repository, commit, path) = map_db(row)?;
+            out.insert(
+                domain,
+                InstallProvenance {
+                    repository,
+                    commit,
+                    path,
+                },
+            );
+        }
+        Ok(out)
+    }
+
     /// One IMMEDIATE write transaction: the schema set is refreshed inside
     /// it, the closure runs, and the transaction commits when the closure
     /// returns `Ok` (and rolls back otherwise). The cache is replaced only
@@ -382,6 +440,27 @@ impl Store {
         bytes: &[u8],
         args: InstallArgs,
     ) -> Result<SchemaPin, StoreRefusal> {
+        self.install_schema_inner(bytes, args, None)
+    }
+
+    /// Like [`Store::install_schema`], also recording the repository path
+    /// of the schema file. Adds the `source_path` column first when a
+    /// store written before it existed does not have it.
+    pub fn install_schema_with_provenance(
+        &mut self,
+        bytes: &[u8],
+        args: InstallArgs,
+        source_path: Option<String>,
+    ) -> Result<SchemaPin, StoreRefusal> {
+        self.install_schema_inner(bytes, args, source_path)
+    }
+
+    fn install_schema_inner(
+        &mut self,
+        bytes: &[u8],
+        args: InstallArgs,
+        source_path: Option<String>,
+    ) -> Result<SchemaPin, StoreRefusal> {
         self.require_schema()?;
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
@@ -413,8 +492,40 @@ impl Store {
             existing.push(map_db(row)?);
         }
         drop(stmt);
+        let mut has_path = has_column(&tx, "schema_installs", "source_path")?;
+        if !has_path && source_path.is_some() {
+            map_db(tx.execute_batch("ALTER TABLE schema_installs ADD COLUMN source_path TEXT"))?;
+            has_path = true;
+        }
         if let Some((latest_version, latest_sha)) = existing.last() {
             if *latest_version == to_i64(pin.version)? && *latest_sha == pin.sha256 {
+                if args.source_repository.is_some()
+                    || args.source_commit.is_some()
+                    || source_path.is_some()
+                {
+                    if has_path {
+                        map_db(tx.execute(
+                            "UPDATE schema_installs SET source_repository=COALESCE(?2,source_repository),source_commit=COALESCE(?3,source_commit),source_path=COALESCE(?4,source_path) WHERE domain=?1 AND version=?5",
+                            params![
+                                pin.domain,
+                                args.source_repository,
+                                args.source_commit,
+                                source_path,
+                                to_i64(pin.version)?
+                            ],
+                        ))?;
+                    } else {
+                        map_db(tx.execute(
+                            "UPDATE schema_installs SET source_repository=COALESCE(?2,source_repository),source_commit=COALESCE(?3,source_commit) WHERE domain=?1 AND version=?4",
+                            params![
+                                pin.domain,
+                                args.source_repository,
+                                args.source_commit,
+                                to_i64(pin.version)?
+                            ],
+                        ))?;
+                    }
+                }
                 map_db(tx.commit())?;
                 self.schemas = set;
                 return Ok(pin);
@@ -423,18 +534,34 @@ impl Store {
                 return Err(StoreRefusal::new("schema_version_conflict"));
             }
         }
-        map_db(tx.execute(
-            "INSERT INTO schema_installs(domain,version,sha256,bytes,installed_at,source_repository,source_commit) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                pin.domain,
-                to_i64(pin.version)?,
-                pin.sha256,
-                bytes,
-                to_i64(args.installed_at)?,
-                args.source_repository,
-                args.source_commit
-            ],
-        ))?;
+        if has_path {
+            map_db(tx.execute(
+                "INSERT INTO schema_installs(domain,version,sha256,bytes,installed_at,source_repository,source_commit,source_path) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    pin.domain,
+                    to_i64(pin.version)?,
+                    pin.sha256,
+                    bytes,
+                    to_i64(args.installed_at)?,
+                    args.source_repository,
+                    args.source_commit,
+                    source_path
+                ],
+            ))?;
+        } else {
+            map_db(tx.execute(
+                "INSERT INTO schema_installs(domain,version,sha256,bytes,installed_at,source_repository,source_commit) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    pin.domain,
+                    to_i64(pin.version)?,
+                    pin.sha256,
+                    bytes,
+                    to_i64(args.installed_at)?,
+                    args.source_repository,
+                    args.source_commit
+                ],
+            ))?;
+        }
         map_db(tx.commit())?;
         // No reload outside a transaction: reuse the set read in this
         // transaction plus the new install. If that cannot be built, the
@@ -1098,4 +1225,82 @@ pub(crate) fn append_schema_in(
         ],
     ))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn bytes(version: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "format":"ontology-schema/v1","domain":"work","version":version,
+            "namespace":{"instance":"vps://synthetic","account":"root"},
+            "object_types":{
+              "thing":{"owner":"ontology","primary_key":{"from":"$action_id"},
+                "properties":{"name":{"type":"string","required":true}}}
+            },
+            "grants":[{"principal":"agent","scope":{},"read":["thing"],"derive":[],"actions":[]}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn store_without_source_path_column_still_opens_and_gains_it_on_install() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "ont-store-prov-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sqlite");
+        {
+            let mut store = Store::open_schema(&path).unwrap();
+            store
+                .install_schema(
+                    &bytes(1),
+                    InstallArgs {
+                        installed_at: 1,
+                        source_repository: Some("example/repo".into()),
+                        source_commit: Some("a".repeat(40)),
+                    },
+                )
+                .unwrap();
+        }
+        // Remove the column a store written by the base does not have.
+        {
+            let raw = Connection::open(&path).unwrap();
+            raw.execute_batch("ALTER TABLE schema_installs DROP COLUMN source_path")
+                .unwrap();
+        }
+        let mut store = Store::open_schema(&path).unwrap();
+        assert_eq!(store.schema_pins().unwrap()["work"].version, 1);
+        let before = store.schema_provenance().unwrap();
+        assert_eq!(before["work"].repository.as_deref(), Some("example/repo"));
+        assert_eq!(before["work"].path, None);
+        store
+            .install_schema_with_provenance(
+                &bytes(2),
+                InstallArgs {
+                    installed_at: 2,
+                    source_repository: Some("example/repo".into()),
+                    source_commit: Some("b".repeat(40)),
+                },
+                Some("ontology/work.schema.json".into()),
+            )
+            .unwrap();
+        let after = store.schema_provenance().unwrap();
+        assert_eq!(
+            after["work"].path.as_deref(),
+            Some("ontology/work.schema.json")
+        );
+        assert_eq!(
+            after["work"].commit.as_deref(),
+            Some("b".repeat(40).as_str())
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
