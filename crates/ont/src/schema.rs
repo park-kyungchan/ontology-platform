@@ -42,6 +42,16 @@ fn same_store_path(store: &std::path::Path, default: &std::path::Path) -> bool {
             .unwrap_or_else(|| std::path::Path::new("."));
         Some(std::fs::canonicalize(parent).ok()?.join(name))
     }
+    use std::os::unix::fs::MetadataExt;
+    if matches!((std::fs::canonicalize(store), std::fs::canonicalize(default)), (Ok(a), Ok(b)) if a == b)
+    {
+        return true;
+    }
+    if let (Ok(a), Ok(b)) = (std::fs::metadata(store), std::fs::metadata(default))
+        && (a.dev(), a.ino()) == (b.dev(), b.ino())
+    {
+        return true;
+    }
     store == default || matches!((resolved(store), resolved(default)), (Some(a), Some(b)) if a == b)
 }
 
@@ -299,6 +309,8 @@ mod tests {
             .unwrap();
         drop(store);
         std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+        std::os::unix::fs::symlink(&default, root.join("file-symlink.sqlite")).unwrap();
+        std::fs::hard_link(&default, root.join("file-hardlink.sqlite")).unwrap();
         let before = std::fs::read(&default).unwrap();
         let cwd = std::env::current_dir().unwrap();
         // No process-wide chdir: spell an absolute path relative to cwd.
@@ -309,6 +321,8 @@ mod tests {
         );
         for alias in [
             default.display().to_string(),
+            root.join("file-symlink.sqlite").display().to_string(),
+            root.join("file-hardlink.sqlite").display().to_string(),
             format!("{}/alias/store.sqlite", root.display()),
             format!("{}/real/../real/store.sqlite", root.display()),
             format!("{}/real//store.sqlite", root.display()),

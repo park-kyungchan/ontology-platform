@@ -431,9 +431,10 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
     render(dispatch(&cli, stdin, &ctx), now)
 }
 
-/// `ont mcp --client <name>`: the server loop of [`crate::mcp`] over `stdin`
+/// `ont mcp [--client <name>]`: the server loop of [`crate::mcp`] over `stdin`
 /// and the process's standard output (the one subcommand that writes while it
-/// runs). The client name is checked before anything is read.
+/// runs). An explicit client name is checked before anything is read; absent
+/// --client leaves attribution to initialize clientInfo.name.
 fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
     if !cli.render_options.is_empty()
         || !cli.render_args.is_empty()
@@ -446,12 +447,10 @@ fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
     {
         return render(Err(invalid_argument("--source").into()), 0);
     }
-    let Some(client) = cli
-        .client
-        .as_deref()
-        .filter(|c| crate::mcp::valid_client(c))
-    else {
-        return render(Err(Refusal::new("invalid_request").into()), 0);
+    let client = match cli.client.as_deref() {
+        None => "",
+        Some(client) if crate::mcp::valid_client(client) => client,
+        Some(_) => return render(Err(Refusal::new("invalid_request").into()), 0),
     };
     crate::mcp::install_panic_recorder();
     let config = crate::mcp::Config {
