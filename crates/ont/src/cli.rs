@@ -58,6 +58,8 @@ struct Cli {
     sources: Vec<String>,
     client: Option<String>,
     command: Vec<String>,
+    render_options: std::collections::BTreeMap<String, String>,
+    render_args: std::collections::BTreeMap<String, String>,
 }
 
 fn invalid_argument(argument: &str) -> Refusal {
@@ -78,6 +80,8 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
         sources: Vec::new(),
         client: None,
         command: Vec::new(),
+        render_options: Default::default(),
+        render_args: Default::default(),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -131,6 +135,23 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
                         .ok_or_else(|| invalid_argument("--client"))?
                         .clone(),
                 );
+            }
+            "--write" | "--check" | "--section" | "--preimage-dir" => {
+                let value = it.next().ok_or_else(|| invalid_argument(arg))?;
+                if cli
+                    .render_options
+                    .insert(arg.clone(), value.clone())
+                    .is_some()
+                {
+                    return Err(invalid_argument(arg));
+                }
+            }
+            "--arg" => {
+                let value = it.next().ok_or_else(|| invalid_argument(arg))?;
+                let (name, value) = value.split_once('=').ok_or_else(|| invalid_argument(arg))?;
+                if cli.render_args.insert(name.into(), value.into()).is_some() {
+                    return Err(invalid_argument(name));
+                }
             }
             "--version" => cli.version = true,
             _ if arg.starts_with("--") => return Err(invalid_argument(arg)),
@@ -209,13 +230,22 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
     if cli.client.is_some() && !is_action {
         return Err(invalid_argument("--client").into());
     }
+    if cmd.as_slice() != ["render"]
+        && (!cli.render_options.is_empty() || !cli.render_args.is_empty())
+    {
+        return Err(invalid_argument("--render-options").into());
+    }
     match cmd.as_slice() {
-        ["schema", "check", file] => check(
-            ctx,
-            &CheckRequest {
-                file: PathBuf::from(file),
-            },
-        ),
+        ["schema", "check", file] => {
+            let answer = check(
+                ctx,
+                &CheckRequest {
+                    file: PathBuf::from(file),
+                },
+            )?;
+            crate::render::check_view_names(ctx, std::path::Path::new(file))?;
+            Ok(answer)
+        }
         ["schema", "install", file] => install(
             ctx,
             &InstallRequest {
@@ -253,6 +283,38 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
             execute(Op::Index, request.to_string().as_bytes(), ctx)
         }
         ["search"] => execute(Op::Search, &read_request(stdin)?, ctx),
+        ["render"] => {
+            use crate::render::{RenderRequest, check_file, write_file};
+            let opts = &cli.render_options;
+            if opts.is_empty() && cli.render_args.is_empty() {
+                return crate::render::render(ctx, &RenderRequest::parse(&read_request(stdin)?)?);
+            }
+            if opts.len() == 1
+                && cli.render_args.is_empty()
+                && let Some(file) = opts.get("--check")
+            {
+                return check_file(ctx, std::path::Path::new(file));
+            }
+            if opts.len() == 3
+                && let (Some(file), Some(view), Some(dir)) = (
+                    opts.get("--write"),
+                    opts.get("--section"),
+                    opts.get("--preimage-dir"),
+                )
+            {
+                return write_file(
+                    ctx,
+                    std::path::Path::new(file),
+                    &RenderRequest {
+                        op: None,
+                        view: view.clone(),
+                        args: cli.render_args.clone(),
+                    },
+                    std::path::Path::new(dir),
+                );
+            }
+            Err(invalid_argument("--render-options").into())
+        }
         ["action", "list"] => list_actions(ctx, &ListActionsRequest::parse(&read_request(stdin)?)?),
         ["action", "validate"] => {
             validate_action(ctx, &ValidateActionRequest::parse(&read_request(stdin)?)?)
@@ -374,7 +436,9 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
 /// runs). An explicit client name is checked before anything is read; absent
 /// --client leaves attribution to initialize clientInfo.name.
 fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
-    if !cli.sources.is_empty()
+    if !cli.render_options.is_empty()
+        || !cli.render_args.is_empty()
+        || !cli.sources.is_empty()
         || cli.source_repository.is_some()
         || cli.source_commit.is_some()
         || cli.from_checkout.is_some()

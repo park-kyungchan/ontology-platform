@@ -985,9 +985,196 @@ pub struct SchemaGrant {
     pub actions: Vec<String>,
 }
 
+/// A deterministic generated table over one type in this domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewDef {
+    pub object_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Value>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub order: Vec<ViewOrder>,
+    pub columns: Vec<ViewColumn>,
+    #[serde(default = "view_limit")]
+    pub limit: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+fn view_limit() -> u64 {
+    200
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewOrder {
+    pub property: String,
+    pub direction: ViewDirection,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewDirection {
+    Asc,
+    Desc,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewColumn {
+    pub header: String,
+    pub property: String,
+}
+
+/// Validate the search filter grammar without depending on the CLI crate.
+fn check_view_filter(
+    f: &Value,
+    view: &ViewDef,
+    schema: &Schema,
+    props: &BTreeMap<String, PropertyDef>,
+    depth: usize,
+    leaves: &mut usize,
+) -> bool {
+    let Some(map) = f.as_object().filter(|m| m.len() == 1) else {
+        return false;
+    };
+    if depth > 8 {
+        return false;
+    }
+    let Some((op, arg)) = map.iter().next() else {
+        return false;
+    };
+    if matches!(op.as_str(), "all" | "any" | "none") {
+        return arg.as_array().is_some_and(|a| {
+            a.iter()
+                .all(|f| check_view_filter(f, view, schema, props, depth + 1, leaves))
+        });
+    }
+    *leaves += 1;
+    if *leaves > 64 {
+        return false;
+    }
+    if op == "unresolved" {
+        return arg.as_str().is_some_and(|p| props.contains_key(p));
+    }
+    if !matches!(
+        op.as_str(),
+        "eq" | "ne" | "in" | "lt" | "le" | "gt" | "ge" | "prefix"
+    ) {
+        return false;
+    }
+    let Some(a) = arg.as_array().filter(|a| a.len() == 2) else {
+        return false;
+    };
+    let Some(def) = a[0].as_str().and_then(|p| props.get(p)) else {
+        return false;
+    };
+    let base = match &def.ty {
+        PropertyType::Scalar(s) => Some(*s),
+        PropertyType::ValueType(r) => schema.value_types.get(&r.value_type).map(|d| d.base),
+        _ => None,
+    };
+    if op == "prefix" && base != Some(ScalarType::String) {
+        return false;
+    }
+    if matches!(op.as_str(), "lt" | "le" | "gt" | "ge")
+        && !matches!(
+            base,
+            Some(
+                ScalarType::String | ScalarType::Integer | ScalarType::Timestamp | ScalarType::Date
+            )
+        )
+    {
+        return false;
+    }
+    fn declared(v: &Value, args: &[String]) -> bool {
+        match v {
+            Value::String(s) => s
+                .strip_prefix('$')
+                .is_none_or(|n| args.iter().any(|a| a == n)),
+            Value::Array(a) => a.iter().all(|v| declared(v, args)),
+            Value::Object(m) => m.values().all(|v| declared(v, args)),
+            _ => true,
+        }
+    }
+    if op == "in" && a[1].as_array().is_none_or(|a| a.len() > 100) {
+        return false;
+    }
+    if !declared(&a[1], &view.args) {
+        return false;
+    }
+    fn has_arg(v: &Value) -> bool {
+        match v {
+            Value::String(s) => s.starts_with('$'),
+            Value::Array(a) => a.iter().any(has_arg),
+            Value::Object(m) => m.values().any(has_arg),
+            _ => false,
+        }
+    }
+    let valid = |v: &Value| {
+        if has_arg(v) {
+            base == Some(ScalarType::String) && v.is_string()
+        } else {
+            validate_value(schema, &def.ty, v) != Err(codes::WRONG_VALUE_TYPE)
+        }
+    };
+    if op == "in" {
+        a[1].as_array().is_some_and(|a| a.iter().all(valid))
+    } else {
+        valid(&a[1])
+    }
+}
+fn check_views(schema: &Schema) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (name, view) in &schema.views {
+        let p = format!("/views/{}", esc(name));
+        let mut bad = |code, field: &str| out.push(Violation::new(code, format!("{p}{field}")));
+        if !valid_name(name) {
+            bad(codes::INVALID_NAME, "");
+        }
+        let mut args = BTreeSet::new();
+        if view.args.iter().any(|a| !valid_name(a) || !args.insert(a)) {
+            bad(codes::INVALID_SCHEMA, "/args");
+        }
+        if !(1..=1000).contains(&view.limit) {
+            bad(codes::INVALID_SCHEMA, "/limit");
+        }
+        if view.order.is_empty() {
+            bad(codes::INVALID_SCHEMA, "/order");
+        }
+        if view.columns.is_empty() {
+            bad(codes::INVALID_SCHEMA, "/columns");
+        }
+        let Some(ty) = schema.object_types.get(&view.object_type) else {
+            bad(codes::UNKNOWN_TYPE, "/object_type");
+            continue;
+        };
+        for col in &view.columns {
+            if col.header.contains(['|', '\n', '\r']) {
+                bad(codes::INVALID_SCHEMA, "/columns");
+            }
+            if col.property != "$key" && !ty.properties.contains_key(&col.property) {
+                bad(codes::UNKNOWN_PROPERTY, "/columns");
+            }
+        }
+        for order in &view.order {
+            if order.property != "$key" && !ty.properties.contains_key(&order.property) {
+                bad(codes::UNKNOWN_PROPERTY, "/order");
+            }
+        }
+        if view
+            .filter
+            .as_ref()
+            .is_some_and(|f| !check_view_filter(f, view, schema, &ty.properties, 0, &mut 0))
+        {
+            bad(codes::INVALID_SCHEMA, "/filter");
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schema {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub views: BTreeMap<String, ViewDef>,
     pub format: String,
     pub domain: String,
     pub version: u64,
@@ -1351,7 +1538,7 @@ fn check_template(
 
 /// Semantic checks of DESIGN section 3 "Format and checks".
 pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Violation> {
-    let mut out: Vec<Violation> = Vec::new();
+    let mut out: Vec<Violation> = check_views(schema);
     let v = |code: &'static str, pointer: String, out: &mut Vec<Violation>| {
         out.push(Violation::new(code, pointer));
     };
@@ -2396,6 +2583,17 @@ impl SchemaSet {
             .map(|(s, _)| (s.domain.clone(), s.object_types.keys().cloned().collect()))
             .collect();
         let mut violations = Vec::new();
+        let mut view_domains = BTreeMap::new();
+        for (schema, _) in &entries {
+            for name in schema.views.keys() {
+                if view_domains.insert(name, &schema.domain).is_some() {
+                    violations.push(Violation::new(
+                        codes::DUPLICATE_TYPE_NAME,
+                        format!("/views/{}", esc(name)),
+                    ));
+                }
+            }
+        }
         let mut domains: BTreeMap<String, Schema> = BTreeMap::new();
         let mut pins = BTreeMap::new();
         for (schema, pin) in entries {
