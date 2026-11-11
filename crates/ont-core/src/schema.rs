@@ -1098,6 +1098,12 @@ impl Schema {
         }
     }
 
+    /// Validate one value against a declared property type, including a
+    /// value type's `pattern` and other constraints.
+    pub fn validate_value(&self, ty: &PropertyType, v: &Value) -> Result<(), Violation> {
+        validate_value(self, ty, v).map_err(|code| Violation::new(code, String::new()))
+    }
+
     pub(crate) fn validate_fields(
         &self,
         object_type: &str,
@@ -1968,10 +1974,11 @@ fn scan_params(
     let _ = schema;
     match val {
         Value::String(s) => {
-            if let Some(p) = param_name(s)
-                && !at.parameters.contains_key(p)
-            {
-                out.push(Violation::new(codes::UNKNOWN_PARAMETER, pointer.into()));
+            if let Some(p) = param_name(s) {
+                let name = p.split_once('.').map_or(p, |(n, _)| n);
+                if !at.parameters.contains_key(name) {
+                    out.push(Violation::new(codes::UNKNOWN_PARAMETER, pointer.into()));
+                }
             }
         }
         Value::Array(items) => {
@@ -2019,6 +2026,59 @@ fn check_condition(
                     codes::UNKNOWN_PROPERTY,
                     format!("{pointer}/{kind}/0"),
                 ));
+            }
+        }
+        if context.is_none()
+            && let Value::String(first) = &pair[0]
+            && !first.starts_with('$')
+        {
+            // A bare name is a property of the one reference parameter's
+            // object; with any other count the explicit form is required.
+            let refs: Vec<&PropertyType> = at
+                .parameters
+                .values()
+                .map(|p| &p.ty)
+                .filter(|ty| matches!(ty, PropertyType::Ref(_)))
+                .collect();
+            if refs.len() != 1 {
+                out.push(Violation::new(
+                    codes::INVALID_CRITERION,
+                    format!("{pointer}/{kind}/0"),
+                ));
+            } else if let PropertyType::Ref(r) = refs[0] {
+                let known = schema
+                    .object_types
+                    .get(&r.target)
+                    .is_some_and(|t| t.properties.contains_key(first));
+                if !known {
+                    out.push(Violation::new(
+                        codes::UNKNOWN_PROPERTY,
+                        format!("{pointer}/{kind}/0"),
+                    ));
+                }
+            }
+        }
+        // Explicit $<parameter>.<property>: the property must exist on
+        // the reference parameter's target type.
+        for (i, operand) in pair.iter().enumerate() {
+            if let Value::String(s) = operand
+                && let Some(p) = param_name(s)
+                && let Some((name, prop)) = p.split_once('.')
+                && let Some(param) = at.parameters.get(name)
+            {
+                let known = match &param.ty {
+                    PropertyType::Ref(r) => schema
+                        .object_types
+                        .get(&r.target)
+                        .is_some_and(|t| t.properties.contains_key(prop)),
+                    _ => false,
+                };
+                if !known {
+                    out.push(Violation::new(
+                        codes::UNKNOWN_PROPERTY,
+                        format!("{pointer}/{kind}/{i}"),
+                    ));
+                }
             }
         }
         for (i, operand) in pair.iter().enumerate() {
@@ -2415,6 +2475,18 @@ impl SchemaSet {
     ) -> Result<(), Violation> {
         match self.schema_of(object_type) {
             Some(s) => s.validate_fields(object_type, fields),
+            None => Err(Violation::new(codes::UNKNOWN_TYPE, String::new())),
+        }
+    }
+    /// Validate one value against a property type in the owning schema.
+    pub fn validate_value(
+        &self,
+        object_type: &str,
+        ty: &PropertyType,
+        v: &Value,
+    ) -> Result<(), Violation> {
+        match self.schema_of(object_type) {
+            Some(s) => s.validate_value(ty, v),
             None => Err(Violation::new(codes::UNKNOWN_TYPE, String::new())),
         }
     }

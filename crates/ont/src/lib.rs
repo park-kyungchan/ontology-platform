@@ -24,6 +24,7 @@
 //! stamp; `schema check` does not predict `schema_version_conflict`. No
 //! function grant exists yet, so `describe` lists the functions of every
 //! listed domain.
+pub mod action;
 pub mod backup;
 pub mod cli;
 pub mod describe;
@@ -60,11 +61,49 @@ pub fn check_uid(real: u32, effective: u32) -> Result<(), &'static str> {
 }
 
 /// What an operation needs besides its request: the store path, `now` and
-/// the principal name.
+/// the self-reported attribution of the caller. `client` is the command's
+/// `--client` value (default `cli`); `agent` comes from the request field
+/// or `ONT_AGENT`; `session` is given per request. All three are
+/// self-reported, as DESIGN section 7 states.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Context {
     pub store: PathBuf,
     pub now: u64,
+    pub client: String,
+    pub agent: Option<String>,
+    pub session: Option<String>,
+    /// Snapshot paging for action evaluation (test-only tuning via
+    /// [`Context::with_snapshot_bounds`]); `Context::new` is the supported
+    /// constructor.
+    pub snapshot_page_size: usize,
+    pub snapshot_max_heads: usize,
+}
+impl Context {
+    pub fn new(store: PathBuf, now: u64) -> Self {
+        Self {
+            store,
+            now,
+            client: "cli".to_string(),
+            agent: None,
+            session: None,
+            snapshot_page_size: 500,
+            snapshot_max_heads: 100_000,
+        }
+    }
+    /// Test-only constructor: a small snapshot page size (and hard head
+    /// bound) without a global.
+    pub fn with_snapshot_bounds(
+        store: PathBuf,
+        now: u64,
+        page_size: usize,
+        max_heads: usize,
+    ) -> Self {
+        let mut ctx = Self::new(store, now);
+        ctx.snapshot_page_size = page_size.max(1);
+        ctx.snapshot_max_heads = max_heads.max(1);
+        ctx
+    }
 }
 
 /// An operation's answer; `run` wraps `Enveloped` into the common envelope.

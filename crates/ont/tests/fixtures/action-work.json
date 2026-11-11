@@ -1,0 +1,341 @@
+{
+  "format": "ontology-schema/v1",
+  "domain": "work",
+  "version": 1,
+  "namespace": {"instance": "vps://palantirkc", "account": "root"},
+  "scope_keys": [],
+  "value_types": {
+    "hold_status": {"base": "string", "enum": ["active", "lifted"]},
+    "shout": {"base": "string", "pattern": "[A-Z]+"}
+  },
+  "sources": {
+    "task_states": {
+      "kind": "markdown_fields",
+      "glob": "/tmp/ont-action-fixture/*/STATE.md",
+      "head_lines": 40,
+      "complete_listing": true,
+      "fresh_for_s": 3600
+    }
+  },
+  "object_types": {
+    "task": {
+      "description": "A task.",
+      "owner": {"source": "task_states"},
+      "primary_key": {"from": "/dir"},
+      "title": "directory",
+      "properties": {
+        "directory": {"type": "string", "required": true, "from": "/dir_path"},
+        "state_sha256": {"type": "string", "required": true, "from": "/sha256"},
+        "checkpoint_line": {"type": "string", "required": true, "from": "/line1"}
+      }
+    },
+    "hold": {
+      "description": "A hold.",
+      "owner": "ontology",
+      "primary_key": {"from": "$action_id"},
+      "title": "effect",
+      "properties": {
+        "task": {"type": {"ref": "task"}, "required": true},
+        "effect": {"type": "string", "required": true},
+        "until": {"type": "string", "required": true},
+        "status": {"type": {"value_type": "hold_status"}, "required": true}
+      }
+    },
+    "note": {
+      "description": "A note.",
+      "owner": "ontology",
+      "primary_key": {"from": "$action_id"},
+      "title": "title",
+      "properties": {
+        "title": {"type": "string", "required": true},
+        "task": {"type": {"ref": "task"}, "required": false},
+        "label": {"type": "string", "required": false}
+      }
+    },
+    "tag": {
+      "description": "A tag keyed by the action id.",
+      "owner": "ontology",
+      "primary_key": {"from": "$action_id"},
+      "title": "label",
+      "properties": {
+        "label": {"type": "string", "required": true}
+      }
+    },
+    "widget": {
+      "description": "A widget keyed by a pointer into a parameter.",
+      "owner": "ontology",
+      "primary_key": {"from": "/key"},
+      "title": "name",
+      "properties": {
+        "name": {"type": "string", "required": true}
+      }
+    },
+    "probe": {
+      "description": "A criterion probe object.",
+      "owner": "ontology",
+      "primary_key": {"from": "$action_id"},
+      "title": "kind",
+      "properties": {
+        "kind": {"type": "string", "required": true},
+        "note": {"type": "string", "required": true},
+        "count": {"type": "integer", "required": true}
+      }
+    }
+  },
+  "link_types": {
+    "hold_task": {
+      "from": "hold", "via": "task", "to": "task", "cardinality": "many_to_one",
+      "names": {"forward": "task", "reverse": "holds"}
+    },
+    "note_task": {
+      "from": "note", "via": "task", "to": "task", "cardinality": "many_to_one",
+      "names": {"forward": "note_task", "reverse": "notes"}
+    }
+  },
+  "action_types": {
+    "set_hold": {
+      "description": "Record a hold on a task.",
+      "parameters": {
+        "task": {"type": {"ref": "task"}, "required": true},
+        "effect": {"type": "string", "required": true, "max_bytes": 300},
+        "until": {"type": "string", "required": true, "max_bytes": 300}
+      },
+      "submission_criteria": [
+        {
+          "code": "task_not_current",
+          "message": "The task is unknown, retracted or stale; run `ont index --source task_states`.",
+          "all": [{"exists": "$task"}, {"fresh": "$task"}]
+        },
+        {
+          "code": "duplicate_active_hold",
+          "message": "This task already has an active hold on the same effect.",
+          "none": [{"linked": {"from": "$task", "link": "holds", "where": {"all": [{"eq": ["status", "active"]}, {"eq": ["effect", "$effect"]}]}}}]
+        }
+      ],
+      "rules": [
+        {"create_object": "hold", "set": {"task": "$task", "effect": "$effect", "until": "$until", "status": "active"}}
+      ]
+    },
+    "lift_hold": {
+      "description": "Lift a hold.",
+      "parameters": {
+        "hold": {"type": {"ref": "hold"}, "required": true}
+      },
+      "submission_criteria": [
+        {
+          "code": "hold_not_active",
+          "message": "The hold is not active.",
+          "all": [{"eq": ["status", "active"]}]
+        }
+      ],
+      "rules": [
+        {"modify_object": "hold", "set": {"status": "lifted"}}
+      ]
+    },
+    "record_note": {
+      "description": "Create a note.",
+      "parameters": {
+        "title": {"type": "string", "required": true},
+        "task": {"type": {"ref": "task"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_object": "note", "set": {"title": "$title", "task": "$task"}}
+      ]
+    },
+    "upsert_note": {
+      "description": "Create or modify a note, setting its task reference.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": false},
+        "title": {"type": "string", "required": true},
+        "task": {"type": {"ref": "task"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_or_modify_object": "note", "set": {"title": "$title", "task": "$task"}}
+      ]
+    },
+    "link_note": {
+      "description": "Set a note's task reference.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true},
+        "task": {"type": {"ref": "task"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"set_reference": {"object_type": "note", "property": "task", "value": "$task"}}
+      ]
+    },
+    "clear_note_task": {
+      "description": "Clear a note's task reference.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"clear_reference": {"object_type": "note", "property": "task"}}
+      ]
+    },
+    "delete_note": {
+      "description": "Delete a note.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"delete_object": "note"}
+      ]
+    },
+    "create_tag": {
+      "description": "Create a tag keyed by the action id.",
+      "parameters": {
+        "label": {"type": "string", "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_object": "tag", "set": {"label": "$label"}}
+      ]
+    },
+    "record_shout": {
+      "description": "Create a tag from a patterned word.",
+      "parameters": {
+        "word": {"type": {"value_type": "shout"}, "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_object": "tag", "set": {"label": "$word"}}
+      ]
+    },
+    "record_note_optlabel": {
+      "description": "Create a note with an optional label parameter.",
+      "parameters": {
+        "title": {"type": "string", "required": true},
+        "task": {"type": {"ref": "task"}, "required": true},
+        "label_opt": {"type": "string", "required": false}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_object": "note", "set": {"title": "$title", "task": "$task", "label": "$label_opt"}}
+      ]
+    },
+    "upsert_widget": {
+      "description": "Create or modify a widget by a pointer key.",
+      "parameters": {
+        "spec": {"type": {"struct": {"key": "string"}}, "required": true},
+        "title": {"type": "string", "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_or_modify_object": "widget", "set": {"name": "$title"}}
+      ]
+    },
+    "create_probe": {
+      "description": "Create a probe.",
+      "parameters": {
+        "kind": {"type": "string", "required": true},
+        "note": {"type": "string", "required": true},
+        "count": {"type": "integer", "required": true}
+      },
+      "submission_criteria": [],
+      "rules": [
+        {"create_object": "probe", "set": {"kind": "$kind", "note": "$note", "count": "$count"}}
+      ]
+    },
+    "check_probe_kind": {
+      "description": "Pass when kind is the literal note.",
+      "parameters": {
+        "probe": {"type": {"ref": "probe"}, "required": true},
+        "dummy": {"type": "string", "required": false}
+      },
+      "submission_criteria": [
+        {"code": "kind_is_note", "message": "kind is not note.", "all": [{"eq": ["kind", "note"]}]}
+      ],
+      "rules": [
+        {"modify_object": "probe", "set": {"note": "checked"}}
+      ]
+    },
+    "check_probe_count": {
+      "description": "Pass when count equals 1.0.",
+      "parameters": {
+        "probe": {"type": {"ref": "probe"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "count_is_one", "message": "count is not one.", "all": [{"eq": ["count", 1.0]}]}
+      ],
+      "rules": [
+        {"modify_object": "probe", "set": {"note": "checked"}}
+      ]
+    },
+    "check_note_ne": {
+      "description": "Pass when a note title is not x.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "title_not_x", "message": "title is x.", "all": [{"ne": ["title", "x"]}]}
+      ],
+      "rules": [
+        {"modify_object": "note", "set": {"title": "y"}}
+      ]
+    },
+    "check_note_label_ge": {
+      "description": "Pass when a note label is at least a.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "label_ge_a", "message": "label below a.", "all": [{"ge": ["label", "a"]}]}
+      ],
+      "rules": [
+        {"modify_object": "note", "set": {"title": "z"}}
+      ]
+    },
+    "check_note_label_none": {
+      "description": "Pass when no note label equals a.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "label_not_a", "message": "label is a.", "none": [{"eq": ["label", "a"]}]}
+      ],
+      "rules": [
+        {"modify_object": "note", "set": {"title": "z"}}
+      ]
+    },
+    "check_note_label_any": {
+      "description": "Pass when any condition holds.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "any_label_or_title", "message": "none hold.", "any": [{"eq": ["label", "a"]}, {"eq": ["title", "first"]}]}
+      ],
+      "rules": [
+        {"modify_object": "note", "set": {"title": "z"}}
+      ]
+    },
+    "check_note_explicit": {
+      "description": "Pass when the explicit note title is first.",
+      "parameters": {
+        "note": {"type": {"ref": "note"}, "required": true},
+        "task": {"type": {"ref": "task"}, "required": true}
+      },
+      "submission_criteria": [
+        {"code": "explicit_title", "message": "title is not first.", "all": [{"eq": ["$note.title", "first"]}]}
+      ],
+      "rules": [
+        {"modify_object": "note", "set": {"title": "z"}}
+      ]
+    }
+  },
+  "functions": {},
+  "grants": [
+    {
+      "principal": "agent",
+      "scope": {},
+      "read": ["task", "hold", "note", "tag", "widget", "probe"],
+      "derive": ["task", "hold", "note", "tag", "widget", "probe"],
+      "actions": ["set_hold", "lift_hold", "record_note", "upsert_note", "link_note", "clear_note_task", "delete_note", "create_tag", "record_shout", "record_note_optlabel", "upsert_widget", "create_probe", "check_probe_kind", "check_probe_count", "check_note_ne", "check_note_label_ge", "check_note_label_none", "check_note_label_any", "check_note_explicit"]
+    }
+  ]
+}

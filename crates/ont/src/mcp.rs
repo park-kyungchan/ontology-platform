@@ -339,10 +339,8 @@ impl<'a> Server<'a> {
     /// contained here and answered as an internal failure of this call.
     fn call(&self, op: Op, arguments: &Value) -> (String, bool) {
         let now = self.config.now.unwrap_or_else(now_seconds);
-        let ctx = Context {
-            store: self.config.store.clone(),
-            now,
-        };
+        let mut ctx = Context::new(self.config.store.clone(), now);
+        ctx.client = self.config.client.clone();
         let request = arguments.to_string();
         let guard = InCall::enter();
         let ran = catch_unwind(AssertUnwindSafe(|| {
