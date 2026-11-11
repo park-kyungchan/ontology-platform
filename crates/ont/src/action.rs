@@ -372,6 +372,7 @@ fn validate_parameters(
                     return Err(invalid_parameter(name));
                 }
             }
+            Some(Value::Null) if !def.required => {}
             Some(v) => {
                 if !value_matches(schema, &def.ty, v) {
                     return Err(invalid_parameter(name));
@@ -756,21 +757,6 @@ fn eval_criteria(
     Ok((results, ev.basis, failed))
 }
 
-fn substitute(v: &Value, params: &BTreeMap<String, Value>) -> Value {
-    match v {
-        Value::String(s) => match s.strip_prefix('$') {
-            Some(p) => params.get(p).cloned().unwrap_or(Value::Null),
-            None => v.clone(),
-        },
-        Value::Array(a) => Value::Array(a.iter().map(|x| substitute(x, params)).collect()),
-        Value::Object(m) => Value::Object(
-            m.iter()
-                .map(|(k, x)| (k.clone(), substitute(x, params)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
 #[derive(Clone)]
 struct Planned {
     id: Id,
@@ -786,11 +772,69 @@ struct Planner<'a> {
     snap: Snapshot,
     params: &'a BTreeMap<String, Value>,
     action_id: String,
+    now: u64,
+    basis: BTreeMap<String, Value>,
     edit_index: usize,
     planned: Vec<Planned>,
     overlay: BTreeMap<String, ObjectState>,
 }
 impl<'a> Planner<'a> {
+    fn substitute(&mut self, v: &Value) -> Result<Option<Value>, Failure> {
+        match v {
+            Value::String(s) => {
+                let Some(p) = s.strip_prefix('$') else {
+                    return Ok(Some(v.clone()));
+                };
+                if p == "now" {
+                    return Ok(Some(json!(application_time(self.now)?)));
+                }
+                if let Some((name, prop)) = p.split_once('.') {
+                    let Some(value) = self.params.get(name) else {
+                        return Ok(None);
+                    };
+                    let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
+                    let head = self.snap.live(&id).ok_or_else(|| revision_conflict(&id))?;
+                    self.basis.insert(
+                        Snapshot::key(&id),
+                        json!({"id":id,"revision":head.head.observation.revision}),
+                    );
+                    return field_value(head, prop)
+                        .cloned()
+                        .filter(|v| !v.is_null())
+                        .map(Some)
+                        .ok_or_else(|| {
+                            Refusal::new("rule_value_unavailable")
+                                .with("parameter", json!(name))
+                                .with("property", json!(prop))
+                                .into()
+                        });
+                }
+                Ok(self.params.get(p).cloned())
+            }
+            Value::Array(values) => {
+                let mut out = Vec::new();
+                for value in values {
+                    let Some(value) = self.substitute(value)? else {
+                        return Ok(None);
+                    };
+                    out.push(value);
+                }
+                Ok(Some(Value::Array(out)))
+            }
+            Value::Object(values) => {
+                let mut out = Map::new();
+                for (key, value) in values {
+                    let Some(value) = self.substitute(value)? else {
+                        return Ok(None);
+                    };
+                    out.insert(key.clone(), value);
+                }
+                Ok(Some(Value::Object(out)))
+            }
+            _ => Ok(Some(v.clone())),
+        }
+    }
+
     fn state(&self, id: &Id) -> Option<ObjectState> {
         if let Some(s) = self.overlay.get(&Snapshot::key(id)) {
             return Some(s.clone());
@@ -930,11 +974,12 @@ impl<'a> Planner<'a> {
                     None => return Err(Refusal::new("unknown_type").into()),
                 }
             }
-            let set_map: BTreeMap<String, Value> = rule
-                .set
-                .iter()
-                .map(|(k, v)| (k.clone(), substitute(v, self.params)))
-                .collect();
+            let mut set_map = BTreeMap::new();
+            for (key, value) in &rule.set {
+                if let Some(value) = self.substitute(value)? {
+                    set_map.insert(key.clone(), value);
+                }
+            }
             if let Some(t) = &rule.create_object {
                 edits.push(self.do_create(at, t, &set_map, false)?);
             } else if let Some(t) = &rule.create_or_modify_object {
@@ -1046,7 +1091,9 @@ impl<'a> Planner<'a> {
                 .value
                 .clone()
                 .ok_or_else(|| invalid_parameter(&r.property))?;
-            let v = substitute(&raw, self.params);
+            let Some(v) = self.substitute(&raw)? else {
+                return Ok(self.push(id, scope, Change::Update, head, fields));
+            };
             // Array ref: add unique.
             let is_array = self
                 .schema
@@ -1136,11 +1183,46 @@ impl EditsLogStatus {
         }
     }
 }
+fn application_time(secs: u64) -> Result<String, Failure> {
+    if secs > FRESH_UNTIL_MAX {
+        return Err(Refusal::new("application_time_out_of_range").into());
+    }
+    let stamp = utc_stamp(secs);
+    Ok(format!(
+        "{}-{}-{}T{}:{}:{}Z",
+        &stamp[..4],
+        &stamp[4..6],
+        &stamp[6..8],
+        &stamp[9..11],
+        &stamp[11..13],
+        &stamp[13..15]
+    ))
+}
+fn uses_now(at: &ActionType) -> bool {
+    fn contains(v: &Value) -> bool {
+        match v {
+            Value::String(s) => s == "$now",
+            Value::Array(a) => a.iter().any(contains),
+            Value::Object(m) => m.values().any(contains),
+            _ => false,
+        }
+    }
+    at.rules.iter().any(|r| {
+        r.set.values().any(contains)
+            || r.set_reference
+                .as_ref()
+                .and_then(|r| r.value.as_ref())
+                .is_some_and(contains)
+    })
+}
 fn utc_stamp_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    utc_stamp(secs)
+}
+fn utc_stamp(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let tod = secs % 86_400;
     let z = days + 719_468;
@@ -1574,7 +1656,7 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
                             .and_then(|d| d.enum_values.clone()).map(Value::Array).unwrap_or(Value::Null),
                         _ => Value::Null,
                     };
-                    json!({"name":pname,"type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),"required":p.required,"allowed_values":allowed,"max_bytes":p.max_bytes})
+                    json!({"name":pname,"type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),"required":p.required,"description":p.description,"allowed_values":allowed,"max_bytes":p.max_bytes})
                 }).collect::<Vec<_>>(),
                 "criteria":at.submission_criteria.iter().map(|c| json!({"code":c.code,"message":c.message})).collect::<Vec<_>>(),
                 "criterion_codes":at.submission_criteria.iter().map(|c| c.code.clone()).collect::<Vec<_>>(),
@@ -1654,6 +1736,8 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
             snap: snap.clone(),
             params: &params,
             action_id,
+            now: ctx.now,
+            basis: BTreeMap::new(),
             edit_index: 0,
             planned: Vec::new(),
             overlay: BTreeMap::new(),
@@ -1661,11 +1745,20 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         augment_planner(&mut planner, &at, ctx.snapshot_max_heads, &mut store)?;
         edits = planner.plan(&at)?;
         check_planned(&set, &planner)?;
+        for b in planner.basis.values() {
+            if !basis.contains(b) {
+                basis.push(b.clone());
+            }
+        }
+    }
+    let mut result = json!({"valid":valid,"criteria":criteria,"basis":basis,"edits":edits,"action_type":req.action_type});
+    if uses_now(&at) {
+        result["application_time"] = json!("set_at_application");
     }
     Ok(Answer::Enveloped {
         pins: pins_for(&set, &schema.domain),
         revision: principal.revision()?,
-        result: json!({"valid":valid,"criteria":criteria,"basis":basis,"edits":edits,"action_type":req.action_type}),
+        result,
     })
 }
 
@@ -1751,10 +1844,12 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                 )
             });
             let action_id = allocate_action_id(ctx.now, &req.action_type, &params_canon, &basis_json, log_len, &request_action_id);
-            let mut planner = Planner { schema: &tschema, set: &tx_set, snap: snap.clone(), params: &tparams, action_id: action_id.clone(), edit_index: 0, planned: Vec::new(), overlay: BTreeMap::new() };
+            let mut planner = Planner { schema: &tschema, set: &tx_set, snap: snap.clone(), params: &tparams, action_id: action_id.clone(), now: ctx.now, basis: BTreeMap::new(), edit_index: 0, planned: Vec::new(), overlay: BTreeMap::new() };
             augment_planner(&mut planner, &tat, ctx.snapshot_max_heads, tx)?;
             let edits = planner.plan(&tat)?;
             check_planned(&tx_set, &planner)?;
+            for b in planner.basis.values() { if !basis.contains(b) { basis.push(b.clone()); } }
+            let basis_json = Value::Array(basis);
             let edits_json = Value::Array(edits.clone());
             let pin_version = tx_set.pin(&tschema.domain).map(|p| p.version).unwrap_or(0);
             let record = json!({"action_id":action_id,"action_type":req.action_type,"domain":tschema.domain,"schema_domain":tschema.domain,"schema_version":pin_version,"actor":actor,"submitted_at":ctx.now,"parameters":params_canon,"basis":basis_json,"edits":edits_json,"outcome":"applied"});
@@ -1813,6 +1908,20 @@ mod tests {
     use ont_core::schema::{ActionRule, Schema};
 
     #[test]
+    fn application_time_utc_boundaries() {
+        assert_eq!(application_time(0).unwrap(), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            application_time(951_782_400).unwrap(),
+            "2000-02-29T00:00:00Z"
+        );
+        assert_eq!(
+            application_time(FRESH_UNTIL_MAX).unwrap(),
+            "9999-12-31T23:59:59Z"
+        );
+        assert!(application_time(FRESH_UNTIL_MAX + 1).is_err());
+    }
+
+    #[test]
     fn planner_refuses_source_owned() {
         let fixture: &[u8] = include_bytes!("../tests/fixtures/action-work.json");
         let checked = Schema::check_bytes(fixture, &BTreeSet::new()).unwrap();
@@ -1839,6 +1948,8 @@ mod tests {
             snap: Snapshot::default(),
             params: &params,
             action_id: "act-test".to_string(),
+            now: 1000,
+            basis: BTreeMap::new(),
             edit_index: 0,
             planned: Vec::new(),
             overlay: BTreeMap::new(),

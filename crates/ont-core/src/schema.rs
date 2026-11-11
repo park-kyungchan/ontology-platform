@@ -300,6 +300,8 @@ pub const MAX_TEMPLATE_PLACEHOLDERS: usize = 8;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropertyDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(rename = "type")]
     pub ty: PropertyType,
     #[serde(default)]
@@ -1110,7 +1112,9 @@ fn check_view_filter(
     }
     let valid = |v: &Value| {
         if has_arg(v) {
-            base == Some(ScalarType::String) && v.is_string()
+            (base == Some(ScalarType::String)
+                || (op == "eq" && matches!(def.ty, PropertyType::Ref(_))))
+                && v.is_string()
         } else {
             validate_value(schema, &def.ty, v) != Err(codes::WRONG_VALUE_TYPE)
         }
@@ -1775,6 +1779,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
             if !valid_name(pname) {
                 v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
+            check_description(prop, &pp, &mut out);
             check_type(schema, &prop.ty, &format!("{pp}/type"), false, &mut out);
             if matches!(ty.owner, Owner::Source(_))
                 && matches!(&prop.ty, PropertyType::Array(a)
@@ -1927,9 +1932,10 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
         }
         for (pname, param) in &at.parameters {
             let pp = format!("{base}/parameters/{}", esc(pname));
-            if !valid_name(pname) {
+            if !valid_name(pname) || pname == "now" {
                 v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
+            check_description(param, &pp, &mut out);
             check_type(schema, &param.ty, &format!("{pp}/type"), false, &mut out);
             if param.from.is_some() {
                 v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out);
@@ -1999,7 +2005,16 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 }
             }
             for (key, val) in &rule.set {
-                scan_params(schema, at, val, &format!("{rp}/set/{}", esc(key)), &mut out);
+                let ptr = format!("{rp}/set/{}", esc(key));
+                scan_params(schema, at, val, &ptr, true, &mut out);
+                if let Some((_, target)) = rule.object_target()
+                    && let Some(prop) = schema
+                        .object_types
+                        .get(target)
+                        .and_then(|t| t.properties.get(key))
+                {
+                    check_rule_expression(schema, at, val, &prop.ty, &ptr, &mut out);
+                }
             }
             for (field, refr) in [
                 ("set_reference", &rule.set_reference),
@@ -2031,7 +2046,19 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                     }
                 }
                 if let Some(val) = &refr.value {
-                    scan_params(schema, at, val, &format!("{tp}/value"), &mut out);
+                    let ptr = format!("{tp}/value");
+                    scan_params(schema, at, val, &ptr, true, &mut out);
+                    if let Some(prop) = schema
+                        .object_types
+                        .get(&refr.object_type)
+                        .and_then(|t| t.properties.get(&refr.property))
+                    {
+                        let ty = match &prop.ty {
+                            PropertyType::Array(a) => &a.array,
+                            ty => ty,
+                        };
+                        check_rule_expression(schema, at, val, ty, &ptr, &mut out);
+                    }
                 }
             }
             if rule
@@ -2148,6 +2175,85 @@ fn min_max_matches(base: ScalarType, v: &Value) -> bool {
     }
 }
 
+fn check_description(def: &PropertyDef, pointer: &str, out: &mut Vec<Violation>) {
+    if def.description.as_ref().is_some_and(|s| s.len() > 300) {
+        out.push(Violation::new(
+            codes::INVALID_SCHEMA,
+            format!("{pointer}/description"),
+        ));
+    }
+}
+fn parameter_property<'a>(
+    schema: &'a Schema,
+    at: &ActionType,
+    name: &str,
+    prop: &str,
+) -> Option<&'a PropertyType> {
+    let PropertyType::Ref(r) = &at.parameters.get(name)?.ty else {
+        return None;
+    };
+    Some(&schema.object_types.get(&r.target)?.properties.get(prop)?.ty)
+}
+fn scalar_base(schema: &Schema, ty: &PropertyType) -> Option<ScalarType> {
+    match ty {
+        PropertyType::Scalar(s) => Some(*s),
+        PropertyType::ValueType(r) => schema.value_types.get(&r.value_type).map(|d| d.base),
+        _ => None,
+    }
+}
+// Only the new expressions are statically typed; existing literal/parameter
+// rule values retain their runtime checks and their existing schema pins.
+fn check_rule_expression(
+    schema: &Schema,
+    at: &ActionType,
+    value: &Value,
+    ty: &PropertyType,
+    pointer: &str,
+    out: &mut Vec<Violation>,
+) {
+    match value {
+        Value::String(s) if s == "$now" && scalar_base(schema, ty) != Some(ScalarType::String) => {
+            out.push(Violation::new(codes::INVALID_RULE, pointer.into()));
+        }
+        Value::String(s) => {
+            if let Some((name, prop)) = s.strip_prefix('$').and_then(|s| s.split_once('.'))
+                && let Some(source) = parameter_property(schema, at, name, prop)
+                && source != ty
+                && !(scalar_base(schema, source).is_some()
+                    && scalar_base(schema, source) == scalar_base(schema, ty))
+            {
+                out.push(Violation::new(codes::INVALID_RULE, pointer.into()));
+            }
+        }
+        Value::Array(values) => {
+            for (i, value) in values.iter().enumerate() {
+                let inner = match ty {
+                    PropertyType::Array(a) => &a.array,
+                    _ => ty,
+                };
+                check_rule_expression(schema, at, value, inner, &format!("{pointer}/{i}"), out);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                let inner = match ty {
+                    PropertyType::Struct(s) => s.struct_.get(key).unwrap_or(ty),
+                    _ => ty,
+                };
+                check_rule_expression(
+                    schema,
+                    at,
+                    value,
+                    inner,
+                    &format!("{pointer}/{}", esc(key)),
+                    out,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 fn param_name(s: &str) -> Option<&str> {
     s.strip_prefix('$')
 }
@@ -2156,26 +2262,40 @@ fn scan_params(
     at: &ActionType,
     val: &Value,
     pointer: &str,
+    allow_now: bool,
     out: &mut Vec<Violation>,
 ) {
-    let _ = schema;
     match val {
         Value::String(s) => {
             if let Some(p) = param_name(s) {
+                if allow_now && p == "now" {
+                    return;
+                }
                 let name = p.split_once('.').map_or(p, |(n, _)| n);
                 if !at.parameters.contains_key(name) {
                     out.push(Violation::new(codes::UNKNOWN_PARAMETER, pointer.into()));
+                } else if let Some((_, prop)) = p.split_once('.')
+                    && parameter_property(schema, at, name, prop).is_none()
+                {
+                    out.push(Violation::new(codes::UNKNOWN_PROPERTY, pointer.into()));
                 }
             }
         }
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
-                scan_params(schema, at, item, &format!("{pointer}/{i}"), out);
+                scan_params(schema, at, item, &format!("{pointer}/{i}"), allow_now, out);
             }
         }
         Value::Object(map) => {
             for (k, item) in map {
-                scan_params(schema, at, item, &format!("{pointer}/{}", esc(k)), out);
+                scan_params(
+                    schema,
+                    at,
+                    item,
+                    &format!("{pointer}/{}", esc(k)),
+                    allow_now,
+                    out,
+                );
             }
         }
         _ => {}
@@ -2245,31 +2365,15 @@ fn check_condition(
                 }
             }
         }
-        // Explicit $<parameter>.<property>: the property must exist on
-        // the reference parameter's target type.
         for (i, operand) in pair.iter().enumerate() {
-            if let Value::String(s) = operand
-                && let Some(p) = param_name(s)
-                && let Some((name, prop)) = p.split_once('.')
-                && let Some(param) = at.parameters.get(name)
-            {
-                let known = match &param.ty {
-                    PropertyType::Ref(r) => schema
-                        .object_types
-                        .get(&r.target)
-                        .is_some_and(|t| t.properties.contains_key(prop)),
-                    _ => false,
-                };
-                if !known {
-                    out.push(Violation::new(
-                        codes::UNKNOWN_PROPERTY,
-                        format!("{pointer}/{kind}/{i}"),
-                    ));
-                }
-            }
-        }
-        for (i, operand) in pair.iter().enumerate() {
-            scan_params(schema, at, operand, &format!("{pointer}/{kind}/{i}"), out);
+            scan_params(
+                schema,
+                at,
+                operand,
+                &format!("{pointer}/{kind}/{i}"),
+                false,
+                out,
+            );
         }
         return;
     }
@@ -2289,7 +2393,9 @@ fn check_condition(
                 ));
             }
         }
-        Condition::Actor(val) => scan_params(schema, at, val, &format!("{pointer}/actor"), out),
+        Condition::Actor(val) => {
+            scan_params(schema, at, val, &format!("{pointer}/actor"), false, out)
+        }
         Condition::Linked(link) => {
             if let Some(p) = param_name(&link.from)
                 && !at.parameters.contains_key(p)

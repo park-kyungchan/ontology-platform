@@ -929,17 +929,20 @@ fn b4_pattern_optional_and_create_or_modify_pointer_key() {
         "{ans}"
     );
     assert_nothing_written(&t, &before);
-    // Absent optional parameter that would break a planned field.
+    // An absent optional parameter leaves the create property without a value.
     let (code, ans) = apply(
         &t,
         json!({"op":"apply_action","action_type":"record_note_optlabel","parameters":{"title":"x","task":task_id()}}),
     );
-    assert_eq!(
-        (code, ans["code"].as_str()),
-        (2, Some("invalid_parameter")),
-        "{ans}"
+    assert_eq!(code, 0, "{ans}");
+    let id = ans["result"]["edits"][0]["id"].clone();
+    let (_, note) = run_store(&t, &["get"], &json!({"id":id}));
+    assert!(
+        note["result"]["objects"][0]["observations"][0]["fields"]
+            .get("label")
+            .is_none(),
+        "{note}"
     );
-    assert_nothing_written(&t, &before);
     // create_or_modify with a pointer key from a non-reference parameter.
     let (code, ans) = apply(
         &t,

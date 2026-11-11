@@ -46,16 +46,91 @@ fn opening(req: &RenderRequest, schema: &str) -> String {
     }
     format!("{s} schema={schema} -->")
 }
-fn substitute(value: &mut Value, args: &BTreeMap<String, String>) {
-    match value {
-        Value::String(s) => {
-            if let Some(v) = s.strip_prefix('$').and_then(|n| args.get(n)) {
-                *s = v.clone();
+// A reference argument is a native key; only eq admits this shorthand.
+// Materialize the same full Id that search already compares, without a copy
+// of the key in the referenced object's properties.
+fn reference_args(filter: &Value, schema: &Schema, view: &ViewDef, out: &mut Vec<String>) {
+    if let Some(m) = filter.as_object() {
+        for (op, value) in m {
+            if op == "eq" {
+                if let Some(pair) = value.as_array()
+                    && let (Some(property), Some(arg)) = (
+                        pair.first().and_then(Value::as_str),
+                        pair.get(1)
+                            .and_then(Value::as_str)
+                            .and_then(|s| s.strip_prefix('$')),
+                    )
+                    && schema
+                        .object_types
+                        .get(&view.object_type)
+                        .and_then(|t| t.properties.get(property))
+                        .is_some_and(|p| matches!(p.ty, PropertyType::Ref(_)))
+                {
+                    out.push(arg.to_string());
+                }
+            } else if let Some(conditions) = value.as_array() {
+                for condition in conditions {
+                    reference_args(condition, schema, view, out);
+                }
             }
         }
-        Value::Array(a) => a.iter_mut().for_each(|v| substitute(v, args)),
-        Value::Object(m) => m.values_mut().for_each(|v| substitute(v, args)),
-        _ => {}
+    }
+}
+fn substitute_filter(
+    filter: &mut Value,
+    args: &BTreeMap<String, String>,
+    schema: &Schema,
+    view: &ViewDef,
+) {
+    let Some(map) = filter.as_object_mut() else {
+        return;
+    };
+    for (op, value) in map {
+        if matches!(op.as_str(), "all" | "any" | "none") {
+            if let Some(conditions) = value.as_array_mut() {
+                for condition in conditions {
+                    substitute_filter(condition, args, schema, view);
+                }
+            }
+        } else if let Some(pair) = value.as_array_mut().filter(|a| a.len() == 2) {
+            let reference = pair[0]
+                .as_str()
+                .and_then(|p| {
+                    schema
+                        .object_types
+                        .get(&view.object_type)?
+                        .properties
+                        .get(p)
+                })
+                .and_then(|p| match &p.ty {
+                    PropertyType::Ref(r) => Some(r),
+                    _ => None,
+                });
+            fn substitute(
+                value: &mut Value,
+                args: &BTreeMap<String, String>,
+                reference: Option<&ont_core::schema::RefType>,
+                schema: &Schema,
+            ) {
+                if let Some(key) = value
+                    .as_str()
+                    .and_then(|s| s.strip_prefix('$'))
+                    .and_then(|n| args.get(n))
+                {
+                    *value = match reference {
+                        Some(r) => {
+                            json!({"object_type":r.target,"namespace":schema.namespace,"native_key":key})
+                        }
+                        None => json!(key),
+                    };
+                } else if let Some(items) = value.as_array_mut() {
+                    for item in items {
+                        substitute(item, args, reference, schema);
+                    }
+                }
+            }
+            substitute(&mut pair[1], args, reference, schema);
+        }
     }
 }
 fn escape(s: &str) -> String {
@@ -177,7 +252,16 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
             return Err(invalid(name).into());
         }
     }
+    let mut ref_args = Vec::new();
+    if let Some(filter) = &view.filter {
+        reference_args(filter, schema, view, &mut ref_args);
+    }
     for (name, value) in &req.args {
+        if ref_args.contains(name) && !safe_value(value) {
+            return Err(Refusal::new("reference_argument_unrepresentable")
+                .with("argument", json!(name))
+                .into());
+        }
         if !view.args.contains(name) || !safe_value(value) {
             return Err(invalid(name).into());
         }
@@ -186,7 +270,7 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
         .filter
         .clone()
         .map(|mut f| {
-            substitute(&mut f, &req.args);
+            substitute_filter(&mut f, &req.args, schema, view);
             serde_json::from_value::<Filter>(f).map_err(|_| Refusal::new("invalid_request"))
         })
         .transpose()?;
