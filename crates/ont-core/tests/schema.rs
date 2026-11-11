@@ -556,6 +556,60 @@ fn pattern_must_match_the_whole_value() {
 }
 
 #[test]
+fn pattern_alternation_anchors_and_flags_are_whole_value() {
+    let fields = |v: &str| BTreeMap::from([("code".to_string(), Knowledge::Value(json!(v)))]);
+    let refuse = |set: &SchemaSet, v: &str| {
+        assert_eq!(
+            set.validate_fields("thing", &fields(v)).unwrap_err().code,
+            "value_constraint_violation",
+            "value {v:?}"
+        );
+    };
+    // Alternation: accepts exactly `a` or `b`, refuses partial matches.
+    let set = set_of(pattern_schema("a|b"));
+    assert_eq!(set.validate_fields("thing", &fields("a")), Ok(()));
+    assert_eq!(set.validate_fields("thing", &fields("b")), Ok(()));
+    refuse(&set, "ax");
+    refuse(&set, "xb");
+    // A pattern with its own anchors still behaves as a whole-value match.
+    let set = set_of(pattern_schema("^a$"));
+    assert_eq!(set.validate_fields("thing", &fields("a")), Ok(()));
+    refuse(&set, "aa");
+    refuse(&set, "xa");
+    // An inline flag applies to the whole value.
+    let set = set_of(pattern_schema("(?i)ab"));
+    assert_eq!(set.validate_fields("thing", &fields("AB")), Ok(()));
+    assert_eq!(set.validate_fields("thing", &fields("ab")), Ok(()));
+    refuse(&set, "xab");
+    refuse(&set, "abx");
+}
+
+#[test]
+fn pattern_compiling_only_inside_the_wrapper_is_refused() {
+    // Before the repair this compiled (as `^(?:a)|(b)$`) and `ax` matched.
+    let schema = pattern_schema("a)|(b");
+    let found = schema.check(&BTreeSet::new());
+    assert_eq!(
+        pairs(&found),
+        vec![("invalid_value_type_definition", "/value_types/code/pattern")]
+    );
+    let bytes = serde_json::to_vec(&schema).unwrap();
+    assert!(Schema::check_bytes(&bytes, &BTreeSet::new()).is_err());
+}
+
+#[test]
+fn pattern_longer_than_limit_is_refused() {
+    let schema = pattern_schema(&"a".repeat(1_025));
+    let found = schema.check(&BTreeSet::new());
+    assert_eq!(
+        pairs(&found),
+        vec![("invalid_value_type_definition", "/value_types/code/pattern")]
+    );
+    let ok = pattern_schema(&"a".repeat(1_024));
+    assert!(ok.check(&BTreeSet::new()).is_empty());
+}
+
+#[test]
 fn pattern_that_does_not_compile_refuses_at_check() {
     let schema = pattern_schema("(");
     let found = schema.check(&BTreeSet::new());
@@ -678,9 +732,67 @@ fn new_change_kinds_serialize_and_validate() {
 
 #[test]
 fn duplicate_json_keys_are_refused_with_pointer() {
-    let bytes = br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"object_types":{"thing":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}},"thing":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}}}}"#;
-    let err = Schema::check_bytes(bytes, &BTreeSet::new()).unwrap_err();
+    let cases: &[(&[u8], &str)] = &[
+        (
+            br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"object_types":{"thing":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}},"thing":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}}}}"#,
+            "/object_types/thing",
+        ),
+        // Inside an array of objects: the pointer carries the index.
+        (
+            br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"grants":[{"principal":"agent","principal":"agent"}]}"#,
+            "/grants/0/principal",
+        ),
+        // A key containing `/` is escaped as `~1` in the pointer.
+        (
+            br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"sources":{"src":{"kind":"json_records","a/b":1,"a/b":2}}}"#,
+            "/sources/src/a~1b",
+        ),
+        // A key containing `~` is escaped as `~0` in the pointer.
+        (
+            br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"sources":{"src":{"kind":"json_records","a~b":1,"a~b":2}}}"#,
+            "/sources/src/a~0b",
+        ),
+        // An escaped duplicate: `"ab"` written with a unicode escape.
+        (
+            br#"{"format":"ontology-schema/v1","domain":"work","version":1,"namespace":{"instance":"vps://palantirkc","account":"root"},"sources":{"src":{"kind":"json_records","ab":1,"a\u0062":2}}}"#,
+            "/sources/src/ab",
+        ),
+    ];
+    for (bytes, pointer) in cases {
+        let err = Schema::check_bytes(bytes, &BTreeSet::new()).unwrap_err();
+        assert_eq!(err.len(), 1, "{err:?}");
+        assert_eq!(err[0].code, "duplicate_field");
+        assert_eq!(err[0].pointer, *pointer);
+    }
+}
+
+#[test]
+fn deeply_nested_document_is_refused_by_the_parser_not_the_scan() {
+    // 100,000 opening brackets: the scan stops at its depth limit and
+    // serde_json refuses; the test process must not abort.
+    let bytes = vec![b'['; 100_000];
+    let err = Schema::check_bytes(&bytes, &BTreeSet::new()).unwrap_err();
     assert_eq!(err.len(), 1, "{err:?}");
-    assert_eq!(err[0].code, "duplicate_field");
-    assert_eq!(err[0].pointer, "/object_types/thing");
+    assert!(
+        [
+            "invalid_schema",
+            "unknown_field",
+            "duplicate_field",
+            "missing_field"
+        ]
+        .contains(&err[0].code),
+        "parse-level code expected, got {err:?}"
+    );
+}
+
+#[test]
+fn valid_document_nested_100_deep_in_source_options_checks() {
+    let mut nested = json!(1);
+    for _ in 0..100 {
+        nested = json!([nested]);
+    }
+    let mut doc = base_value();
+    doc["sources"]["src"]["nested"] = nested;
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    assert!(Schema::check_bytes(&bytes, &BTreeSet::new()).is_ok());
 }

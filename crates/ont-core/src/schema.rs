@@ -216,9 +216,13 @@ impl ValueTypeDef {
     fn compiled(&self) -> Option<&regex_lite::Regex> {
         self.compiled_pattern
             .get_or_init(|| {
-                self.pattern
-                    .as_deref()
-                    .and_then(|p| compile_pattern(p).ok())
+                self.pattern.as_deref().and_then(|p| {
+                    if p.len() > MAX_PATTERN_BYTES {
+                        None
+                    } else {
+                        compile_pattern(p).ok()
+                    }
+                })
             })
             .as_ref()
     }
@@ -227,9 +231,19 @@ impl ValueTypeDef {
     }
 }
 
+/// Maximum `pattern` length in bytes; a longer pattern is refused with
+/// `invalid_value_type_definition`.
+const MAX_PATTERN_BYTES: usize = 1_024;
+
 /// Compile a value-type `pattern` for whole-value matching: the pattern
-/// must match the whole value, so it is wrapped as `^(?:pattern)$`.
+/// must match the whole value, so it is wrapped as `^(?:pattern)$`. The
+/// bare pattern must compile on its own first, so a pattern that compiles
+/// only inside the wrapper (for example `a)|(b`) is refused. Matching a
+/// value is linear in the value length; a value's length is bounded by the
+/// property's `max_bytes` when declared and otherwise by the store's
+/// limits (packet O2).
 fn compile_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    regex_lite::Regex::new(pattern)?;
     regex_lite::Regex::new(&format!("^(?:{pattern})$"))
 }
 
@@ -616,6 +630,10 @@ impl Schema {
     }
 }
 
+/// Nesting depth limit of the duplicate scan, the same limit serde_json
+/// applies; beyond it the scan stops and leaves the refusal to the parser.
+const MAX_SCAN_DEPTH: usize = 128;
+
 /// One pass over the JSON token stream: the pointer of the first duplicate
 /// key inside any object, if there is one. serde's map readers are last-wins,
 /// so duplicates are refused here before deserialization.
@@ -694,7 +712,10 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
                 }
             }
         }
-        fn value(&mut self, pointer: &str) -> Option<Option<String>> {
+        fn value(&mut self, pointer: &str, depth: usize) -> Option<Option<String>> {
+            if depth > MAX_SCAN_DEPTH {
+                return Some(None);
+            }
             self.ws();
             match *self.b.get(self.i)? {
                 b'{' => {
@@ -717,7 +738,7 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
                             return None;
                         }
                         self.i += 1;
-                        if let Some(d) = self.value(&kp)? {
+                        if let Some(d) = self.value(&kp, depth + 1)? {
                             return Some(Some(d));
                         }
                         self.ws();
@@ -740,7 +761,7 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
                     }
                     let mut idx = 0usize;
                     loop {
-                        if let Some(d) = self.value(&format!("{pointer}/{idx}"))? {
+                        if let Some(d) = self.value(&format!("{pointer}/{idx}"), depth + 1)? {
                             return Some(Some(d));
                         }
                         idx += 1;
@@ -771,7 +792,7 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
         }
     }
     let mut scan = Scan { b: bytes, i: 0 };
-    scan.value("").flatten()
+    scan.value("", 0).flatten()
 }
 
 /// Semantic checks of DESIGN section 3 "Format and checks".
