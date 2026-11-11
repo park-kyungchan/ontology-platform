@@ -497,6 +497,42 @@ fn derived_matches_admitted_for_stale_earlier_and_stale_latest() {
     }
 }
 #[test]
+fn derived_matches_admitted_for_an_earlier_unqualified_sample() {
+    let (mut objects, links) = samples_graph((0, 900), Some((2000, 2900)));
+    mutate(&mut objects, "measurement", "before")
+        .fields
+        .insert("source_qualified".into(), Knowledge::Value(false.into()));
+    let render_at = |q: Query| {
+        let a = Authority::new(policy(&objects));
+        let s = a.bind_trusted("reader").unwrap();
+        serde_json::from_str::<Value>(
+            &Service::new(store(&objects, &links), a)
+                .render(&s, q, 2000)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let window = ReportWindow {
+        start: 0,
+        end: 10_000,
+    };
+    let admitted = render_at(Query::ProgramReport {
+        root: id("program", "root"),
+        window,
+    });
+    let derived = render_at(Query::ProgramReportV2 {
+        root: id("program", "root"),
+        window,
+    });
+    assert_eq!(report(&admitted)["metrics"][0]["source_qualified"], false);
+    assert_eq!(report(&derived)["metrics"][0]["source_qualified"], false);
+    assert_eq!(
+        report(&derived)["metrics"][0]["samples"][0]["source_qualified"],
+        report(&admitted)["metrics"][0]["samples"][0]["source_qualified"]
+    );
+}
+
+#[test]
 fn earlier_unqualified_and_stale_sample_disqualifies_metric() {
     let (mut objects, links) = samples_graph((0, 900), Some((2000, 2900)));
     mutate(&mut objects, "measurement", "before")

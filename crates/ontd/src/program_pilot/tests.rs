@@ -878,11 +878,12 @@ fn v1_frames_payload() -> Vec<u8> {
 }
 
 #[test]
-fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
+fn fix1_v1_frames_base_plus_stale_on_5_latest_samples() {
+    // Base bytes: the independent review's 203,958-byte v1-base.json at
+    // 17de548816bd26bafcf0e5c4236fff5ba89cff38; synthetic sources only.
     let bytes = v1_frames_payload();
     // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
     assert_eq!(bytes.len(), 204033);
-    // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
     assert_eq!(
         digest(&bytes),
         "a9896388ee644f4364932cf1ad4b4653fa6273ad3043f845e92d85f4f70efb46"
@@ -1030,12 +1031,11 @@ fn answer_record_compat_frames() -> Vec<u8> {
 }
 
 #[test]
-fn answer_record_default_v1_v2_frames_equal_independent_base() {
+fn answer_record_default_v1_v2_frames_base_plus_stale_on_5_latest_samples() {
     // Independently built base 60c1b452072bf8d1568423534632e8e41f81a95c.
     let bytes = answer_record_compat_frames();
     // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
     assert_eq!(bytes.len(), 267347);
-    // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
     assert_eq!(
         digest(&bytes),
         "5d2126b79cde7467d88b0fde209c062477ca3cf1f782c3313f45878ced804fab"
