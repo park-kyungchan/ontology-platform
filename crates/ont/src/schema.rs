@@ -394,6 +394,9 @@ pub(crate) fn schema_input_refusal(
         {
             "clear_reference must not supply value"
         }
+        "invalid_rule" if last == "present" => {
+            "present requires a declared $parameter or $parameter.property inside a criterion condition; action rules have no criterion guards"
+        }
         "invalid_rule" => {
             "rule value using $now requires string base and an unrestricted or canonical UTC pattern; a referenced parameter property must have a compatible declared type/base; required properties on create/create_or_modify must not depend on optional parameters"
         }

@@ -875,6 +875,7 @@ pub struct ConditionGroup {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
+    Present(String),
     Exists(String),
     Fresh(String),
     Eq([Value; 2]),
@@ -1279,7 +1280,11 @@ impl Schema {
                 })
                 .collect::<String>();
             let msg = e.inner().to_string();
-            let code = if msg.contains("unknown field") {
+            let code = if (pointer.contains("/submission_criteria/") || pointer.contains("/rules/"))
+                && (pointer.ends_with("/present") || msg.contains("unknown field `present`"))
+            {
+                codes::INVALID_RULE
+            } else if msg.contains("unknown field") {
                 codes::UNKNOWN_FIELD
             } else if msg.contains("duplicate field") {
                 codes::DUPLICATE_FIELD
@@ -2566,6 +2571,20 @@ fn check_condition(
         return;
     }
     match cond {
+        Condition::Present(s) => {
+            let valid = s
+                .strip_prefix('$')
+                .is_some_and(|p| match p.split_once('.') {
+                    Some((name, prop)) => parameter_property(schema, at, name, prop).is_some(),
+                    None => at.parameters.contains_key(p),
+                });
+            if !valid {
+                out.push(Violation::new(
+                    codes::INVALID_RULE,
+                    format!("{pointer}/present"),
+                ));
+            }
+        }
         Condition::Exists(s) | Condition::Fresh(s) => {
             let kind = if matches!(cond, Condition::Exists(_)) {
                 "exists"
