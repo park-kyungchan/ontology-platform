@@ -28,13 +28,16 @@ current value inside its transaction and logs that application basis. A copied
 value needs a fresh, readable source: every grant listing the action must include
 the referenced type in `read` (`reference_read_forbidden` at the expression's
 schema pointer otherwise). At runtime the native read admission policy also
-checks the object's grant scope; an inadmissible object refuses `unavailable`
-without details, just as `get` does. A missing/retracted source instead refuses
-`rule_reference_unavailable`; a present object whose requested property has no
-value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
+checks the object's grant scope. Missing, retracted and inadmissible sources all
+refuse `rule_reference_unavailable` with the same detail-free answer. Availability
+of all referenced inputs is checked before staleness or expected revisions. A
+present object whose requested property has no value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
 `rule_value_stale`; `validate` returns `valid:false`, no edits and a failed
-`preconditions` entry with that code. The freshness boundary is inclusive;
-Ontology-owned objects retain their existing indefinite freshness.
+`preconditions` entry with that code, while retaining the criteria results and
+computed basis. A criterion that needs a stale property is marked `passed:false`
+with `precondition:rule_value_stale`; independent criteria are still evaluated.
+The freshness boundary is inclusive; Ontology-owned objects retain their existing
+indefinite freshness.
 
 `"set":{"closed_at":"$now"}` writes the trusted application time as a UTC
 string such as `"2026-11-12T00:00:00Z"`. It uses the same time as the existing
@@ -55,8 +58,10 @@ A parameter declared `"required":false` accepts omission or JSON null. A rule
 value using that absent parameter leaves its destination unset on create and
 unchanged on modify; if nested in an array or struct, the entire destination
 property is skipped. A nonempty rule set whose values are all skipped produces
-no edit or object revision. An action whose rules all skip still records one
-action-log entry with `edits:[]` for idempotency, with no per-object observation;
+no edit or object revision. A create rule whose inputs are all absent creates no
+object. Modify and reference rules still resolve their targets before skipping:
+a missing or retracted target refuses just as it would with supplied inputs.
+An action whose rules all skip still records one action-log entry with `edits:[]` for idempotency, with no per-object observation;
 its retry returns `already_applied` with the same empty edits. An optional
 parameter feeding a required property on create refuses `invalid_rule` at its
 expression during schema checking. Required destination properties also undergo

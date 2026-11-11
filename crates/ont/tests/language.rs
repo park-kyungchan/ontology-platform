@@ -60,6 +60,9 @@ impl Temp {
         self.0.join("store.sqlite")
     }
     fn cli(&self, cmd: &[&str], input: Value, now: u64) -> Value {
+        serde_json::from_str(self.cli_line(cmd, input, now).trim()).unwrap()
+    }
+    fn cli_line(&self, cmd: &[&str], input: Value, now: u64) -> String {
         let mut args = vec![
             "--store".into(),
             self.store().display().to_string(),
@@ -72,7 +75,7 @@ impl Temp {
         args.extend(cmd.iter().map(|s| s.to_string()));
         let out = ont::run(&args, input.to_string().as_bytes(), 0, 0);
         assert!(out.stderr.is_empty(), "{}", out.stderr);
-        serde_json::from_str(out.stdout.trim()).unwrap()
+        out.stdout
     }
     fn install(&self, s: Value) {
         let p = self.0.join("schema.json");
@@ -89,6 +92,12 @@ impl Temp {
         self.tool(&format!("ont_action_{op}"), input, now)
     }
     fn tool(&self, tool: &str, input: Value, now: u64) -> Value {
+        let (text, is_error) = self.tool_line(tool, input, now);
+        let body: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(is_error, body["status"] != "ok");
+        body
+    }
+    fn tool_line(&self, tool: &str, input: Value, now: u64) -> (String, bool) {
         let mut server = ont::mcp::Server::new(
             ont::mcp::Config {
                 store: self.store(),
@@ -101,9 +110,17 @@ impl Temp {
         assert!(response.get("error").is_none(), "{response}");
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.len() <= ont::mcp::MAX_RESPONSE);
-        let body: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(response["result"]["isError"], body["status"] != "ok");
-        body
+        (
+            text.to_string(),
+            response["result"]["isError"].as_bool().unwrap(),
+        )
+    }
+    fn action_line(&self, mcp: bool, op: &str, input: Value, now: u64) -> String {
+        if mcp {
+            self.tool_line(&format!("ont_action_{op}"), input, now).0
+        } else {
+            self.cli_line(&["action", op], input, now)
+        }
     }
     fn refuses_schema(&self, schema: Value, code: &str, pointer: &str) {
         let p = self.0.join("refused-schema.json");
@@ -495,7 +512,7 @@ fn reference_expressions_require_read_in_every_action_grant() {
 }
 
 #[test]
-fn reference_read_scope_refuses_like_get_and_admitted_copy_works() {
+fn reference_read_scope_and_unavailable_sources_refuse_identically() {
     for mcp in [false, true] {
         let t = Temp::new();
         let mut s = schema();
@@ -524,24 +541,29 @@ fn reference_read_scope_refuses_like_get_and_admitted_copy_works() {
             let req =
                 json!({"action_type":"copy_note","parameters":{"source":id},"request_id":key});
             if tenant == "blocked" {
-                let get = t.cli(&["get"], json!({"id":id}), NOW);
+                assert_eq!(
+                    t.cli(&["get"], json!({"id":id}), NOW)["code"],
+                    "unavailable"
+                );
                 for op in ["validate", "apply"] {
                     let mut with_expected = req.clone();
                     with_expected["expected"] = json!([{"id":id,"revision":"untrusted-revision"}]);
                     let expected_refusal = t.call(mcp, op, with_expected, NOW);
                     assert_eq!(
-                        expected_refusal["code"], "unavailable",
+                        expected_refusal["code"], "rule_reference_unavailable",
                         "{expected_refusal}"
                     );
                     let refused = t.call(mcp, op, req.clone(), NOW);
-                    assert_eq!(refused["code"], get["code"], "{refused}");
-                    assert_eq!(refused["code"], "unavailable");
+                    assert_eq!(refused["code"], "rule_reference_unavailable");
                     for field in ["id", "parameter", "property", "message", "basis"] {
                         assert!(refused.get(field).is_none(), "{refused}");
                     }
                 }
                 let criterion=t.call(mcp,"apply",json!({"action_type":"check_title","parameters":{"source":id,"expected_title":"source"},"request_id":"hidden-criterion"}),NOW);
-                assert_eq!(criterion["code"], "unavailable", "{criterion}");
+                assert_eq!(
+                    criterion["code"], "rule_reference_unavailable",
+                    "{criterion}"
+                );
                 assert!(t.logs().is_empty());
             } else {
                 let applied = t.call(mcp, "apply", req, NOW);
@@ -668,9 +690,25 @@ fn absent_rule_inputs_do_not_change_object_revision_or_conflict() {
             assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
             assert_eq!(applied["result"]["edits"], json!([]));
             assert_eq!(t.logs().last().unwrap().1.edits, json!([]));
-            let retry = t.call(mcp, "apply", req, NOW + 1);
+            let retry = t.call(mcp, "apply", req.clone(), NOW + 1);
             assert_eq!(retry["result"]["outcome"], "already_applied");
             assert_eq!(retry["result"]["edits"], json!([]));
+            let before = t.logs().len();
+            let mut changed = req;
+            let parameter = match action {
+                "edit_note" => "title",
+                "optional_link" => "task",
+                _ => "label",
+            };
+            changed["parameters"][parameter] = if action == "optional_link" {
+                task()
+            } else {
+                json!("supplied later")
+            };
+            let reused = t.call(mcp, "apply", changed, NOW + 1);
+            assert_eq!(reused["code"], "request_id_reused", "{reused}");
+            assert_eq!(t.logs().len(), before);
+
             assert_eq!(t.cli(&["get"], json!({"id":source}), NOW), original);
         }
         assert!(
@@ -780,5 +818,228 @@ fn exists_optional_reference_empty_string_and_reference_array_presence() {
                 true
             );
         }
+    }
+}
+
+#[test]
+fn unavailable_references_are_byte_identical_before_other_refusals() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        s["scope_keys"] = json!(["tenant"]);
+        s["grants"][0]["scope"] = json!({"tenant":"allowed"});
+        s["object_types"]["task"]["owner"] = json!("ontology");
+        s["object_types"]["task"]["primary_key"] = json!({"from":"$action_id"});
+        for prop in s["object_types"]["task"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            prop.as_object_mut().unwrap().remove("from");
+        }
+        s["action_types"]["copy_pair"] = json!({
+            "parameters":{"first":{"type":{"ref":"note"},"required":true},"second":{"type":{"ref":"note"},"required":true}},
+            "submission_criteria":[{"code":"second_title","message":"Second title differs.","all":[{"eq":["$second.title","source"]}]}],
+            "rules":[{"create_object":"tag","set":{"label":"$first.title"}}]
+        });
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("copy_pair"));
+        t.install(s);
+        let id =
+            |key| json!({"object_type":"note","namespace":task()["namespace"],"native_key":key});
+        let fields = json!({"title":"source","task":task()});
+        put(
+            &t,
+            id("hidden"),
+            &[("tenant", "blocked")],
+            fields.clone(),
+            NOW - 1,
+            false,
+        );
+        put(
+            &t,
+            id("retracted"),
+            &[("tenant", "allowed")],
+            fields.clone(),
+            NOW - 1,
+            false,
+        );
+        put(
+            &t,
+            id("retracted"),
+            &[("tenant", "allowed")],
+            json!({}),
+            NOW - 1,
+            true,
+        );
+        put(
+            &t,
+            id("stale"),
+            &[("tenant", "allowed")],
+            fields,
+            NOW - 1,
+            false,
+        );
+        for op in ["validate", "apply"] {
+            let mut baseline = None;
+            for key in ["missing", "hidden", "retracted"] {
+                for action in ["copy_note", "check_title"] {
+                    for expected in [false, true] {
+                        let mut parameters = json!({"source":id(key)});
+                        if action == "check_title" {
+                            parameters["expected_title"] = json!("source");
+                        }
+                        let mut req = json!({"action_type":action,"parameters":parameters,"request_id":format!("{action}-{key}-{expected}")});
+                        if expected {
+                            req["expected"] = json!([{"id":id(key),"revision":"untrusted"}]);
+                        }
+                        let line = t.action_line(mcp, op, req, NOW);
+                        let body: Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(body["code"], "rule_reference_unavailable", "{line}");
+                        for field in [
+                            "message",
+                            "id",
+                            "parameter",
+                            "property",
+                            "basis",
+                            "criteria",
+                        ] {
+                            assert!(body.get(field).is_none(), "{body}");
+                        }
+                        if let Some(ref baseline) = baseline {
+                            assert_eq!(&line, baseline);
+                        } else {
+                            baseline = Some(line);
+                        }
+                    }
+                }
+                // Availability wins even when another reference is stale, in
+                // either expression order, and expected would also conflict.
+                for (first, second) in [(id("stale"), id(key)), (id(key), id("stale"))] {
+                    let req = json!({"action_type":"copy_pair","parameters":{"first":first,"second":second},"expected":[{"id":id("stale"),"revision":"untrusted"}],"request_id":format!("pair-{key}")});
+                    assert_eq!(
+                        t.action_line(mcp, op, req, NOW),
+                        *baseline.as_ref().unwrap()
+                    );
+                }
+            }
+        }
+        assert!(t.logs().is_empty());
+    }
+}
+
+#[test]
+fn skipped_modify_and_reference_rules_still_require_live_targets() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        s["action_types"]["optional_link"] = json!({"parameters":{"note":{"type":{"ref":"note"},"required":true},"task":{"type":{"ref":"task"}}},"rules":[{"set_reference":{"object_type":"note","property":"task","value":"$task"}}]});
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("optional_link"));
+        t.install(s);
+        let source = t.seed(mcp);
+        assert_eq!(t.call(mcp,"apply",json!({"action_type":"delete_note","parameters":{"note":source},"request_id":"delete-target"}),NOW)["status"],"ok");
+        let mut missing = source.clone();
+        missing["native_key"] = json!("missing-target");
+        let before = t.logs().len();
+        for target in [missing, source] {
+            for action in ["edit_note", "optional_link"] {
+                for op in ["validate", "apply"] {
+                    let mut supplied = json!({"note":target});
+                    let field = if action == "edit_note" {
+                        "title"
+                    } else {
+                        "task"
+                    };
+                    supplied[field] = if action == "edit_note" {
+                        json!("changed")
+                    } else {
+                        task()
+                    };
+                    let baseline = t.call(
+                        mcp,
+                        op,
+                        json!({"action_type":action,"parameters":supplied,"request_id":"supplied"}),
+                        NOW,
+                    );
+                    assert_eq!(baseline["code"], "revision_conflict", "{baseline}");
+                    for mut absent in [json!({"note":target}), json!({"note":target,field:null})] {
+                        // Both omission and null skip the value, after target resolution.
+                        absent["note"] = target.clone();
+                        let answer = t.call(
+                            mcp,
+                            op,
+                            json!({"action_type":action,"parameters":absent,"request_id":"absent"}),
+                            NOW,
+                        );
+                        assert_eq!(answer, baseline);
+                    }
+                }
+            }
+        }
+        assert_eq!(t.logs().len(), before);
+    }
+}
+
+#[test]
+fn stale_validation_preserves_independent_criteria_and_basis() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        s["action_types"]["stale_preview"] = json!({
+            "parameters":{"source":{"type":{"ref":"task"},"required":true},"label":{"type":"string","required":true}},
+            "submission_criteria":[
+                {"code":"before","message":"Source absent.","all":[{"exists":"$source"}]},
+                {"code":"stale_value","message":"Directory differs.","all":[{"eq":["$source.directory","/synthetic/task"]}]},
+                {"code":"after","message":"Label differs.","all":[{"eq":["$label","wanted"]}]},
+                {"code":"last","message":"Label absent.","all":[{"exists":"$label"}]}
+            ],
+            "rules":[{"create_object":"tag","set":{"label":"$source.directory"}}]
+        });
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("stale_preview"));
+        t.install(s);
+        put(
+            &t,
+            task(),
+            &[],
+            json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+            NOW,
+            false,
+        );
+        let req = json!({"action_type":"stale_preview","parameters":{"source":task(),"label":"other"},"request_id":"stale-preview"});
+        let validation = t.call(mcp, "validate", req.clone(), NOW + 1);
+        assert_eq!(validation["status"], "ok", "{validation}");
+        let result = &validation["result"];
+        assert_eq!(result["valid"], false);
+        assert_eq!(result["edits"], json!([]));
+        assert_eq!(
+            result["preconditions"],
+            json!([{"code":"rule_value_stale","passed":false}])
+        );
+        assert_eq!(
+            result["basis"],
+            json!([{"id":task(),"revision":format!("synthetic-{NOW}-false")} ])
+        );
+        assert_eq!(
+            result["criteria"],
+            json!([
+                {"code":"before","message":"Source absent.","passed":true},
+                {"code":"stale_value","message":"Directory differs.","passed":false,"precondition":"rule_value_stale"},
+                {"code":"after","message":"Label differs.","passed":false},
+                {"code":"last","message":"Label absent.","passed":true}
+            ])
+        );
+        assert_eq!(
+            t.call(mcp, "apply", req, NOW + 1)["code"],
+            "rule_value_stale"
+        );
+        assert!(t.logs().is_empty());
     }
 }

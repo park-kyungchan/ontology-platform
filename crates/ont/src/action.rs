@@ -440,53 +440,53 @@ fn reference_head<'a>(
     principal: &Principal,
     now: u64,
 ) -> Result<&'a SchemaHead, Failure> {
-    let head = snap
-        .head(id)
-        .ok_or_else(|| Refusal::new("rule_reference_unavailable"))?;
-    let object = Object {
-        id: head.id.clone(),
-        scope: head.scope.clone(),
-        head: head.head.observation.revision.clone(),
-        observations: vec![head.head.observation.clone()],
-    };
+    let head = snap.head(id);
+    let object = head.map(|h| Object {
+        id: h.id.clone(),
+        scope: h.scope.clone(),
+        head: h.head.observation.revision.clone(),
+        observations: vec![h.head.observation.clone()],
+    });
     let admission = principal
         .authority()
         .admit(principal.session())
         .map_err(|_| internal!("authority_failure"))?;
     match admission.query(
-        &crate::get::OneObject(Some(object)),
+        &crate::get::OneObject(object),
         Query::Get { id: id.clone() },
         now,
     ) {
         Ok(Response::Ok { .. }) => {}
         Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => {
-            return Err(Refusal::new("unavailable").into());
+            return Err(Refusal::new("rule_reference_unavailable").into());
         }
         Err(_) => return Err(internal!("authority_failure").into()),
     }
-    if head.retracted {
-        return Err(Refusal::new("rule_reference_unavailable").into());
-    }
-    if now > head.head.observation.fresh_until {
-        return Err(Refusal::new("rule_value_stale").into());
-    }
-    Ok(head)
+    head.filter(|h| !h.retracted)
+        .ok_or_else(|| Refusal::new("rule_reference_unavailable").into())
 }
 // Check reference preconditions before expected revisions, so an unreadable,
-// missing or stale source is never misreported as an ordinary revision race.
+// missing source is never misreported as an ordinary revision race. Availability
+// of every reference is checked before staleness or any other action refusal.
+#[derive(Default)]
+struct ReferenceInputs {
+    basis: BTreeMap<String, Value>,
+    stale: bool,
+}
 fn check_reference_inputs(
     principal: &Principal,
     snap: &Snapshot,
     at: &ActionType,
     params: &BTreeMap<String, Value>,
     now: u64,
-) -> Result<(), Failure> {
+) -> Result<ReferenceInputs, Failure> {
     fn walk(
         principal: &Principal,
         snap: &Snapshot,
         params: &BTreeMap<String, Value>,
         now: u64,
         value: &Value,
+        inputs: &mut ReferenceInputs,
     ) -> Result<(), Failure> {
         match value {
             Value::String(s) => {
@@ -494,29 +494,35 @@ fn check_reference_inputs(
                     && let Some(value) = params.get(name)
                 {
                     let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
-                    reference_head(snap, &id, principal, now)?;
+                    let head = reference_head(snap, &id, principal, now)?;
+                    inputs.basis.insert(
+                        Snapshot::key(&id),
+                        json!({"id":id,"revision":head.head.observation.revision}),
+                    );
+                    inputs.stale |= now > head.head.observation.fresh_until;
                 }
             }
             Value::Array(a) => {
                 for value in a {
-                    walk(principal, snap, params, now, value)?;
+                    walk(principal, snap, params, now, value, inputs)?;
                 }
             }
             Value::Object(m) => {
                 for value in m.values() {
-                    walk(principal, snap, params, now, value)?;
+                    walk(principal, snap, params, now, value, inputs)?;
                 }
             }
             _ => {}
         }
         Ok(())
     }
+    let mut inputs = ReferenceInputs::default();
     for rule in &at.rules {
         for value in rule.set.values() {
-            walk(principal, snap, params, now, value)?;
+            walk(principal, snap, params, now, value, &mut inputs)?;
         }
         if let Some(value) = rule.set_reference.as_ref().and_then(|r| r.value.as_ref()) {
-            walk(principal, snap, params, now, value)?;
+            walk(principal, snap, params, now, value, &mut inputs)?;
         }
     }
     for criterion in &at.submission_criteria {
@@ -526,10 +532,10 @@ fn check_reference_inputs(
         {
             let value = serde_json::to_value(conditions)
                 .map_err(|_| internal!("criterion_serialization"))?;
-            walk(principal, snap, params, now, &value)?;
+            walk(principal, snap, params, now, &value, &mut inputs)?;
         }
     }
-    Ok(())
+    Ok(inputs)
 }
 struct Eval<'a> {
     principal: &'a Principal,
@@ -561,6 +567,9 @@ impl Eval<'_> {
         let id = id_from_value(value).ok_or_else(|| invalid_parameter(name))?;
         let head = reference_head(self.snap, &id, self.principal, self.now)?.clone();
         self.note(&head);
+        if self.now > head.head.observation.fresh_until {
+            return Err(Refusal::new("rule_value_stale").into());
+        }
         Ok(field_value(&head, prop).cloned().filter(|v| !v.is_null()))
     }
     fn resolve_property(&mut self, name: &str, ctx: Option<&SchemaHead>) -> Option<Value> {
@@ -856,7 +865,15 @@ fn eval_criteria(
     let mut results = Vec::new();
     let mut failed = Vec::new();
     for crit in &at.submission_criteria {
-        let passed = ev.eval_group(&crit.all, &crit.any, &crit.none, None)?;
+        let passed = match ev.eval_group(&crit.all, &crit.any, &crit.none, None) {
+            Ok(passed) => passed,
+            Err(Failure::Refused(r)) if r.code == "rule_value_stale" => {
+                results.push(json!({"code":crit.code,"message":crit.message,"passed":false,"precondition":"rule_value_stale"}));
+                failed.push(crit.clone());
+                continue;
+            }
+            Err(failure) => return Err(failure),
+        };
         results.push(json!({"code":crit.code,"message":crit.message,"passed":passed}));
         if !passed {
             failed.push(crit.clone());
@@ -907,6 +924,9 @@ impl<'a> Planner<'a> {
                         Snapshot::key(&id),
                         json!({"id":id,"revision":head.head.observation.revision}),
                     );
+                    if self.now > head.head.observation.fresh_until {
+                        return Err(Refusal::new("rule_value_stale").into());
+                    }
                     return field_value(head, prop)
                         .cloned()
                         .filter(|v| !v.is_null())
@@ -1095,6 +1115,9 @@ impl<'a> Planner<'a> {
                     || rule.modify_object.is_some()
                     || rule.create_or_modify_object.is_some())
             {
+                if let Some(t) = &rule.modify_object {
+                    self.modify_target(t, None)?;
+                }
                 continue;
             }
             if let Some(t) = &rule.create_object {
@@ -1161,12 +1184,7 @@ impl<'a> Planner<'a> {
             .collect();
         Ok(self.push(id, scope, Change::Initial, None, fields))
     }
-    fn do_modify(
-        &mut self,
-        t: &str,
-        set_map: &BTreeMap<String, Value>,
-        target: Option<Id>,
-    ) -> Result<Value, Failure> {
+    fn modify_target(&self, t: &str, target: Option<Id>) -> Result<(Id, ObjectState), Failure> {
         let id = target
             .or_else(|| {
                 self.params
@@ -1179,6 +1197,15 @@ impl<'a> Planner<'a> {
         if retracted {
             return Err(revision_conflict(&id));
         }
+        Ok((id, (cur, head, retracted, scope)))
+    }
+    fn do_modify(
+        &mut self,
+        t: &str,
+        set_map: &BTreeMap<String, Value>,
+        target: Option<Id>,
+    ) -> Result<Value, Failure> {
+        let (id, (cur, head, _, scope)) = self.modify_target(t, target)?;
         let mut fields = cur;
         for (k, v) in set_map {
             fields.insert(k.clone(), Knowledge::Value(v.clone()));
@@ -1192,6 +1219,14 @@ impl<'a> Planner<'a> {
         clear: bool,
     ) -> Result<Option<Value>, Failure> {
         let _ = at;
+        let id = self
+            .ref_target_typed_from_schema(&r.object_type)
+            .ok_or_else(|| invalid_parameter(&r.object_type))?;
+        let (cur, head, retracted, scope) =
+            self.state(&id).ok_or_else(|| revision_conflict(&id))?;
+        if retracted {
+            return Err(revision_conflict(&id));
+        }
         let value = if clear {
             None
         } else {
@@ -1204,14 +1239,6 @@ impl<'a> Planner<'a> {
             };
             Some(value)
         };
-        let id = self
-            .ref_target_typed_from_schema(&r.object_type)
-            .ok_or_else(|| invalid_parameter(&r.object_type))?;
-        let (cur, head, retracted, scope) =
-            self.state(&id).ok_or_else(|| revision_conflict(&id))?;
-        if retracted {
-            return Err(revision_conflict(&id));
-        }
         let mut fields = cur;
         if clear {
             fields.insert(r.property.clone(), Knowledge::Missing);
@@ -1824,73 +1851,71 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     ));
     let actor = actor_json(ctx, &req.agent, &req.session);
-    let mut evaluate = || -> Result<Value, Failure> {
-        let snap = load_snapshot(ctx, &set, &at, &params, &req.expected, &mut store)?;
-        check_reference_inputs(&principal, &snap, &at, &params, ctx.now)?;
-        let expected_basis = check_expected(&snap, &req.expected)?;
-        let (criteria, basis_map, failed) =
-            eval_criteria(&principal, &set, &snap, &at, &params, &actor, ctx.now)?;
-        let mut basis: Vec<Value> = basis_map.values().cloned().collect();
-        for b in expected_basis {
-            if !basis.contains(&b) {
-                basis.push(b);
+    let snap = load_snapshot(ctx, &set, &at, &params, &req.expected, &mut store)?;
+    let references = check_reference_inputs(&principal, &snap, &at, &params, ctx.now)?;
+    let expected_basis = check_expected(&snap, &req.expected)?;
+    let (criteria, basis_map, failed) =
+        eval_criteria(&principal, &set, &snap, &at, &params, &actor, ctx.now)?;
+    let mut basis: Vec<Value> = references.basis.values().cloned().collect();
+    for b in basis_map.values() {
+        if !basis.contains(b) {
+            basis.push(b.clone());
+        }
+    }
+    for b in expected_basis {
+        if !basis.contains(&b) {
+            basis.push(b);
+        }
+    }
+    let valid = failed.is_empty() && !references.stale;
+    let mut edits = Vec::new();
+    if valid {
+        let log_len = st!(store.action_log()).len();
+        let basis_json = Value::Array(basis.clone());
+        let request_action_id = req.request_id.as_ref().map(|r| {
+            derive_request_action_id(
+                &effective_client(ctx),
+                effective_agent(ctx, &req.agent).as_deref(),
+                r,
+            )
+        });
+        let action_id = allocate_action_id(
+            ctx.now,
+            &req.action_type,
+            &params_canon,
+            &basis_json,
+            log_len,
+            &request_action_id,
+        );
+        let mut planner = Planner {
+            principal: &principal,
+            schema: &schema,
+            set: &set,
+            snap: snap.clone(),
+            params: &params,
+            action_id,
+            now: ctx.now,
+            basis: BTreeMap::new(),
+            edit_index: 0,
+            planned: Vec::new(),
+            overlay: BTreeMap::new(),
+        };
+        augment_planner(&mut planner, &at, ctx.snapshot_max_heads, &mut store)?;
+        edits = planner.plan(&at)?;
+        check_planned(&set, &planner)?;
+        for b in planner.basis.values() {
+            if !basis.contains(b) {
+                basis.push(b.clone());
             }
         }
-        let valid = failed.is_empty();
-        let mut edits = Vec::new();
-        if valid {
-            let log_len = st!(store.action_log()).len();
-            let basis_json = Value::Array(basis.clone());
-            let request_action_id = req.request_id.as_ref().map(|r| {
-                derive_request_action_id(
-                    &effective_client(ctx),
-                    effective_agent(ctx, &req.agent).as_deref(),
-                    r,
-                )
-            });
-            let action_id = allocate_action_id(
-                ctx.now,
-                &req.action_type,
-                &params_canon,
-                &basis_json,
-                log_len,
-                &request_action_id,
-            );
-            let mut planner = Planner {
-                principal: &principal,
-                schema: &schema,
-                set: &set,
-                snap: snap.clone(),
-                params: &params,
-                action_id,
-                now: ctx.now,
-                basis: BTreeMap::new(),
-                edit_index: 0,
-                planned: Vec::new(),
-                overlay: BTreeMap::new(),
-            };
-            augment_planner(&mut planner, &at, ctx.snapshot_max_heads, &mut store)?;
-            edits = planner.plan(&at)?;
-            check_planned(&set, &planner)?;
-            for b in planner.basis.values() {
-                if !basis.contains(b) {
-                    basis.push(b.clone());
-                }
-            }
-        }
-        let mut result = json!({"valid":valid,"criteria":criteria,"basis":basis,"edits":edits,"action_type":req.action_type});
-        if uses_now(&at) {
-            result["application_time"] = json!("set_at_application");
-        }
-        Ok(result)
-    };
-    let result = match evaluate() {
-        Ok(result) => result,
-        Err(Failure::Refused(r)) if r.code == "rule_value_stale" => {
-            json!({"valid":false,"criteria":[],"basis":[],"edits":[],"action_type":req.action_type,"preconditions":[{"code":"rule_value_stale","passed":false}]})
-        }
-        Err(failure) => return Err(failure),
-    };
+    }
+    let mut result = json!({"valid":valid,"criteria":criteria,"basis":basis,"edits":edits,"action_type":req.action_type});
+    if uses_now(&at) {
+        result["application_time"] = json!("set_at_application");
+    }
+    if references.stale {
+        result["preconditions"] = json!([{"code":"rule_value_stale","passed":false}]);
+    }
     Ok(Answer::Enveloped {
         pins: pins_for(&set, &schema.domain),
         revision: principal.revision()?,
@@ -1958,7 +1983,8 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                 }
             }
             let snap = load_snapshot(ctx, &tx_set, &tat, &tparams, &req.expected, tx)?;
-            check_reference_inputs(&tprincipal, &snap, &tat, &tparams, ctx.now)?;
+            let references = check_reference_inputs(&tprincipal, &snap, &tat, &tparams, ctx.now)?;
+            if references.stale { return Err(Refusal::new("rule_value_stale").into()); }
             let expected_basis = check_expected(&snap, &req.expected)?;
             let (criteria, basis_map, failed) = eval_criteria(&tprincipal, &tx_set, &snap, &tat, &tparams, &actor, ctx.now)?;
             let _ = criteria;
@@ -1969,7 +1995,8 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                 return Err(Refusal::new("submission_criteria")
                     .with("failed", json!(codes)).with("failures", json!(failures)).with("message", json!(message)).into());
             }
-            let mut basis: Vec<Value> = basis_map.values().cloned().collect();
+            let mut basis: Vec<Value> = references.basis.values().cloned().collect();
+            for b in basis_map.values() { if !basis.contains(b) { basis.push(b.clone()); } }
             for b in expected_basis { if !basis.contains(&b) { basis.push(b); } }
             let basis_json = Value::Array(basis.clone());
             let log_len = tx.action_log().map_err(store_err)?.len();
