@@ -198,7 +198,7 @@ fn tools() -> Vec<Tool> {
             op: ToolOp::Validate,
             spec: json!({
                 "name":"ont_action_validate",
-                "description":"Preview without writing. action_type/parameters: ont_action_list; reference values: objects[].id from ont_search. If result.valid, apply the same arguments with result.basis as expected; otherwise fix failed criteria. agent/session are optional.",
+                "description":"Preview without writing. Use the body that will be applied, with the same request_id. action_type/parameters: ont_action_list; reference values: objects[].id from ont_search. If result.valid, apply the same arguments with result.basis as expected; otherwise fix failed criteria. agent/session are optional.",
                 "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters"],
                     "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
             }),

@@ -1102,7 +1102,7 @@ fn provenance_records_only_certain_remotes_or_checkout_fallback() {
         ("user:p@w/x@host:path", repo.as_str()),
         ("/a@b/c:d", "/a@b/c:d"),
         ("git@host:path", "host:path"),
-        ("user:password@host:path", "host:path"),
+        ("user:password@host:path", repo.as_str()),
         ("ssh://user@host:22/x", "ssh://host:22/x"),
         ("https://host:443/x", "https://host:443/x"),
         ("https://[::1]:443/x", "https://[::1]:443/x"),

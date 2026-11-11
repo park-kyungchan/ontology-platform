@@ -14,9 +14,10 @@ with `store_path_is_symlink` and field `--store`; the creating SQLite open uses
 outside this guarantee. Default-store aliases retain
 `install_requires_commit`. Git provenance strips userinfo only when its host boundary is
 certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
-path as provenance instead; the sanitizer leaves ambiguous input unchanged and
-its caller never records that unchecked string. Ordinary ports and local paths
-remain intact.
+path as provenance instead; `strip_credentials` returns `None` for ambiguity.
+Scp-like userinfo requires exactly one `@` and no `/` before the first `:`;
+a `:` before the first `@` falls back rather than assuming a password boundary.
+Ordinary ports and local paths remain intact.
 
 ## actions
 - Requests are one JSON object on stdin, one JSON line on stdout; exit 0 ok, 2 refused, 1 internal. `ont [--store PATH] [--client NAME] action list` takes `{"op":"list_actions","domain"?}` and lists each granted action type with its parameters (name, type, required, allowed values), criteria codes with messages, and the object types its rules edit. `action validate` takes `{"op":"validate_action","action_type","parameters":{…},"agent"?,"session"?,"request_id"?}` and answers `valid`, every criterion with `passed`, `basis` (the heads read with their revisions), `edits` (what apply would write; with a `request_id`, the same revisions apply would write) and the schema pin in the envelope; it writes nothing. `action apply` takes the same fields plus `"expected":[{"id","revision"}]?` and `"request_id"?`.
