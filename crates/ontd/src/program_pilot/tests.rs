@@ -836,10 +836,7 @@ fn fix1_denied_v2_components_are_byte_invariant_through_pilot() {
     );
 }
 
-#[test]
-fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
-    // SHA-256 of the independent review's 203,958-byte v1-base.json at
-    // 17de548816bd26bafcf0e5c4236fff5ba89cff38; synthetic sources only.
+fn v1_frames_payload() -> Vec<u8> {
     let c = capture();
     let mut frames = Vec::new();
     for (start, end) in [
@@ -877,11 +874,19 @@ fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
     }
     let full = answer(g, config().policy().unwrap());
     let payload = json!({"envelope":String::from_utf8(c.envelope_bytes().to_vec()).unwrap(),"frames":frames,"full_answer":full});
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    assert_eq!(bytes.len(), 203958);
+    serde_json::to_vec(&payload).unwrap()
+}
+
+#[test]
+fn fix1_v1_frames_base_plus_stale_on_5_latest_samples() {
+    // Base bytes: the independent review's 203,958-byte v1-base.json at
+    // 17de548816bd26bafcf0e5c4236fff5ba89cff38; synthetic sources only.
+    let bytes = v1_frames_payload();
+    // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
+    assert_eq!(bytes.len(), 204033);
     assert_eq!(
         digest(&bytes),
-        "133ee7f01653b740a7376a68fda09ee2eb1101838a7e09fb3b500d0134096bc2"
+        "a9896388ee644f4364932cf1ad4b4653fa6273ad3043f845e92d85f4f70efb46"
     );
     let mut explicit = config();
     explicit.snapshot_input = Some(SnapshotInput::V1 {});
@@ -1026,18 +1031,62 @@ fn answer_record_compat_frames() -> Vec<u8> {
 }
 
 #[test]
-fn answer_record_default_v1_v2_frames_equal_independent_base() {
+fn answer_record_default_v1_v2_frames_base_plus_stale_on_5_latest_samples() {
     // Independently built base 60c1b452072bf8d1568423534632e8e41f81a95c.
     let bytes = answer_record_compat_frames();
-    assert_eq!(bytes.len(), 267272);
+    // differs from ddddc5e only by "stale":true on 5 latest samples (single-instant window)
+    assert_eq!(bytes.len(), 267347);
     assert_eq!(
         digest(&bytes),
-        "61c68827cc96bd166b53e67a5522c10229005765ac33470b12646f4840652ce3"
+        "5d2126b79cde7467d88b0fde209c062477ca3cf1f782c3313f45878ced804fab"
     );
     let selected = render_selected(base(), config().policy().unwrap(), query(), NOW, true)
         .unwrap()
         .0;
     assert!(selected.contains("\"response\":{\"schema\":\"ontology-answer/v1\""));
+}
+
+fn strip_latest_stale(text: &str) -> (String, usize) {
+    // Remove the `,"stale":true` that follows a sample's source_qualified,
+    // in plain and in string-escaped framing; order and bytes otherwise kept.
+    let mut out = text.to_string();
+    let mut removed = 0;
+    for (qualified, plain, escaped) in [
+        (
+            "false",
+            "\"source_qualified\":false,\"stale\":true",
+            "\\\"source_qualified\\\":false,\\\"stale\\\":true",
+        ),
+        (
+            "true",
+            "\"source_qualified\":true,\"stale\":true",
+            "\\\"source_qualified\\\":true,\\\"stale\\\":true",
+        ),
+    ] {
+        removed += out.matches(escaped).count() + out.matches(plain).count();
+        out = out
+            .replace(escaped, &format!("\\\"source_qualified\\\":{qualified}"))
+            .replace(plain, &format!("\"source_qualified\":{qualified}"));
+    }
+    (out, removed)
+}
+#[test]
+fn frame_bytes_differ_from_base_only_by_stale_on_latest_samples() {
+    let (stripped, removed) =
+        strip_latest_stale(&String::from_utf8(answer_record_compat_frames()).unwrap());
+    assert_eq!(removed, 5);
+    assert_eq!(stripped.len(), 267272);
+    assert_eq!(
+        digest(stripped.as_bytes()),
+        "61c68827cc96bd166b53e67a5522c10229005765ac33470b12646f4840652ce3"
+    );
+    let (stripped, removed) = strip_latest_stale(&String::from_utf8(v1_frames_payload()).unwrap());
+    assert_eq!(removed, 5);
+    assert_eq!(stripped.len(), 203958);
+    assert_eq!(
+        digest(stripped.as_bytes()),
+        "133ee7f01653b740a7376a68fda09ee2eb1101838a7e09fb3b500d0134096bc2"
+    );
 }
 
 #[test]
@@ -1417,6 +1466,84 @@ fn v2_fully_unbound_case_keeps_endpoint_binding_gap() {
             .contains(&json!("endpoint_binding"))
     );
 }
+#[test]
+fn v2_qualified_sample_keeps_value_and_qualification_when_old() {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let g = snapshots_v2(
+        &capture,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW + 2000,
+    )
+    .unwrap();
+    let m = g
+        .objects
+        .iter()
+        .find(|o| o.id.native_key == "v2:synthetic-test:kpi_legacy_removal")
+        .unwrap();
+    let fields = &m.observations[0].fields;
+    assert_eq!(fields["source_qualified"], Knowledge::Value(true.into()));
+    assert_eq!(
+        fields["qualification"],
+        Knowledge::Value("qualified".into())
+    );
+    assert_eq!(fields["removed"], Knowledge::Value(2.into()));
+    assert_eq!(m.observations[0].coverage, Coverage::Complete);
+}
+
+#[test]
+fn v2_old_qualified_sample_still_binds_its_endpoint() {
+    // Endpoint binding uses qualified-at-observation: an old qualified
+    // sample binds, an unqualified one never does.
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let old = snapshots_v2(
+        &capture,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW + 2000,
+    )
+    .unwrap();
+    let emitted: BTreeSet<Id> = old
+        .objects
+        .iter()
+        .filter(|o| {
+            o.id.object_type == "measurement"
+                && o.observations.first().is_some_and(|observation| {
+                    observation.fields.get("source_qualified")
+                        == Some(&Knowledge::Value(Value::Bool(true)))
+                })
+        })
+        .map(|o| o.id.clone())
+        .collect();
+    let bindings = capture.endpoint_bindings();
+    assert_eq!(
+        endpoint_measurement(&bindings, &emitted, 41, "owner-a/same", &"4".repeat(40)),
+        Some(v2::legacy_measurement_id(
+            &namespace(false),
+            "synthetic-test"
+        ))
+    );
+    let failed = program::v2::tests::failed_repository_fixture()
+        .capture()
+        .unwrap();
+    assert_eq!(
+        endpoint_measurement(
+            &failed.endpoint_bindings(),
+            &emitted,
+            41,
+            "owner-a/same",
+            &"4".repeat(40)
+        ),
+        None
+    );
+}
+
 #[test]
 fn v2_one_unbound_endpoint_keeps_endpoint_binding_gap() {
     let v = bound_answer("2".repeat(40));
