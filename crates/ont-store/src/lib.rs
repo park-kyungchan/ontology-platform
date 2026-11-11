@@ -35,7 +35,8 @@ pub(crate) fn open_file(path: &Path) -> Result<Connection, Error> {
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     ))
 }
 /// Open an existing file read-write without the create flag: a missing path

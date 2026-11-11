@@ -8,8 +8,10 @@ for `describe` and `action list`; commands with required fields report the first
 missing field. Reference search filters require a full Id, obtainable by searching
 the referenced type. Refusals may include a top-level `hint`; submission hints use
 fixed recovery text selected by failed criterion codes (unknown codes get a generic
-repair), without request values. File installs refuse symbolic-link store paths
-with `store_path_is_symlink` and field `--store`; default-store aliases retain
+repair), without request values. File and commit installs refuse symbolic-link store paths
+with `store_path_is_symlink` and field `--store`; the creating SQLite open uses
+`SQLITE_OPEN_NOFOLLOW` against a swapped final path. Parent-directory symlinks are
+outside this guarantee. Default-store aliases retain
 `install_requires_commit`. Git provenance strips userinfo only when its host boundary is
 certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
 path as provenance instead; the sanitizer leaves ambiguous input unchanged and
