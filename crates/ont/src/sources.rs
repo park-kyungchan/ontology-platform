@@ -286,6 +286,12 @@ impl Walker<'_> {
             }
         } else if meta.is_dir() {
             self.walk(path, rest, depth + 1, literal)?;
+        } else if literal && self.roots_required {
+            // A wildcard-free prefix that exists but is not a directory.
+            return Err(SourceError::new(
+                "glob_root_not_directory",
+                path.display().to_string(),
+            ));
         }
         Ok(())
     }

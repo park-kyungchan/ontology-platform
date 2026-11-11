@@ -19,7 +19,6 @@ use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 /// Longest request line (bytes, newline excluded) that is parsed.
 pub const MAX_LINE: usize = 1_048_576;
@@ -74,31 +73,68 @@ impl Session {
 
 /// How a tool call runs its operation (a seam: `serve` passes
 /// [`crate::cli::execute`]).
+#[doc(hidden)]
 pub type Exec<'a> = dyn Fn(Op, &[u8], &Context) -> Result<Answer, Failure> + 'a;
 
-static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
+thread_local! {
+    static LAST_PANIC: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static IN_CALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Replace the panic hook by one that records where a panic happened
-/// (`file:line`) and prints nothing, so a panic inside one tool call is
-/// answered as that call's internal failure with a located code. The server
-/// calls it once; it is process-wide.
+/// Marks the thread as inside a tool call until dropped.
+struct InCall;
+impl InCall {
+    fn enter() -> Self {
+        IN_CALL.with(|c| c.set(true));
+        Self
+    }
+}
+impl Drop for InCall {
+    fn drop(&mut self) {
+        IN_CALL.with(|c| c.set(false));
+    }
+}
+
+/// The part of a panic location's file from `crates/` on (the file is
+/// repository-relative, or absolute with a `/crates/` component); any other
+/// location (a dependency, the standard library) is `external`.
+fn trim_panic_file(file: &str) -> &str {
+    if file.starts_with("crates/") {
+        file
+    } else if let Some(i) = file.find("/crates/") {
+        &file[i + 1..]
+    } else {
+        "external"
+    }
+}
+
+fn panic_location(file: &str, line: u32) -> String {
+    format!("{}:{line}", trim_panic_file(file))
+}
+
+/// Replace the panic hook. Inside a tool call it records where the panic
+/// happened (`file:line`, trimmed by [`trim_panic_file`]) and prints
+/// nothing, so the call is answered as an internal failure with a located
+/// code. Anywhere else (framing, `initialize`, the writer) it prints one
+/// line `panic@<file>:<line>` to stderr and the process ends nonzero as a
+/// panic does. Process-wide; the server installs it once.
 pub fn install_panic_recorder() {
     std::panic::set_hook(Box::new(|info| {
-        let at = info.location().map_or("unknown:0".to_string(), |l| {
-            format!("{}:{}", l.file(), l.line())
+        let at = info.location().map_or("external:0".to_string(), |l| {
+            panic_location(l.file(), l.line())
         });
-        if let Ok(mut last) = LAST_PANIC.lock() {
-            *last = Some(at);
+        if IN_CALL.with(std::cell::Cell::get) {
+            LAST_PANIC.with(|last| *last.borrow_mut() = Some(at));
+        } else {
+            eprintln!("panic@{at}");
         }
     }));
 }
 
 fn take_panic_location() -> String {
     LAST_PANIC
-        .lock()
-        .ok()
-        .and_then(|mut last| last.take())
-        .unwrap_or_else(|| format!("{}:{}", file!(), line!()))
+        .with(|last| last.borrow_mut().take())
+        .unwrap_or_else(|| panic_location(file!(), line!()))
 }
 
 /// The four tools, in `tools/list` order.
@@ -118,18 +154,18 @@ pub fn tools_list() -> Value {
                 "properties":{"instance":s,"account":s}}}});
     json!({"tools":[
         {"name":"ont_describe",
-         "description":"List the installed domains, object and link types, properties, actions, functions and sources this caller may read. Always carries schema pins and authorization_revision.",
+         "description":"Call first: lists the object types with their properties, plus links, actions, functions and sources this caller may read. Always carries schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}},
         {"name":"ont_get",
-         "description":"One object with its full observation history. A hidden and a missing object answer alike (unavailable). Always carries schema pins and authorization_revision.",
+         "description":"One object with its full history. id: an objects[].id value from ont_search. Hidden and missing answer alike (unavailable). Always carries schema pins and authorization_revision.",
          "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}},
         {"name":"ont_search",
-         "description":"Filter objects of one type. where: {eq|ne|lt|le|gt|ge|prefix:[property,value]}, {in:[property,[values]]}, {unresolved:property}, or {all|any|none:[filters]}. limit up to 1000 (default 100); pass continuation for the next page. Always carries schema pins, authorization_revision and basis (scanned, matched, stale, unresolved_excluded, qualified).",
+         "description":"Filter objects of one type. where, one operator key per object, e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]. limit 1-1000 (default 100); continuation pages. Always carries schema pins, authorization_revision and basis (scanned, matched, stale, unresolved_excluded, qualified).",
          "inputSchema":{"type":"object","required":["object_type"],
             "properties":{"object_type":s,"where":{"type":"object"},
-                "limit":{"type":"integer","minimum":0,"maximum":1000},"continuation":s}}},
+                "limit":{"type":"integer","minimum":1,"maximum":1000},"continuation":s}}},
         {"name":"ont_index",
-         "description":"Read the sources of the installed schemas and append what changed. sources: names to run (default all). One run at a time per store (index_busy). Always carries schema pins and authorization_revision.",
+         "description":"Read the installed sources and append what changed; returns counts per source, a failed source gives isError. sources: names (default all). One run at a time (index_busy). Always carries schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}
     ]})
 }
@@ -191,6 +227,7 @@ fn rpc_result(id: Value, result: Value) -> Value {
 }
 
 /// The server: configuration plus the [`Session`].
+#[doc(hidden)]
 pub struct Server<'a> {
     config: Config,
     session: Session,
@@ -307,9 +344,11 @@ impl<'a> Server<'a> {
             now,
         };
         let request = arguments.to_string();
+        let guard = InCall::enter();
         let ran = catch_unwind(AssertUnwindSafe(|| {
             render((self.exec)(op, request.as_bytes(), &ctx), now)
         }));
+        drop(guard);
         let outcome = match ran {
             Ok(o) => o,
             Err(_) => {
@@ -357,6 +396,7 @@ pub fn serve(
 }
 
 /// [`serve`] with the operation runner given (a test seam).
+#[doc(hidden)]
 pub fn serve_with(
     config: &Config,
     mut reader: impl BufRead,
@@ -381,5 +421,57 @@ pub fn serve_with(
         if let Some(value) = response {
             send(&mut writer, &value)?;
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn panic_files_are_trimmed_to_the_repository_or_external() {
+        assert_eq!(
+            panic_location("crates/ont/src/get.rs", 7),
+            "crates/ont/src/get.rs:7"
+        );
+        assert_eq!(
+            panic_location("/home/x/wt/repo/crates/ont/src/get.rs", 8),
+            "crates/ont/src/get.rs:8"
+        );
+        assert_eq!(
+            panic_location("/root/.cargo/registry/src/a-1/src/lib.rs", 9),
+            "external:9"
+        );
+    }
+
+    #[test]
+    fn an_over_long_line_is_consumed_to_its_newline_without_being_buffered() {
+        let mut data = vec![b'a'; 10_000];
+        data.extend_from_slice(b"\nnext\nlast");
+        // A reader that hands out 8 bytes at a time.
+        let mut reader = std::io::BufReader::with_capacity(8, Cursor::new(data));
+        let mut buf = Vec::new();
+        assert!(matches!(
+            read_line(&mut reader, &mut buf, 16).unwrap(),
+            Read::TooLarge
+        ));
+        assert!(buf.is_empty());
+        assert!(buf.capacity() <= 16, "buffered {} bytes", buf.capacity());
+        assert!(matches!(
+            read_line(&mut reader, &mut buf, 16).unwrap(),
+            Read::Complete
+        ));
+        assert_eq!(buf, b"next");
+        assert!(matches!(
+            read_line(&mut reader, &mut buf, 16).unwrap(),
+            Read::Complete
+        ));
+        assert_eq!(buf, b"last");
+        assert!(matches!(
+            read_line(&mut reader, &mut buf, 16).unwrap(),
+            Read::Eof
+        ));
     }
 }

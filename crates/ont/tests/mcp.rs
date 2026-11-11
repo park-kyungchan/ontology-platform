@@ -2,6 +2,15 @@
 //! test opens the default store path or indexes a directory outside its own
 //! temporary one. The peer tests spawn the built `ont` binary and talk to it
 //! over its standard input and output.
+//!
+//! Two peers exist. As uid 0 (this host) the peer is the spawned binary, and
+//! only then do these assertions mean something: the exit code and the empty
+//! stderr returned by `Peer::finish`, the `cli::run_mcp` plumbing (argument
+//! parsing, panic-hook installation, stdout), and `serverInfo.version` coming
+//! from the build. Otherwise (CI runs as a non-root user, and the binary
+//! refuses a non-root principal) the peer is `ont::mcp::serve` on a thread
+//! over pipes: the framing and every protocol assertion run, `finish` returns
+//! a fixed `(Some(0), "")`, and the three items above are not exercised.
 #![allow(clippy::unwrap_used)]
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
@@ -689,4 +698,138 @@ fn client_name_uid_and_now_rules() {
     for ok in ["a", "claude", "codex-2", "0x", &"a".repeat(32)] {
         assert!(ont::mcp::valid_client(ok), "{ok}");
     }
+}
+
+/// Serve `input` to its end with no store behind it; the response lines.
+fn serve_bytes(input: &[u8]) -> Vec<Value> {
+    let config = ont::mcp::Config {
+        store: "/nonexistent-ont-mcp-test/s.sqlite".into(),
+        now: Some(NOW),
+        client: "unit".into(),
+    };
+    let mut out = Vec::new();
+    ont::mcp::serve(&config, Cursor::new(input.to_vec()), &mut out).unwrap();
+    String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn framing_edges_eof_blank_null_id_and_bad_utf8() {
+    let ping = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    // (b) A last line without a newline is answered.
+    let r = serve_bytes(ping);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0]["result"], json!({}));
+    // (c) Blank lines get no response; the next request is answered.
+    let mut input = b"\n\r\n   \n".to_vec();
+    input.extend_from_slice(ping);
+    input.push(b'\n');
+    let r = serve_bytes(&input);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0]["id"], 1);
+    // (d) `"id":null` is -32600 with a null id.
+    let r = serve_bytes(br#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#);
+    assert_eq!(r[0]["error"]["code"], -32600);
+    assert_eq!(r[0]["id"], Value::Null);
+    // (e) A line that is not valid UTF-8 is -32700, and the server goes on.
+    let mut input = b"\xff\xfe{\n".to_vec();
+    input.extend_from_slice(ping);
+    let r = serve_bytes(&input);
+    assert_eq!(r.len(), 2);
+    assert_eq!(
+        (r[0]["error"]["code"].clone(), r[0]["id"].clone()),
+        (json!(-32700), Value::Null)
+    );
+    assert_eq!(r[1]["result"], json!({}));
+}
+
+#[test]
+fn an_internal_failure_is_a_tool_result_with_a_located_code() {
+    use ont::cli::Op;
+    let config = ont::mcp::Config {
+        store: "/nonexistent-ont-mcp-test/s.sqlite".into(),
+        now: Some(NOW),
+        client: "unit".into(),
+    };
+    let exec = |_op: Op, _request: &[u8], _ctx: &ont::Context| {
+        Err(ont::Failure::Internal(ont::internal!("seam_failure")))
+    };
+    let line =
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ont_describe"}});
+    let mut out = Vec::new();
+    ont::mcp::serve_with(
+        &config,
+        Cursor::new(format!("{line}\n").into_bytes()),
+        &mut out,
+        &exec,
+    )
+    .unwrap();
+    let r: Value = serde_json::from_slice(&out).unwrap();
+    let (text, is_error) = text_of(&r["result"]);
+    assert!(is_error);
+    let answer: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(answer["status"], "internal");
+    let code = answer["code"].as_str().unwrap();
+    assert!(
+        code.starts_with("seam_failure@") && code.contains("mcp.rs:"),
+        "{code}"
+    );
+}
+
+#[test]
+fn every_example_in_a_description_is_accepted_by_the_parser() {
+    let t = Temp::new();
+    t.task("a", "# a\nOwner: lead\n");
+    let store = install(&t, "ex.sqlite");
+    assert_eq!(sub(&store, &["index"], b"").0, 0);
+    let list = ont::mcp::tools_list();
+    let description = |name: &str| -> String {
+        list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let mut p = Peer::spawn(&store);
+    // ont_search: the `where` after "e.g. ".
+    let d = description("ont_search");
+    let rest = d.split("e.g. ").nth(1).unwrap();
+    let example: Value = serde_json::Deserializer::from_str(rest)
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    let (text, _) = p.call("ont_search", json!({"object_type":"task","where":example}));
+    assert!(!text.contains("invalid_request"), "{text}");
+    // ont_get: `id` is an objects[].id from ont_search.
+    assert!(description("ont_get").contains("objects[].id"));
+    let (text, _) = p.call("ont_search", json!({"object_type":"task"}));
+    let answer: Value = serde_json::from_str(&text).unwrap();
+    let id = answer["result"]["objects"][0]["id"].clone();
+    let (text, is_error) = p.call("ont_get", json!({"id":id}));
+    assert!(!is_error, "{text}");
+    // ont_describe is called first with no arguments; ont_index returns
+    // counts per source.
+    assert!(description("ont_describe").contains("Call first"));
+    let (text, is_error) = p.call("ont_describe", json!({}));
+    assert!(!is_error && text.contains("\"task\""), "{text}");
+    let (text, is_error) = p.call("ont_index", json!({}));
+    assert!(!is_error && text.contains("\"appended\""), "{text}");
+    // The limit schema matches the parser: 0 is refused, 1 is accepted.
+    assert_eq!(
+        ont::mcp::tools_list()["tools"][2]["inputSchema"]["properties"]["limit"]["minimum"],
+        1
+    );
+    let (text, is_error) = p.call("ont_search", json!({"object_type":"task","limit":0}));
+    assert!(is_error && text.contains("invalid_request"), "{text}");
+    let (_, is_error) = p.call("ont_search", json!({"object_type":"task","limit":1}));
+    assert!(!is_error);
+    assert_eq!(p.finish(), (Some(0), String::new()));
 }
