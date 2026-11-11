@@ -907,5 +907,12 @@ fn reference_view_argument_native_key_without_mirror_and_unsafe_key_refusal() {
         let (code, answer) = t.run(&["schema", "check", &file], json!({}));
         assert_eq!(code, 2, "{answer}");
         assert_eq!(answer["code"], "schema_violation");
+        assert!(
+            answer["violations"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"code":"invalid_schema","pointer":"/views/named_items/filter"})),
+            "{answer}"
+        );
     }
 }

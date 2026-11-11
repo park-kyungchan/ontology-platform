@@ -23,9 +23,18 @@ property types refuse at `schema check`. The value comes from the original
 snapshot, even when an earlier rule in the same action modifies that object.
 The referenced head and revision are included in `validate`'s `basis` and the
 applied action's log. Pass that `basis` as `expected` to apply: any intervening
-change refuses with `revision_conflict`. A missing/retracted referenced object
-also refuses with `revision_conflict`; a present object whose requested property
-has no value refuses with `rule_value_unavailable`.
+change refuses with `revision_conflict`. Without `expected`, apply reads the
+current value inside its transaction and logs that application basis. A copied
+value needs a fresh, readable source: every grant listing the action must include
+the referenced type in `read` (`reference_read_forbidden` at the expression's
+schema pointer otherwise). At runtime the native read admission policy also
+checks the object's grant scope; an inadmissible object refuses `unavailable`
+without details, just as `get` does. A missing/retracted source instead refuses
+`rule_reference_unavailable`; a present object whose requested property has no
+value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
+`rule_value_stale`; `validate` returns `valid:false`, no edits and a failed
+`preconditions` entry with that code. The freshness boundary is inclusive;
+Ontology-owned objects retain their existing indefinite freshness.
 
 `"set":{"closed_at":"$now"}` writes the trusted application time as a UTC
 string such as `"2026-11-12T00:00:00Z"`. It uses the same time as the existing
@@ -35,17 +44,33 @@ not fix that time. A retry with the same `request_id` returns the original edits
 and leaves the original value and time intact. `$now` requires a string or
 string-based value-type destination, is only a rule value (not a criterion),
 and reserves the parameter name `now`. Times beyond year 9999 refuse with
-`application_time_out_of_range`.
+`application_time_out_of_range`. For a patterned string value type, schema
+checking accepts the canonical UTC shape
+`[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z` (also with `\d`,
+optional `^`/`$`), or `.*`. Other patterns refuse `invalid_rule` at the `$now`
+expression: arbitrary regex/time-language intersection is not supported.
+The actual applied value must still satisfy the value type's other constraints.
 
 A parameter declared `"required":false` accepts omission or JSON null. A rule
 value using that absent parameter leaves its destination unset on create and
 unchanged on modify; if nested in an array or struct, the entire destination
-property is skipped. Required destination properties still undergo the ordinary
-field check. Omission and null have the same canonical request content for
+property is skipped. A nonempty rule set whose values are all skipped produces
+no edit or object revision. An action whose rules all skip still records one
+action-log entry with `edits:[]` for idempotency, with no per-object observation;
+its retry returns `already_applied` with the same empty edits. An optional
+parameter feeding a required property on create refuses `invalid_rule` at its
+expression during schema checking. Required destination properties also undergo
+the ordinary field check. Omission and null have the same canonical request content for
 idempotency. Criteria use the existing `{"exists":"$label"}` form to test a
-scalar parameter's presence (an empty string is present); for a reference,
-`exists` checks that the referenced object exists and is live. Comparisons with
-an absent parameter remain unevaluable and refuse.
+scalar or array parameter's presence (empty strings and empty arrays are present;
+array elements are not tested for liveness). For a single reference, `exists`
+checks that the referenced object exists and is live. An absent optional reference
+therefore fails `exists`. Comparisons with an absent parameter remain unevaluable
+and refuse. "If present then equal" cannot be written: `all`, `any` and `none`
+evaluate every condition, so a presence branch cannot guard a comparison that
+would be unevaluable. Ordinary properties cannot be cleared by a `set` value:
+absent/null parameters mean skip, not clear, and no scalar clear rule exists.
+Reference properties can still use the existing explicit `clear_reference` rule.
 
 Object properties and action parameters accept an optional `description` string
 of at most 300 UTF-8 bytes, for example

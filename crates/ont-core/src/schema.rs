@@ -29,6 +29,7 @@ pub mod codes {
     pub const UNKNOWN_VALUE_TYPE: &str = "unknown_value_type";
     pub const UNKNOWN_LINK: &str = "unknown_link";
     pub const UNKNOWN_PARAMETER: &str = "unknown_parameter";
+    pub const REFERENCE_READ_FORBIDDEN: &str = "reference_read_forbidden";
     pub const UNKNOWN_ACTION: &str = "unknown_action";
     pub const UNKNOWN_SCOPE_KEY: &str = "unknown_scope_key";
     pub const INVALID_PRINCIPAL: &str = "invalid_principal";
@@ -87,6 +88,7 @@ pub mod codes {
         UNKNOWN_VALUE_TYPE,
         UNKNOWN_LINK,
         UNKNOWN_PARAMETER,
+        REFERENCE_READ_FORBIDDEN,
         UNKNOWN_ACTION,
         UNKNOWN_SCOPE_KEY,
         INVALID_PRINCIPAL,
@@ -1951,6 +1953,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 );
             }
         }
+        check_action_reads(schema, name, at, &base, &mut out);
         let mut seen_codes = BTreeSet::new();
         for (ci, crit) in at.submission_criteria.iter().enumerate() {
             let cp = format!("{base}/submission_criteria/{ci}");
@@ -2014,6 +2017,11 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                         .and_then(|t| t.properties.get(key))
                 {
                     check_rule_expression(schema, at, val, &prop.ty, &ptr, &mut out);
+                    if prop.required
+                        && (rule.create_object.is_some() || rule.create_or_modify_object.is_some())
+                    {
+                        check_required_input(at, val, &ptr, &mut out);
+                    }
                 }
             }
             for (field, refr) in [
@@ -2201,6 +2209,139 @@ fn scalar_base(schema: &Schema, ty: &PropertyType) -> Option<ScalarType> {
         _ => None,
     }
 }
+// Patterned application times have a deliberately bounded schema contract:
+// the canonical full UTC shape, or an unrestricted string pattern. Other
+// constraints are still checked against the actual value when it is applied.
+fn now_type_supported(schema: &Schema, ty: &PropertyType) -> bool {
+    if scalar_base(schema, ty) != Some(ScalarType::String) {
+        return false;
+    }
+    let PropertyType::ValueType(r) = ty else {
+        return true;
+    };
+    schema.value_types.get(&r.value_type).is_some_and(|def| {
+        def.pattern.as_ref().is_none_or(|p| {
+            let pattern = p.strip_prefix('^').unwrap_or(p);
+            let pattern = pattern
+                .strip_suffix('$')
+                .unwrap_or(pattern)
+                .replace("\\d", "[0-9]");
+            matches!(
+                pattern.as_str(),
+                ".*" | "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+            )
+        })
+    })
+}
+fn check_required_input(at: &ActionType, value: &Value, pointer: &str, out: &mut Vec<Violation>) {
+    match value {
+        Value::String(s) => {
+            if let Some(name) = s
+                .strip_prefix('$')
+                .map(|p| p.split('.').next().unwrap_or(p))
+                && at.parameters.get(name).is_some_and(|p| !p.required)
+            {
+                out.push(Violation::new(codes::INVALID_RULE, pointer.into()));
+            }
+        }
+        Value::Array(a) => {
+            for (i, v) in a.iter().enumerate() {
+                check_required_input(at, v, &format!("{pointer}/{i}"), out);
+            }
+        }
+        Value::Object(m) => {
+            for (k, v) in m {
+                check_required_input(at, v, &format!("{pointer}/{}", esc(k)), out);
+            }
+        }
+        _ => {}
+    }
+}
+fn check_action_reads(
+    schema: &Schema,
+    name: &str,
+    at: &ActionType,
+    base: &str,
+    out: &mut Vec<Violation>,
+) {
+    fn walk(
+        schema: &Schema,
+        name: &str,
+        at: &ActionType,
+        value: &Value,
+        pointer: &str,
+        out: &mut Vec<Violation>,
+    ) {
+        match value {
+            Value::String(s) => {
+                if let Some((param, _)) = s.strip_prefix('$').and_then(|p| p.split_once('.'))
+                    && let Some(PropertyDef {
+                        ty: PropertyType::Ref(r),
+                        ..
+                    }) = at.parameters.get(param)
+                    && schema
+                        .grants
+                        .iter()
+                        .any(|g| g.actions.iter().any(|a| a == name) && !g.read.contains(&r.target))
+                {
+                    out.push(Violation::new(
+                        codes::REFERENCE_READ_FORBIDDEN,
+                        pointer.into(),
+                    ));
+                }
+            }
+            Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    walk(schema, name, at, v, &format!("{pointer}/{i}"), out);
+                }
+            }
+            Value::Object(m) => {
+                for (k, v) in m {
+                    walk(schema, name, at, v, &format!("{pointer}/{}", esc(k)), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (i, r) in at.rules.iter().enumerate() {
+        for (key, value) in &r.set {
+            walk(
+                schema,
+                name,
+                at,
+                value,
+                &format!("{base}/rules/{i}/set/{}", esc(key)),
+                out,
+            );
+        }
+        if let Some(value) = r.set_reference.as_ref().and_then(|r| r.value.as_ref()) {
+            walk(
+                schema,
+                name,
+                at,
+                value,
+                &format!("{base}/rules/{i}/set_reference/value"),
+                out,
+            );
+        }
+    }
+    for (i, c) in at.submission_criteria.iter().enumerate() {
+        for (arm, conditions) in [("all", &c.all), ("any", &c.any), ("none", &c.none)] {
+            if let Some(conditions) = conditions {
+                let value = serde_json::to_value(conditions).unwrap_or(Value::Null);
+                walk(
+                    schema,
+                    name,
+                    at,
+                    &value,
+                    &format!("{base}/submission_criteria/{i}/{arm}"),
+                    out,
+                );
+            }
+        }
+    }
+}
+
 // Only the new expressions are statically typed; existing literal/parameter
 // rule values retain their runtime checks and their existing schema pins.
 fn check_rule_expression(
@@ -2212,7 +2353,7 @@ fn check_rule_expression(
     out: &mut Vec<Violation>,
 ) {
     match value {
-        Value::String(s) if s == "$now" && scalar_base(schema, ty) != Some(ScalarType::String) => {
+        Value::String(s) if s == "$now" && !now_type_supported(schema, ty) => {
             out.push(Violation::new(codes::INVALID_RULE, pointer.into()));
         }
         Value::String(s) => {
