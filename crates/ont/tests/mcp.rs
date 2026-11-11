@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const NOW: u64 = 1000;
@@ -87,34 +87,82 @@ fn install(t: &Temp, name: &str) -> String {
     store
 }
 
+/// Real = effective uid 0 (as `main.rs` reads it): only then does the built
+/// binary serve; otherwise it refuses with `principal_not_trusted`.
+fn is_root() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .is_some_and(|f| f.split_whitespace().take(2).all(|u| u == "0"))
+}
+
+enum Backend {
+    /// The built `ont` binary (uid 0 only).
+    Child {
+        child: Child,
+        stdin: Option<ChildStdin>,
+    },
+    /// `ont::mcp::serve` on a thread over two pipes: the same framing, run
+    /// in the test process (used when the test is not uid 0, as in CI).
+    Thread {
+        stdin: Option<std::io::PipeWriter>,
+        handle: std::thread::JoinHandle<std::io::Result<ont::mcp::Session>>,
+    },
+}
+
 struct Peer {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    out: BufReader<ChildStdout>,
+    backend: Backend,
+    out: BufReader<Box<dyn Read>>,
 }
 impl Peer {
     fn spawn(store: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ont"))
-            .args([
-                "--store",
-                store,
-                "--now",
-                &NOW.to_string(),
-                "mcp",
-                "--client",
-                "test",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take();
-        let out = BufReader::new(child.stdout.take().unwrap());
-        Self { child, stdin, out }
+        if is_root() {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_ont"))
+                .args([
+                    "--store",
+                    store,
+                    "--now",
+                    &NOW.to_string(),
+                    "mcp",
+                    "--client",
+                    "test",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdin = child.stdin.take();
+            let out = BufReader::new(Box::new(child.stdout.take().unwrap()) as Box<dyn Read>);
+            return Self {
+                backend: Backend::Child { child, stdin },
+                out,
+            };
+        }
+        let (request_reader, request_writer) = std::io::pipe().unwrap();
+        let (response_reader, response_writer) = std::io::pipe().unwrap();
+        let config = ont::mcp::Config {
+            store: store.into(),
+            now: Some(NOW),
+            client: "test".into(),
+        };
+        let handle = std::thread::spawn(move || {
+            ont::mcp::serve(&config, BufReader::new(request_reader), response_writer)
+        });
+        Self {
+            backend: Backend::Thread {
+                stdin: Some(request_writer),
+                handle,
+            },
+            out: BufReader::new(Box::new(response_reader) as Box<dyn Read>),
+        }
     }
     fn send_raw(&mut self, bytes: &[u8]) {
-        let stdin = self.stdin.as_mut().unwrap();
+        let stdin: &mut dyn Write = match &mut self.backend {
+            Backend::Child { stdin, .. } => stdin.as_mut().unwrap(),
+            Backend::Thread { stdin, .. } => stdin.as_mut().unwrap(),
+        };
         stdin.write_all(bytes).unwrap();
         stdin.write_all(b"\n").unwrap();
         stdin.flush().unwrap();
@@ -151,19 +199,30 @@ impl Peer {
     }
     /// Close stdin, expect no more output, and return (exit code, stderr).
     fn finish(mut self) -> (Option<i32>, String) {
-        drop(self.stdin.take());
+        match &mut self.backend {
+            Backend::Child { stdin, .. } => drop(stdin.take()),
+            Backend::Thread { stdin, .. } => drop(stdin.take()),
+        }
         let mut rest = String::new();
         self.out.read_to_string(&mut rest).unwrap();
         assert_eq!(rest, "", "output after the last response");
-        let status = self.child.wait().unwrap();
-        let mut stderr = String::new();
-        self.child
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut stderr)
-            .unwrap();
-        (status.code(), stderr)
+        match self.backend {
+            Backend::Child { mut child, .. } => {
+                let status = child.wait().unwrap();
+                let mut stderr = String::new();
+                child
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut stderr)
+                    .unwrap();
+                (status.code(), stderr)
+            }
+            Backend::Thread { handle, .. } => {
+                handle.join().unwrap().unwrap();
+                (Some(0), String::new())
+            }
+        }
     }
 }
 
