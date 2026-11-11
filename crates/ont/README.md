@@ -158,9 +158,8 @@ descriptions. The existing MCP response and tool-list bounds still apply.
 In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an evaluated unevaluable condition under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
 - `get` and `search` on an Ontology-owned type return what actions wrote, with `basis` and history as for indexed types, and `describe` lists action types.
 
-Wire changes in this pull request at the repaired admission/evaluation boundaries
-(subject to the snapshot-loading and creation-scope limits above): a missing or
-retracted modify, delete, `set_reference` or `clear_reference` target now answers
+Wire behavior: a missing or retracted modify, delete, `set_reference` or
+`clear_reference` target answers
 `rule_reference_unavailable` without `id` (previously `revision_conflict` with
 `id`); unreadable targets give the same refusal. Unavailable `expected` objects
 now give that same detail-free refusal before their revisions are compared.
