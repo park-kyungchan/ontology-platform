@@ -35,19 +35,36 @@ pub fn valid_repo_path(path: &str) -> bool {
 
 /// Remove any userinfo (a credential part) from a remote URL.
 pub fn strip_credentials(url: &str) -> String {
-    let prefix_end = url.find("://").map_or(0, |i| i + 3);
-    let rest = &url[prefix_end..];
-    // Use the last @, including malformed userinfo containing a raw slash.
-    // Never retain a credential merely because its password is not URL-encoded.
-    if let Some(at) = rest.rfind('@')
-        && ((prefix_end > 0 && (!rest[..at].contains('/') || rest[..at].contains(':')))
-            || (prefix_end == 0
-                && rest[at + 1..]
-                    .split('/')
-                    .next()
-                    .is_some_and(|host| host.contains(':'))))
-    {
-        return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
+    if let Some(scheme) = url.find("://") {
+        let prefix_end = scheme + 3;
+        let rest = &url[prefix_end..];
+        let end = rest.find('/').unwrap_or(rest.len());
+        let authority = &rest[..end];
+        let at = authority.rfind('@').or_else(|| {
+            // Recover malformed raw-slash passwords, while leaving a host
+            // with a numeric port (and @ in its path) untouched.
+            let (_, password) = authority.split_once(':')?;
+            if authority.starts_with('[') || password.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let first_at = rest.find('@')?;
+            let host_end = rest[first_at..]
+                .find('/')
+                .map_or(rest.len(), |i| first_at + i);
+            rest[..host_end].rfind('@')
+        });
+        if let Some(at) = at {
+            return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
+        }
+    } else if let Some(first_at) = url.find('@') {
+        // The host separator follows userinfo; @ in the repository path
+        // belongs to the path, not to the password.
+        if let Some(colon) = url[first_at..].find(':') {
+            let host_end = first_at + colon;
+            if let Some(at) = url[..host_end].rfind('@') {
+                return url[at + 1..].to_string();
+            }
+        }
     }
     url.to_string()
 }
@@ -183,28 +200,28 @@ mod tests {
     use super::*;
     #[test]
     fn credentials_are_stripped_and_paths_checked() {
-        assert_eq!(
-            strip_credentials("https://user:secret@example.com/a/b.git"),
-            "https://example.com/a/b.git"
-        );
-        assert_eq!(
-            strip_credentials("https://example.com/a/b.git"),
-            "https://example.com/a/b.git"
-        );
-        assert_eq!(
-            strip_credentials("git@example.com:a/b.git"),
-            "example.com:a/b.git"
-        );
-        assert_eq!(strip_credentials("user:pass@host:path"), "host:path");
-        assert_eq!(
-            strip_credentials("https://user:pa/ss@host/path"),
-            "https://host/path"
-        );
-        assert_eq!(strip_credentials("user:pa/ss@host:path"), "host:path");
-        assert_eq!(
-            strip_credentials("https://host/path@name"),
-            "https://host/path@name"
-        );
+        for (remote, stripped) in [
+            (
+                "https://user:secret@example.com/a/b.git",
+                "https://example.com/a/b.git",
+            ),
+            ("https://example.com/a/b.git", "https://example.com/a/b.git"),
+            ("git@example.com:a/b.git", "example.com:a/b.git"),
+            ("user:pass@host:path", "host:path"),
+            ("https://user:pa/ss@host/path", "https://host/path"),
+            ("user:pa/ss@host:path", "host:path"),
+            ("https://host/path@name", "https://host/path@name"),
+            ("https://TOKEN@host/o/r@x", "https://host/o/r@x"),
+            ("user:pw@host:org/re@po", "host:org/re@po"),
+            ("https://host:443/p@n", "https://host:443/p@n"),
+            ("https://user:p@ss@host/x", "https://host/x"),
+            ("ssh://user:pw@host:22/x", "ssh://host:22/x"),
+            ("user:p@ss@host:org/re@po", "host:org/re@po"),
+            ("https://user:pa/ss@host/o/r@x", "https://host/o/r@x"),
+            ("https://[::1]:443/p@n", "https://[::1]:443/p@n"),
+        ] {
+            assert_eq!(strip_credentials(remote), stripped, "remote: {remote}");
+        }
         assert!(valid_commit("843195b82f8041edcfc585aa8198bd4dc1558b3c"));
         assert!(!valid_commit("843195B82F8041EDCFC585AA8198BD4DC1558B3C"));
         assert!(!valid_commit("abc"));

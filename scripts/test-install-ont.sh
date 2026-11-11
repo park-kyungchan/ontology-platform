@@ -163,6 +163,18 @@ for n in 3 4 5 6; do
 done
 [ "$(find "$STATE1/install" -name 'ont.before-*' | wc -l)" -eq 3 ] || fail 'retention did not keep three copies'
 
+# retention_preserves_recorded_previous: count alone cannot prove rollback works.
+retained_sha=$(sed -n 's/.*"previous_sha256":"\([^"]*\)".*/\1/p' "$STATE1/install/installed.json")
+retained12=$(printf '%s' "$retained_sha" | cut -c1-12)
+[ -f "$STATE1/install/ont.before-$retained12" ] || fail 'pruned the recorded previous binary'
+fixture rollback >/dev/null || fail 'rollback failed after pruning'
+[ "$(sha256sum "$BIN1/ont" | awk '{print $1}')" = "$retained_sha" ] || fail 'rollback after pruning restored wrong bytes'
+# rollback_creates_missing_bin_directory before opening its temporary file.
+run_test_install "$TMP/ont-v2"
+mv "$BIN1" "$TMP/bin-before-rollback"
+fixture rollback >/dev/null || fail 'rollback did not create missing binary directory'
+fixture check >/dev/null || fail 'check failed after recreating binary directory'
+
 # Refresh a stale ref before checking ancestry.
 git -C "$TMP/checkout" -c user.name=Test -c user.email=test@example.invalid commit -qm newer --allow-empty
 git -C "$TMP/checkout" push -q origin main
@@ -171,10 +183,25 @@ make_standin "$TMP/new-head" newer
 old_ref=$(git -C "$TMP/checkout" rev-parse refs/remotes/origin/main)
 git -C "$TMP/checkout" update-ref refs/remotes/origin/main "$old_ref~1"
 fixture install "$(git -C "$TMP/checkout" rev-parse "$old_ref~1")" --dry-run >"$TMP/dry"
-case $(cat "$TMP/dry") in *'fetch origin before the ancestor check'*) ;; *) fail 'dry run omitted fetch step' ;; esac
+case $(cat "$TMP/dry") in *'fetch origin +refs/heads/main:refs/remotes/origin/main --refmap= before the ancestor check'*) ;; *) fail 'dry run omitted fetch step' ;; esac
 [ "$(git -C "$TMP/checkout" rev-parse refs/remotes/origin/main)" = "$(git -C "$TMP/checkout" rev-parse "$old_ref~1")" ] || fail 'dry run fetched'
 run_test_install "$TMP/new-head"
 [ "$(git -C "$TMP/checkout" rev-parse refs/remotes/origin/main)" = "$GOOD" ] || fail 'install did not fetch'
+
+# fetch_uses_only_main: do not honor a broader configured fetch destination.
+git -C "$TMP/checkout" config remote.origin.fetch '+refs/heads/*:refs/ont-test/*'
+run_test_install "$TMP/new-head"
+[ -z "$(git -C "$TMP/checkout" for-each-ref refs/ont-test/)" ] || fail 'fetch used the configured refspec'
+# inherited_git_environment_does_not_change_other_repository_refs.
+mkdir "$TMP/other"
+git -C "$TMP/other" init -q
+git -C "$TMP/other" remote add origin "$TMP/origin.git"
+other_before=$(git -C "$TMP/other" for-each-ref)
+env GIT_DIR="$TMP/other/.git" GIT_WORK_TREE="$TMP/other" GIT_INDEX_FILE="$TMP/other/index" GIT_COMMON_DIR="$TMP/other/.git" \
+  ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" ONT_INSTALL_PREBUILT="$TMP/new-head" "$INSTALL" install "$GOOD" >/dev/null
+[ "$(git -C "$TMP/other" for-each-ref)" = "$other_before" ] || fail 'inherited Git environment changed another repository ref'
+# unknown_commit_has_its_own_refusal after a successful fetch.
+expect_refusal 'commit_unknown: 0000000000000000000000000000000000000000' fixture install 0000000000000000000000000000000000000000
 
 # Fault injection uses PATH wrappers only in the disposable fixture.
 printf '#!/bin/sh\ncase "$*" in *merge-base*) exit 128 ;; esac\nexec /usr/bin/git "$@"\n' >"$TMP/tools/git"
@@ -202,6 +229,23 @@ rm "$TMP/tools/mv"
 sed -n '/^install -m 0755 -- /p' "$TMP/recovery" >"$TMP/manual-recovery"
 bash "$TMP/manual-recovery"
 fixture check >/dev/null || fail 'printed recovery commands did not restore check'
+# rollback_state_write_failure_prints_recovery: retry the printed command.
+run_test_install "$TMP/last"
+cp "$STATE1/install/installed.json" "$TMP/rollback-state-before"
+printf '#!/bin/sh\ncase "$2" in */installed.json) exit 1 ;; esac\nexec /usr/bin/mv "$@"\n' >"$TMP/tools/mv"
+chmod +x "$TMP/tools/mv"
+set +e
+env PATH="$TMP/tools:$PATH" ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" "$INSTALL" rollback >"$TMP/rollback-recovery" 2>&1
+code=$?
+set -e
+[ "$code" -ne 0 ] || fail 'rollback state failure succeeded'
+case $(cat "$TMP/rollback-recovery") in *'installed.json write failed; manual recovery commands:'*' rollback'*) ;; *) fail 'rollback manual recovery omitted' ;; esac
+cmp "$TMP/rollback-state-before" "$STATE1/install/installed.json" || fail 'failed rollback state write changed recorded state'
+rm "$TMP/tools/mv"
+sed -n '/ rollback$/p' "$TMP/rollback-recovery" >"$TMP/manual-rollback-recovery"
+ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" bash "$TMP/manual-rollback-recovery" >/dev/null
+fixture check >/dev/null || fail 'printed rollback recovery command did not repair state'
+
 # A failed install into the temporary binary is cleaned up too.
 printf '#!/bin/sh\nexit 1\n' >"$TMP/tools/install"
 chmod +x "$TMP/tools/install"
