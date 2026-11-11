@@ -30,7 +30,19 @@ pub struct CommitInstallRequest {
 /// True when `store` is the default store path: the file form is refused
 /// there with `install_requires_commit`; only a merged commit may install.
 pub fn install_requires_commit(store: &std::path::Path) -> bool {
-    store == std::path::Path::new(crate::DEFAULT_STORE)
+    same_store_path(store, std::path::Path::new(crate::DEFAULT_STORE))
+}
+
+fn same_store_path(store: &std::path::Path, default: &std::path::Path) -> bool {
+    fn resolved(path: &std::path::Path) -> Option<PathBuf> {
+        let name = path.file_name()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        Some(std::fs::canonicalize(parent).ok()?.join(name))
+    }
+    store == default || matches!((resolved(store), resolved(default)), (Some(a), Some(b)) if a == b)
 }
 
 fn valid_slug(s: &str) -> bool {
@@ -127,7 +139,15 @@ pub fn check(ctx: &Context, req: &CheckRequest) -> Result<Answer, Failure> {
 /// file is created with mode 0600 (`create_new`) before SQLite opens it, and
 /// only when its parent directory exists.
 pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
-    if install_requires_commit(&ctx.store) {
+    install_at_default(ctx, req, std::path::Path::new(crate::DEFAULT_STORE))
+}
+
+fn install_at_default(
+    ctx: &Context,
+    req: &InstallRequest,
+    default: &std::path::Path,
+) -> Result<Answer, Failure> {
+    if same_store_path(&ctx.store, default) {
         return Err(Refusal::new("install_requires_commit").into());
     }
     if let Some(repo) = &req.source_repository
@@ -214,6 +234,11 @@ fn install_bytes(
     let pin = checked.pin().clone();
     let previous = st!(store.schema_pins()).get(&pin.domain).cloned();
     let changed = previous.as_ref() != Some(&pin);
+    // Refuse before making a backup; the store repeats this rule in its
+    // install transaction as protection against concurrent installs.
+    if changed && previous.as_ref().is_some_and(|p| pin.version <= p.version) {
+        return Err(Refusal::new("schema_version_conflict").into());
+    }
     // Taken before the commit: nothing after `install_schema` can fail the
     // answer of a committed install.
     let revision = fresh_revision()?;
@@ -249,4 +274,62 @@ fn install_bytes(
             "source_path":source_path
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    #[test]
+    fn existing_default_aliases_refuse_without_rows_or_backups() {
+        let root = std::env::temp_dir().join(format!("ont-default-aliases-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        let default = root.join("real/store.sqlite");
+        let mut store = Store::open_schema(&default).unwrap();
+        let bytes = include_bytes!("../../ont-core/tests/schema-fixtures/example.json");
+        store
+            .install_schema(
+                bytes,
+                InstallArgs {
+                    installed_at: 1,
+                    source_repository: None,
+                    source_commit: None,
+                },
+            )
+            .unwrap();
+        drop(store);
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+        let before = std::fs::read(&default).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        // No process-wide chdir: spell an absolute path relative to cwd.
+        let relative = format!(
+            "{}/{}",
+            "../".repeat(cwd.components().count() - 1),
+            default.strip_prefix("/").unwrap().display()
+        );
+        for alias in [
+            default.display().to_string(),
+            format!("{}/alias/store.sqlite", root.display()),
+            format!("{}/real/../real/store.sqlite", root.display()),
+            format!("{}/real//store.sqlite", root.display()),
+            format!("{}/real/store.sqlite/", root.display()),
+            relative,
+        ] {
+            let ctx = Context::new(PathBuf::from(&alias), 1);
+            let req = InstallRequest {
+                file: root.join("missing.json"),
+                source_repository: None,
+                source_commit: None,
+            };
+            assert!(same_store_path(&ctx.store, &default), "{alias}");
+            assert!(
+                matches!(install_at_default(&ctx, &req, &default), Err(Failure::Refused(r)) if r.code == "install_requires_commit")
+            );
+            assert_eq!(std::fs::read(&default).unwrap(), before);
+            assert!(!root.join("real/backup").exists());
+        }
+        std::fs::remove_file(&default).unwrap();
+        assert!(same_store_path(&root.join("alias/store.sqlite"), &default));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

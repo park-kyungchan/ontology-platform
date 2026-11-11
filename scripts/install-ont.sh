@@ -40,7 +40,7 @@ if [ "${ONT_INSTALL_TEST:-}" != "1" ]; then
     refuse "ONT_INSTALL_BIN_DIR, ONT_INSTALL_STATE_DIR and ONT_INSTALL_PREBUILT require ONT_INSTALL_TEST=1"
   fi
 else
-  if [ "$BIN_DIR" = "$REAL_BIN_DIR" ] || [ "$STATE_DIR" = "$REAL_STATE_DIR" ]; then
+  if [ "$(realpath -m -- "$BIN_DIR")" = "$(realpath -m -- "$REAL_BIN_DIR")" ] || [ "$(realpath -m -- "$STATE_DIR")" = "$(realpath -m -- "$REAL_STATE_DIR")" ]; then
     refuse "test install directories must not equal the real directories"
   fi
 fi
@@ -52,6 +52,15 @@ BIN_PATH=$BIN_DIR/ont
 STORE_DIR=$STATE_DIR/ont
 INSTALL_DIR=$STATE_DIR/install
 INSTALLED_JSON=$INSTALL_DIR/installed.json
+
+CLEANUP_BUILD=""
+CLEANUP_BIN=""
+cleanup() {
+  [ -z "$CLEANUP_BIN" ] || rm -f -- "$CLEANUP_BIN"
+  [ -z "$CLEANUP_BUILD" ] || rm -rf -- "$CLEANUP_BUILD"
+  return 0
+}
+trap cleanup EXIT
 
 sha256_of() {
   sha256sum "$1" | awk '{print $1}'
@@ -69,16 +78,16 @@ now_utc() {
 write_installed_json() {
   # $1 = commit, $2 = sha256, $3 = previous sha256 or empty
   local tmp prev
-  tmp=$(mktemp "$INSTALL_DIR/.installed.json.XXXXXX")
+  tmp=$(mktemp "$INSTALL_DIR/.installed.json.XXXXXX") || return 1
   if [ -n "$3" ]; then
     prev="\"$3\""
   else
     prev=null
   fi
   printf '{"commit":"%s","sha256":"%s","installed_at":"%s","previous_sha256":%s}\n' \
-    "$1" "$2" "$(now_utc)" "$prev" >"$tmp"
-  chmod 0600 "$tmp"
-  mv "$tmp" "$INSTALLED_JSON"
+    "$1" "$2" "$(now_utc)" "$prev" >"$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 0600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv "$tmp" "$INSTALLED_JSON" || { rm -f -- "$tmp"; return 1; }
 }
 
 version_commit() {
@@ -89,8 +98,19 @@ version_commit() {
 do_install() {
   local commit=${1:-}
   [[ $commit =~ ^[0-9a-f]{40}$ ]] || refuse "commit must be 40 lowercase hex"
-  git -C "$REPO_ROOT" merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null \
-    || refuse "commit_not_merged: $commit is not an ancestor of refs/remotes/origin/main"
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'dry-run: git -C %s fetch origin before the ancestor check\n' "$REPO_ROOT"
+  else
+    printf 'fetch: git -C %s fetch origin\n' "$REPO_ROOT"
+    git -C "$REPO_ROOT" fetch origin || refuse "git_unavailable: fetch origin failed"
+  fi
+  local ancestor_status=0
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null || ancestor_status=$?
+  case $ancestor_status in
+    0) ;;
+    1) refuse "commit_not_merged: $commit is not an ancestor of refs/remotes/origin/main" ;;
+    *) refuse "git_unavailable: ancestor check failed (status $ancestor_status)" ;;
+  esac
   if [ "$DRY_RUN" = "1" ]; then
     printf 'dry-run: git -C %s archive %s | tar -x into a new temporary directory\n' "$REPO_ROOT" "$commit"
     if [ -n "${ONT_INSTALL_PREBUILT:-}" ]; then
@@ -106,17 +126,17 @@ do_install() {
     return 0
   fi
 
-  local tmp built
+  local tmp built tmp_bin=""
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  CLEANUP_BUILD=$tmp
   if [ -n "${ONT_INSTALL_PREBUILT:-}" ]; then
     [ -f "$ONT_INSTALL_PREBUILT" ] || refuse "prebuilt binary not found: $ONT_INSTALL_PREBUILT"
     built=$ONT_INSTALL_PREBUILT
   else
     local avail_gib
-    avail_gib=$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')
+    avail_gib=$(df -BG --output=avail "$tmp" | tail -n 1 | tr -dc '0-9')
     [ -n "$avail_gib" ] || avail_gib=0
-    [ "$avail_gib" -ge 18 ] || refuse "free space on / is under 18 GiB"
+    [ "$avail_gib" -ge 18 ] || refuse "free space on the build file system is under 18 GiB"
     mkdir -p "$tmp/src" "$tmp/target"
     git -C "$REPO_ROOT" archive "$commit" | tar -x -C "$tmp/src"
     # The build script reads the build commit from git HEAD; give the
@@ -142,16 +162,29 @@ do_install() {
     previous_sha=$(sha256_of "$BIN_PATH")
     cp "$BIN_PATH" "$INSTALL_DIR/ont.before-${previous_sha:0:12}"
     chmod 0600 "$INSTALL_DIR/ont.before-${previous_sha:0:12}"
+    [ -f "$INSTALL_DIR/ont.before-${previous_sha:0:12}" ] &&
+      [ "$(sha256_of "$INSTALL_DIR/ont.before-${previous_sha:0:12}")" = "$previous_sha" ] \
+      || refuse "previous binary copy is missing or has the wrong sha256"
   fi
 
-  local tmp_bin new_sha
+  local new_sha
   tmp_bin=$(mktemp "$BIN_DIR/.ont.XXXXXX")
+  CLEANUP_BIN=$tmp_bin
   install -m 0755 "$built" "$tmp_bin"
   mv "$tmp_bin" "$BIN_PATH"
   new_sha=$(sha256_of "$BIN_PATH")
-  write_installed_json "$commit" "$new_sha" "$previous_sha"
+  if ! write_installed_json "$commit" "$new_sha" "$previous_sha"; then
+    printf 'installed.json write failed; manual recovery commands:\n' >&2
+    if [ -n "$previous_sha" ]; then
+      printf 'install -m 0755 -- %q %q\n' "$INSTALL_DIR/ont.before-${previous_sha:0:12}" "$BIN_PATH" >&2
+    else
+      printf 'rm -f -- %q\n' "$BIN_PATH" >&2
+    fi
+    printf '# installed.json still describes the installation before this attempt; verify it before check or rollback\n' >&2
+    exit 1
+  fi
+  prune_previous
   rm -rf "$tmp"
-  trap - EXIT
 
   printf 'installed_sha256: %s\n' "$new_sha"
   printf 'rollback command: %s rollback\n' "$SCRIPT_PATH"
@@ -193,17 +226,28 @@ do_rollback() {
   previous=$INSTALL_DIR/ont.before-${previous_sha:0:12}
   [ -f "$previous" ] || refuse "previous binary not found: $previous"
   [ "$(sha256_of "$previous")" = "$previous_sha" ] || refuse "previous binary sha256 does not match installed.json"
-  mkdir -p "$BIN_DIR"
-  local tmp_bin restored_commit
+  local restored_commit tmp_bin=""
+  # The retained copy is 0600: execute a disposable copy before replacing ont.
   tmp_bin=$(mktemp "$BIN_DIR/.ont.XXXXXX")
+  CLEANUP_BIN=$tmp_bin
   install -m 0755 "$previous" "$tmp_bin"
+  restored_commit=$(version_commit "$tmp_bin" || true)
+  [ -n "$restored_commit" ] || refuse "previous binary does not print a version line"
+  mkdir -p "$BIN_DIR"
+
   mv "$tmp_bin" "$BIN_PATH"
   [ "$(sha256_of "$BIN_PATH")" = "$previous_sha" ] || refuse "restored binary sha256 mismatch"
-  restored_commit=$(version_commit "$BIN_PATH" || true)
-  [ -n "$restored_commit" ] || refuse "restored binary does not print a version line"
   write_installed_json "$restored_commit" "$previous_sha" ""
   printf 'restored_sha256: %s\n' "$previous_sha"
   printf 'store untouched: %s and its schema were not changed\n' "$STORE_DIR"
+}
+
+prune_previous() {
+  local count=0 path
+  while IFS= read -r path; do
+    count=$((count + 1))
+    [ "$count" -le 3 ] || rm -f -- "$path"
+  done < <(find "$INSTALL_DIR" -maxdepth 1 -type f -name 'ont.before-*' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
 }
 
 case ${1:-} in

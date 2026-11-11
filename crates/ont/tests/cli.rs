@@ -711,7 +711,7 @@ fn setup_git(t: &Temp) -> (String, String) {
             "remote",
             "add",
             "origin",
-            "https://user:secret@example.com/park/repo.git",
+            "user:pa/ss@example.com:park/repo.git",
         ],
     );
     git(&repo, &["add", "ontology/work.schema.json"]);
@@ -744,7 +744,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
     assert_eq!(code, 0, "{ans}");
     assert_eq!(
         ans["result"]["source_repository"],
-        "https://example.com/park/repo.git"
+        "example.com:park/repo.git"
     );
     assert_eq!(ans["result"]["source_commit"], commit);
     assert_eq!(ans["result"]["source_path"], "ontology/work.schema.json");
@@ -761,7 +761,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
     assert_eq!(domain["domain"], "work");
     assert_eq!(domain["version"], 1);
     assert_eq!(domain["sha256"], sha256_hex(EXAMPLE));
-    assert_eq!(domain["repository"], "https://example.com/park/repo.git");
+    assert_eq!(domain["repository"], "example.com:park/repo.git");
     assert_eq!(domain["commit"], commit);
     assert_eq!(domain["path"], "ontology/work.schema.json");
 }
@@ -858,4 +858,77 @@ fn schema_check_against_an_existing_store_reports_what_it_checked() {
         before,
         "check wrote nothing"
     );
+}
+
+#[test]
+fn existing_store_commit_refusals_leave_no_backup_or_rows() {
+    let t = Temp::new();
+    assert_eq!(install_example(&t).0, 0);
+    let (repo, first) = setup_git(&t);
+    let store = t.store();
+    let before = std::fs::read(&store).unwrap();
+    let path = std::path::Path::new(&repo);
+    let mut changed = EXAMPLE.to_vec();
+    changed.push(b' ');
+    std::fs::write(path.join("ontology/work.schema.json"), changed).unwrap();
+    git(path, &["add", "."]);
+    git(path, &["commit", "-qm", "same version different bytes"]);
+    let commit = git(path, &["rev-parse", "HEAD"]);
+    for (revision, expected) in [
+        (&commit, "commit_not_merged"),
+        (&commit, "schema_version_conflict"),
+    ] {
+        if expected == "schema_version_conflict" {
+            git(path, &["update-ref", "refs/remotes/origin/main", &commit]);
+        }
+        let (code, ans) = run(
+            &commit_install_args(&store, &repo, revision, "ontology/work.schema.json"),
+            b"",
+        );
+        assert_eq!((code, ans["code"].as_str()), (2, Some(expected)), "{ans}");
+        assert_eq!(
+            std::fs::read(&store).unwrap(),
+            before,
+            "refusal changed rows"
+        );
+        assert!(!t.0.join("backup").exists());
+    }
+    let file = t.file("conflict.json", &[EXAMPLE, b" "].concat());
+    let (code, ans) = run(&["--store", &store, "schema", "install", &file], b"");
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("schema_version_conflict"))
+    );
+    assert_eq!(std::fs::read(&store).unwrap(), before);
+    assert!(!t.0.join("backup").exists());
+    // Invalid checkout/missing remote ref is a Git execution failure, not ancestry status 1.
+    let (code, ans) = run(
+        &commit_install_args(&store, t.0.to_str().unwrap(), &first, "x"),
+        b"",
+    );
+    assert_eq!((code, ans["code"].as_str()), (2, Some("git_unavailable")));
+    assert_eq!(std::fs::read(&store).unwrap(), before);
+    assert!(!t.0.join("backup").exists());
+}
+
+#[test]
+fn commit_oversize_refuses_without_a_store() {
+    let t = Temp::new();
+    let (repo, _) = setup_git(&t);
+    let path = std::path::Path::new(&repo);
+    std::fs::write(
+        path.join("large.json"),
+        vec![b' '; ont::gitread::MAX_SCHEMA_BYTES + 1],
+    )
+    .unwrap();
+    git(path, &["add", "."]);
+    git(path, &["commit", "-qm", "oversize"]);
+    let commit = git(path, &["rev-parse", "HEAD"]);
+    git(path, &["update-ref", "refs/remotes/origin/main", &commit]);
+    let (code, ans) = run(
+        &commit_install_args(&t.store(), &repo, &commit, "large.json"),
+        b"",
+    );
+    assert_eq!((code, ans["code"].as_str()), (2, Some("invalid_request")));
+    assert!(!std::path::Path::new(&t.store()).exists());
 }
