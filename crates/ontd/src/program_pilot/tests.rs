@@ -1173,3 +1173,98 @@ fn native_report_v2_request_selector_keeps_owner_root_and_window_constraints() {
     let input = serde_json::to_vec(&json!({"op":"program_report_v2","root":id("program",PROGRAM,false),"window":{"start":20,"end":10}})).unwrap();
     assert!(request(&input).is_err());
 }
+
+struct BoundFake;
+impl program_git::Transport for BoundFake {
+    fn get(
+        &mut self,
+        r: &program_git::Request,
+        _: usize,
+    ) -> std::result::Result<Vec<u8>, program_git::IntakeError> {
+        let route = r.route();
+        let a = "4".repeat(40);
+        let b = "5".repeat(40);
+        let next = "2".repeat(40);
+        let v = if route == "repos/owner-a/same" {
+            json!({"id":41,"full_name":"owner-a/same","owner":{"login":"owner-a"}})
+        } else if route == "repos/owner-b/same" {
+            json!({"id":42,"full_name":"owner-b/same","owner":{"login":"owner-b"}})
+        } else if route.ends_with(&format!("git/commits/{a}")) {
+            json!({"sha":a,"tree":{"sha":"6".repeat(40)},"committer":{"date":"2026-11-05T01:43:00Z"},"parents":[]})
+        } else if route.ends_with(&format!("git/commits/{b}")) {
+            json!({"sha":b,"tree":{"sha":"7".repeat(40)},"committer":{"date":"2026-11-05T01:43:00Z"},"parents":[]})
+        } else if route.ends_with(&format!("git/commits/{next}")) {
+            json!({"sha":next,"tree":{"sha":"8".repeat(40)},"committer":{"date":"2026-11-05T01:43:00Z"},"parents":[{"sha":a}]})
+        } else if route.contains(&format!("git/trees/{}", "8".repeat(40))) {
+            json!({"sha":"8".repeat(40),"truncated":false,"tree":[]})
+        } else if route.contains(&format!("git/trees/{}", "7".repeat(40))) {
+            json!({"sha":"7".repeat(40),"truncated":false,"tree":[{"path":"old.ts","sha":"9".repeat(40),"type":"blob"}]})
+        } else if route.contains("git/trees/") {
+            json!({"sha":"6".repeat(40),"truncated":false,"tree":[{"path":"old.ts","sha":"9".repeat(40),"type":"blob"}]})
+        } else if route.ends_with("pulls?per_page=100&page=1") {
+            json!([])
+        } else {
+            return Err(program_git::IntakeError::Unavailable);
+        };
+        Ok(serde_json::to_vec(&v).unwrap())
+    }
+}
+fn bound_config(f: &program::v2::tests::Fixture, after_a: String) -> OwnerConfig {
+    let mut v = v2_disclosure_config(f, None);
+    v["repositories"] = json!([
+        {"manifest_key":"a","owner":"owner-a","name":"same","github_id":41,"before_commit":"4".repeat(40),"after_commit":after_a,"before_observed_at":NOW-3,"after_observed_at":NOW-3},
+        {"manifest_key":"b","owner":"owner-b","name":"same","github_id":42,"before_commit":"5".repeat(40),"after_commit":"5".repeat(40),"before_observed_at":NOW-3,"after_observed_at":NOW-3}
+    ]);
+    OwnerConfig::parse(&serde_json::to_vec(&v).unwrap()).unwrap()
+}
+fn bound_answer(after_a: String) -> Value {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let config = bound_config(&f, after_a);
+    let bindings = capture.endpoint_bindings();
+    let mut g = snapshots_v2(
+        &capture,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW,
+    )
+    .unwrap();
+    g.merge(git_population(&config, capture.population(), &bindings, BoundFake, || NOW).unwrap())
+        .unwrap();
+    let answer = render(
+        g,
+        config.policy().unwrap(),
+        Query::ProgramReport {
+            root: id("program", PROGRAM, false),
+            window: ReportWindow {
+                start: 0,
+                end: u64::MAX,
+            },
+        },
+        NOW,
+    )
+    .unwrap()
+    .0;
+    serde_json::from_str(&answer).unwrap()
+}
+#[test]
+fn v2_bound_endpoints_have_empty_gaps_and_qualified_attribution() {
+    let v = bound_answer("4".repeat(40));
+    let attribution = &v["response"]["result"]["report"]["attributions"][0];
+    assert_eq!(attribution["attribution"]["gaps"], json!([]));
+    assert_eq!(attribution["source_qualified"], true);
+}
+#[test]
+fn v2_one_unbound_endpoint_keeps_endpoint_binding_gap() {
+    let v = bound_answer("2".repeat(40));
+    let attribution = &v["response"]["result"]["report"]["attributions"][0];
+    assert!(
+        attribution["attribution"]["gaps"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("endpoint_binding"))
+    );
+    assert_eq!(attribution["source_qualified"], false);
+}

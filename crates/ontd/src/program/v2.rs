@@ -342,6 +342,23 @@ impl Capture {
     pub fn population(&self) -> &PathPopulation {
         &self.population
     }
+    /// Only (repository identity, commit, measurement id) per captured row;
+    /// no paths, artifacts or row bytes leave the capture through here.
+    pub fn endpoint_bindings(&self) -> Vec<(Identity, String, String)> {
+        let mut out = Vec::new();
+        for row in &self.rows {
+            for repo in &row.snapshot.repositories {
+                if let Some(commit) = repo.commit_sha.get() {
+                    out.push((
+                        repo.identity.clone(),
+                        commit.clone(),
+                        row.snapshot.measurement_id.clone(),
+                    ));
+                }
+            }
+        }
+        out
+    }
     pub fn artifacts(&self) -> BTreeMap<String, Vec<u8>> {
         let mut out = BTreeMap::from([(self.hash.clone(), self.envelope.clone())]);
         for b in self.evidence.values().flat_map(|m| m.values()) {

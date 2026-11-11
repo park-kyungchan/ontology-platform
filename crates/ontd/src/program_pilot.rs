@@ -478,11 +478,29 @@ fn git_sources<T: program_git::Transport, C: FnMut() -> u64>(
     transport: T,
     mut clock: C,
 ) -> Result<Graph> {
-    git_population(config, capture.population(), transport, &mut clock)
+    git_population(config, capture.population(), &[], transport, &mut clock)
+}
+fn endpoint_measurement(
+    bindings: &[(v2::model::Identity, String, String)],
+    github_id: u64,
+    full_name: &str,
+    commit: &str,
+) -> Option<Id> {
+    bindings
+        .iter()
+        .find(|(identity, captured, _)| {
+            identity.github_id == github_id && identity.full_name == full_name && captured == commit
+        })
+        .map(|(_, _, measurement_id)| Id {
+            object_type: "measurement".into(),
+            namespace: namespace(false),
+            native_key: format!("v2:{measurement_id}:kpi_legacy_removal"),
+        })
 }
 fn git_population<T: program_git::Transport, C: FnMut() -> u64>(
     config: &OwnerConfig,
     source_population: &ont_core::program::PathPopulation,
+    bindings: &[(v2::model::Identity, String, String)],
     transport: T,
     mut clock: C,
 ) -> Result<Graph> {
@@ -555,12 +573,22 @@ fn git_population<T: program_git::Transport, C: FnMut() -> u64>(
                     &population.basis,
                     program_git::EndpointBinding {
                         commit: r.before_commit.clone(),
-                        source_measurement: None,
+                        source_measurement: endpoint_measurement(
+                            bindings,
+                            r.github_id,
+                            &format!("{}/{}", r.owner, r.name),
+                            &r.before_commit,
+                        ),
                         observed_at: r.before_observed_at,
                     },
                     program_git::EndpointBinding {
                         commit: r.after_commit.clone(),
-                        source_measurement: None,
+                        source_measurement: endpoint_measurement(
+                            bindings,
+                            r.github_id,
+                            &format!("{}/{}", r.owner, r.name),
+                            &r.after_commit,
+                        ),
                         observed_at: r.after_observed_at,
                     },
                 )
@@ -877,9 +905,11 @@ fn execute_v2(
     if failed {
         return Err(err("pilot_clock_failure"));
     }
+    let bindings = capture.endpoint_bindings();
     let git = git_population(
         config,
         capture.population(),
+        &bindings,
         program_git::GhTransport,
         || match clock() {
             Ok(t) if t >= previous => {
