@@ -1,4 +1,4 @@
-//! O14 language contracts through the command dispatcher and MCP action tools.
+//! Language contracts through the command dispatcher and MCP action tools.
 //! All objects, schemas and stores are synthetic and disposable.
 #![allow(clippy::unwrap_used)]
 use ont_core::schema::Schema;
@@ -1041,5 +1041,452 @@ fn stale_validation_preserves_independent_criteria_and_basis() {
             "rule_value_stale"
         );
         assert!(t.logs().is_empty());
+    }
+}
+
+fn clock_schema() -> Value {
+    let mut s = schema();
+    // This pattern is intentionally tighter than a $now rule destination:
+    // a comparison only needs a string, not the intersection of two patterns.
+    s["value_types"]["observation_time"] = json!({"base":"string","pattern":"[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"});
+    for (name, op) in [("record_time", "le"), ("once", "eq")] {
+        s["action_types"][name] = json!({
+            "parameters":{"observed_at":{"type":{"value_type":"observation_time"},"required":true}},
+            "submission_criteria":[{"code":"future_observation","message":"Observation exceeds application time.","all":[{op:["$observed_at","$now"]}]}],
+            "rules":[{"create_object":"tag","set":{"label":"$now"}}]
+        });
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(name));
+    }
+    s
+}
+
+#[test]
+fn now_criterion_boundary_and_retry_cli_and_mcp() {
+    for mcp in [false, true] {
+        for reversed in [false, true] {
+            let t = Temp::new();
+            let mut s = clock_schema();
+            if reversed {
+                s["action_types"]["record_time"]["submission_criteria"][0]["all"][0] =
+                    json!({"ge":["$now","$observed_at"]});
+                s["action_types"]["once"]["submission_criteria"][0]["all"][0] =
+                    json!({"eq":["$now","$observed_at"]});
+            }
+            t.install(s);
+            let before_store = std::fs::read(t.store()).unwrap();
+            let log = t.0.join("edits.jsonl");
+            assert!(!log.exists());
+            let future = json!({"action_type":"record_time","parameters":{"observed_at":"2026-11-12T00:00:01Z"},"request_id":"future"});
+            let preview = t.call(mcp, "validate", future.clone(), NOW);
+            assert_eq!(preview["result"]["valid"], false, "{preview}");
+            assert_eq!(preview["result"]["application_time"], "set_at_application");
+            assert_eq!(
+                preview["result"]["criteria"][0]["code"],
+                "future_observation"
+            );
+            assert_eq!(preview["result"]["criteria"][0]["passed"], false);
+            let refused = t.call(mcp, "apply", future.clone(), NOW);
+            assert_eq!(refused["code"], "submission_criteria", "{refused}");
+            assert_eq!(refused["failed"], json!(["future_observation"]));
+            assert_eq!(std::fs::read(t.store()).unwrap(), before_store);
+            assert!(!log.exists());
+            assert!(t.logs().is_empty());
+            // Validation did not fix the clock: the same future input now passes.
+            assert_eq!(
+                t.call(mcp, "validate", future, NOW + 1)["result"]["valid"],
+                true
+            );
+            for action in ["record_time", "once"] {
+                let req = json!({"action_type":action,"parameters":{"observed_at":"2026-11-12T00:00:00Z"},"request_id":action});
+                assert_eq!(
+                    t.call(mcp, "validate", req.clone(), NOW)["result"]["valid"],
+                    true
+                );
+                let applied = t.call(mcp, "apply", req.clone(), NOW);
+                assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                let id = &applied["result"]["edits"][0]["id"];
+                assert_eq!(t.fields(id)["label"]["value"], "2026-11-12T00:00:00Z");
+                let before_store = std::fs::read(t.store()).unwrap();
+                let before_log = std::fs::read(&log).unwrap();
+                let retry = t.call(mcp, "apply", req.clone(), NOW + 1);
+                assert_eq!(retry["result"]["outcome"], "already_applied", "{retry}");
+                assert_eq!(retry["result"]["edits"], applied["result"]["edits"]);
+                assert_eq!(std::fs::read(t.store()).unwrap(), before_store);
+                assert_eq!(std::fs::read(&log).unwrap(), before_log);
+                if action == "once" {
+                    assert_eq!(
+                        t.call(mcp, "validate", req.clone(), NOW + 1)["result"]["valid"],
+                        false
+                    );
+                    // Even a clock outside the representable UTC range is never
+                    // evaluated on retry of the applied request.
+                    assert_eq!(
+                        t.call(mcp, "apply", req, 253_402_300_800)["result"]["outcome"],
+                        "already_applied"
+                    );
+                }
+            }
+            assert_eq!(t.logs().len(), 2);
+        }
+    }
+}
+
+#[test]
+fn now_all_comparisons_explicit_properties_and_literals_cli_and_mcp() {
+    let equal = "2026-11-12T00:00:00Z";
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = clock_schema();
+        s["object_types"]["note"]["properties"]["title"]["type"] =
+            json!({"value_type":"observation_time"});
+        for op in ["eq", "ne", "lt", "le", "gt", "ge"] {
+            let mut criteria = Vec::new();
+            for (i, operand) in [json!("$value"), json!("$source.title"), json!(equal)]
+                .into_iter()
+                .enumerate()
+            {
+                for reversed in [false, true] {
+                    let pair = if reversed {
+                        json!(["$now", operand])
+                    } else {
+                        json!([operand, "$now"])
+                    };
+                    criteria.push(json!({"code":format!("clock_{i}_{reversed}"),"message":"Clock comparison failed.","all":[{op:pair}]}));
+                }
+            }
+            let name = format!("clock_{op}");
+            // No rule uses $now here: application_time must reflect criteria.
+            s["action_types"][&name] = json!({
+                "parameters":{"source":{"type":{"ref":"note"},"required":true},"value":{"type":"string","required":true}},
+                "submission_criteria":criteria,"rules":[]
+            });
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(name));
+        }
+        t.install(s);
+        let source = t.call(mcp,"apply",json!({"action_type":"record_note","parameters":{"title":equal,"task":task()},"request_id":"seed"}),NOW)["result"]["edits"][0]["id"].clone();
+        assert!(!source.is_null());
+        for op in ["eq", "ne", "lt", "le", "gt", "ge"] {
+            // Exercise true and false for all operators, both operand orders,
+            // parameters, string-based properties, and literals on either side.
+            for now in [NOW - 1, NOW, NOW + 1] {
+                let req = json!({"action_type":format!("clock_{op}"),"parameters":{"source":source,"value":equal},"request_id":format!("{op}-{now}")});
+                let preview = t.call(mcp, "validate", req.clone(), now);
+                assert_eq!(preview["result"]["application_time"], "set_at_application");
+                let mut all_passed = true;
+                for (i, criterion) in preview["result"]["criteria"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    let ordering = if i % 2 == 1 {
+                        now.cmp(&NOW)
+                    } else {
+                        NOW.cmp(&now)
+                    };
+                    use std::cmp::Ordering::{Equal, Greater, Less};
+                    let expected = match op {
+                        "eq" => ordering == Equal,
+                        "ne" => ordering != Equal,
+                        "lt" => ordering == Less,
+                        "le" => ordering != Greater,
+                        "gt" => ordering == Greater,
+                        "ge" => ordering != Less,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(criterion["passed"], expected, "{op} {now} {i}: {preview}");
+                    all_passed &= expected;
+                }
+                assert_eq!(preview["result"]["criteria"].as_array().unwrap().len(), 6);
+                assert_eq!(preview["result"]["valid"], all_passed);
+                let applied = t.call(mcp, "apply", req, now);
+                if all_passed {
+                    assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                } else {
+                    assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn now_criterion_rejects_non_strings_and_other_contexts_with_pointers() {
+    let t = Temp::new();
+    for op in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        for reversed in [false, true] {
+            for operand in [
+                json!(42),
+                json!(false),
+                Value::Null,
+                json!([]),
+                json!({}),
+                json!("$bad"),
+                json!("$source.count"),
+            ] {
+                let mut s = clock_schema();
+                s["object_types"]["note"]["properties"]["count"] = json!({"type":"integer"});
+                s["action_types"]["record_time"]["parameters"]["source"] =
+                    json!({"type":{"ref":"note"},"required":true});
+                s["value_types"]["integer_value"] = json!({"base":"integer"});
+                s["action_types"]["record_time"]["parameters"]["bad"] =
+                    json!({"type":{"value_type":"integer_value"},"required":true});
+                let pair = if reversed {
+                    json!(["$now", operand])
+                } else {
+                    json!([operand, "$now"])
+                };
+                s["action_types"]["record_time"]["submission_criteria"][0]["all"][0] =
+                    json!({op:pair});
+                let index = usize::from(reversed);
+                t.refuses_schema(
+                    s,
+                    "invalid_criterion",
+                    &format!("/action_types/record_time/submission_criteria/0/all/0/{op}/{index}"),
+                );
+            }
+        }
+    }
+    for condition in [
+        json!({"exists":"$now"}),
+        json!({"fresh":"$now"}),
+        json!({"actor":"$now"}),
+        json!({"in":["$now",["time"]]}),
+    ] {
+        let mut s = clock_schema();
+        let kind = condition.as_object().unwrap().keys().next().unwrap();
+        let suffix = if kind == "in" { "in/0" } else { kind };
+        let pointer = format!("/action_types/record_time/submission_criteria/0/all/0/{suffix}");
+        s["action_types"]["record_time"]["submission_criteria"][0]["all"][0] = condition;
+        t.refuses_schema(s, "unknown_parameter", &pointer);
+    }
+    let mut s = clock_schema();
+    s["action_types"]["record_time"]["parameters"]["now"] = json!({"type":"string"});
+    t.refuses_schema(
+        s,
+        "invalid_name",
+        "/action_types/record_time/parameters/now",
+    );
+    let mut view: Value =
+        serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+    view["views"]["clock"] = json!({"object_type":"item","columns":[{"header":"Title","property":"title"}],"order":[],"filter":{"le":["title","$now"]}});
+    t.refuses_schema(view, "invalid_schema", "/views/clock/filter");
+}
+
+#[test]
+fn now_criterion_library_constructor_uses_injected_clock() {
+    let t = Temp::new();
+    t.install(clock_schema());
+    let req: ont::action::ValidateActionRequest = serde_json::from_value(
+        json!({"action_type":"record_time","parameters":{"observed_at":"2026-11-12T00:00:01Z"}}),
+    )
+    .unwrap();
+    for (now, expected) in [(NOW, false), (NOW + 1, true)] {
+        let ctx = ont::Context::new(t.store(), now);
+        let ont::Answer::Enveloped { result, .. } =
+            ont::action::validate_action(&ctx, &req).unwrap()
+        else {
+            panic!("expected envelope")
+        };
+        assert_eq!(result["valid"], expected);
+        assert_eq!(result["application_time"], "set_at_application");
+    }
+}
+
+#[test]
+fn now_refused_throughout_linked_where_with_operand_pointers() {
+    let t = Temp::new();
+    let nesting: &[&[&str]] = &[&[], &["all"], &["any"], &["none"], &["all", "any", "none"]];
+    for op in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        for reversed in [false, true] {
+            for outer in ["all", "any", "none"] {
+                for nested in nesting {
+                    let mut s = schema();
+                    let pair = if reversed {
+                        json!(["$now", "until"])
+                    } else {
+                        json!(["until", "$now"])
+                    };
+                    let mut condition = json!({op:pair});
+                    for arm in nested.iter().rev() {
+                        condition = json!({*arm:[condition]});
+                    }
+                    s["action_types"]["set_hold"]["submission_criteria"] = json!([
+                        {"code":"clock","message":"Clock check.","all":[
+                            {"linked":{"from":"$task","link":"holds","where":{outer:[condition]}}}
+                        ]}
+                    ]);
+                    let mut pointer = format!(
+                        "/action_types/set_hold/submission_criteria/0/all/0/linked/where/{outer}/0"
+                    );
+                    for arm in *nested {
+                        pointer.push_str(&format!("/{arm}/0"));
+                    }
+                    pointer.push_str(&format!("/{op}/{}", usize::from(!reversed)));
+                    t.refuses_schema(s.clone(), "unknown_parameter", &pointer);
+                    // The same legacy property/parameter comparison remains
+                    // accepted, including every linked boolean group shape.
+                    let legacy = s["action_types"]["set_hold"]["submission_criteria"]
+                        .to_string()
+                        .replace("\"$now\"", "\"$until\"");
+                    s["action_types"]["set_hold"]["submission_criteria"] =
+                        serde_json::from_str(&legacy).unwrap();
+                    let checked = Schema::check_bytes(s.to_string().as_bytes(), &BTreeSet::new());
+                    assert!(
+                        checked.is_ok(),
+                        "{op} {reversed} {outer} {nested:?}: {checked:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn now_literal_parameter_names_require_dollar_with_message() {
+    let t = Temp::new();
+    for op in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        for reversed in [false, true] {
+            for name in ["observed_at", "label"] {
+                let mut s = clock_schema();
+                s["action_types"]["record_time"]["parameters"]["label"] = json!({"type":"string"});
+                let pair = if reversed {
+                    json!(["$now", name])
+                } else {
+                    json!([name, "$now"])
+                };
+                s["action_types"]["record_time"]["submission_criteria"][0]["all"][0] =
+                    json!({op:pair});
+                let p = t.0.join("literal-parameter.json");
+                std::fs::write(&p, s.to_string()).unwrap();
+                let answer = t.cli(&["schema", "check", p.to_str().unwrap()], json!({}), NOW);
+                assert_eq!(answer["code"], "schema_violation", "{answer}");
+                let pointer = format!(
+                    "/action_types/record_time/submission_criteria/0/all/0/{op}/{}",
+                    usize::from(reversed)
+                );
+                let violation = answer["violations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["code"] == "invalid_criterion" && v["pointer"] == pointer)
+                    .unwrap();
+                assert_eq!(
+                    violation["message"],
+                    format!("Write ${name} to use the declared parameter.")
+                );
+                // The suggested explicit parameter form still checks clean.
+                let explicit = if reversed {
+                    json!(["$now", format!("${name}")])
+                } else {
+                    json!([format!("${name}"), "$now"])
+                };
+                s["action_types"]["record_time"]["submission_criteria"][0]["all"][0] =
+                    json!({op:explicit});
+                let checked = Schema::check_bytes(s.to_string().as_bytes(), &BTreeSet::new());
+                assert!(checked.is_ok(), "{op} {reversed} {name}: {checked:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn now_changed_parameter_retry_refuses_request_id_reused_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        t.install(clock_schema());
+        let mut req = json!({"action_type":"once","parameters":{"observed_at":"2026-11-12T00:00:00Z"},"request_id":"one-shot"});
+        let applied = t.call(mcp, "apply", req.clone(), NOW);
+        assert_eq!(applied["result"]["outcome"], "applied");
+        let before_store = std::fs::read(t.store()).unwrap();
+        let before_log = std::fs::read(t.0.join("edits.jsonl")).unwrap();
+        req["parameters"]["observed_at"] = json!("2026-11-12T00:00:01Z");
+        // Changed content is rejected whether its criterion would fail or pass
+        // at the retry's clock; it never changes the original application.
+        for now in [NOW, NOW + 1] {
+            let refused = t.call(mcp, "apply", req.clone(), now);
+            assert_eq!(refused["code"], "request_id_reused", "{refused}");
+            assert_eq!(std::fs::read(t.store()).unwrap(), before_store);
+            assert_eq!(std::fs::read(t.0.join("edits.jsonl")).unwrap(), before_log);
+        }
+        assert_eq!(t.logs().len(), 1);
+    }
+}
+
+#[test]
+fn now_criterion_only_any_none_validation_marker_cli_and_mcp() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = clock_schema();
+        for arm in ["any", "none"] {
+            s["action_types"][arm] = json!({
+                "parameters":{"observed_at":{"type":"string","required":true}},
+                "submission_criteria":[{"code":"clock","message":"Clock check.",arm:[{"eq":["$observed_at","$now"]}]}],
+                "rules":[]
+            });
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(arm));
+        }
+        t.install(s);
+        let before = std::fs::read(t.store()).unwrap();
+        for arm in ["any", "none"] {
+            let req =
+                json!({"action_type":arm,"parameters":{"observed_at":"2026-11-12T00:00:00Z"}});
+            for now in [NOW, NOW + 1] {
+                let preview = t.call(mcp, "validate", req.clone(), now);
+                assert_eq!(preview["result"]["application_time"], "set_at_application");
+                let expected = (arm == "any") == (now == NOW);
+                assert_eq!(preview["result"]["valid"], expected, "{preview}");
+                assert_eq!(preview["result"]["criteria"][0]["passed"], expected);
+                assert_eq!(preview["result"]["edits"], json!([]));
+            }
+        }
+        assert_eq!(std::fs::read(t.store()).unwrap(), before);
+        assert!(!t.0.join("edits.jsonl").exists());
+        assert!(t.logs().is_empty());
+    }
+}
+
+#[test]
+fn now_string_order_examples_and_full_utc_parameter_pattern_cli_and_mcp() {
+    let counterexamples = ["", "2026-11-12", "2026-11-11T23:30:00-02:00"];
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = clock_schema();
+        s["action_types"]["record_time"]["parameters"]["observed_at"]["type"] = json!("string");
+        t.install(s);
+        for (i, value) in counterexamples.iter().enumerate() {
+            let req = json!({"action_type":"record_time","parameters":{"observed_at":value},"request_id":format!("lexical-{i}")});
+            let preview = t.call(mcp, "validate", req.clone(), NOW);
+            assert_eq!(preview["result"]["valid"], true, "{preview}");
+            assert_eq!(preview["result"]["application_time"], "set_at_application");
+            let applied = t.call(mcp, "apply", req, NOW);
+            assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+        }
+        // Requiring the full UTC representation rejects all three strings at
+        // parameter typing, before the lexical comparison can admit them.
+        let typed = Temp::new();
+        typed.install(clock_schema());
+        let before = std::fs::read(typed.store()).unwrap();
+        for (i, value) in counterexamples.iter().enumerate() {
+            let req = json!({"action_type":"record_time","parameters":{"observed_at":value},"request_id":format!("typed-{i}")});
+            for op in ["validate", "apply"] {
+                assert_eq!(
+                    typed.call(mcp, op, req.clone(), NOW)["code"],
+                    "invalid_parameter"
+                );
+            }
+        }
+        assert_eq!(std::fs::read(typed.store()).unwrap(), before);
+        assert!(!typed.0.join("edits.jsonl").exists());
+        assert!(typed.logs().is_empty());
     }
 }

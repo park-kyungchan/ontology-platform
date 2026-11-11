@@ -45,14 +45,45 @@ log's `submitted_at` and the observations' `observed_at`; no log or store format
 changes. Validation returns `"application_time":"set_at_application"` and does
 not fix that time. A retry with the same `request_id` returns the original edits
 and leaves the original value and time intact. `$now` requires a string or
-string-based value-type destination, is only a rule value (not a criterion),
-and reserves the parameter name `now`. Times beyond year 9999 refuse with
+string-based value-type destination, and reserves the parameter name `now`.
+Times beyond year 9999 refuse with
 `application_time_out_of_range`. For a patterned string value type, schema
 checking accepts the canonical UTC shape
 `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z` (also with `\d`,
 optional `^`/`$`), or `.*`. Other patterns refuse `invalid_rule` at the `$now`
 expression: arbitrary regex/time-language intersection is not supported.
 The actual applied value must still satisfy the value type's other constraints.
+
+Submission comparisons `eq`, `ne`, `lt`, `le`, `gt`, and `ge` also accept `$now`
+on either side, for example `{"le":["$observed_at","$now"]}`. The other operand
+must be a string parameter, a string `$parameter.property`, or a string literal
+(string-based value types are accepted, including patterned ones). In these
+comparisons unprefixed strings on either side are literals; name a referenced
+property explicitly with `$parameter.property`: `["$source.observed_at","$now"]`
+reads the source property, while `["observed_at","$now"]` compares the literal
+word `observed_at`. A literal equal to a declared action parameter name refuses
+`invalid_criterion` with a message to write `$<name>` instead.
+Comparisons use the existing string ordering and the same full UTC text that a
+rule value `$now` stores.
+`validate` evaluates against its validation time and returns
+`"application_time":"set_at_application"`, including when the criterion fails;
+it does not promise the same result at a later apply. Apply evaluates against
+its application time, once inside the write transaction. An applied request's
+retry returns `already_applied` with its original edits without evaluating the
+criteria again. Both `--now` and the library's injected clock drive this value.
+`$now` remains unavailable in view filters, anywhere inside `linked ... where`
+(including nested `all`/`any`/`none`), and other criterion forms.
+
+String ordering has chronological meaning only when both operands use the same
+full UTC form, such as `2026-11-12T00:00:00Z`. With that application time, `le`
+accepts the empty string `""`, the date without time `"2026-11-12"`, and the offset
+time `"2026-11-11T23:30:00-02:00"`. The last value represents a later instant;
+the language compares text and does not parse or normalize times. A schema that
+needs chronological safety gives the parameter a string value type with the
+full UTC pattern, for example
+`"utc_observed_time":{"base":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}`
+and `"observed_at":{"type":{"value_type":"utc_observed_time"},"required":true}`.
+This fixes the representation; calendar validity requires tighter ranges too.
 
 A parameter declared `"required":false` accepts omission or JSON null. A rule
 value using that absent parameter leaves its destination unset on create and

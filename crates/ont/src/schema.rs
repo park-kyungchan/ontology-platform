@@ -111,15 +111,7 @@ fn check_outcome(
             Err(Refusal::new("schema_violation")
                 .with("clean", json!(false))
                 .with("pin", pin.unwrap_or(Value::Null))
-                .with(
-                    "violations",
-                    json!(
-                        violations
-                            .iter()
-                            .map(|v| json!({"code":v.code,"pointer":v.pointer}))
-                            .collect::<Vec<_>>()
-                    ),
-                )
+                .with("violations", json!(violations))
                 .with("checked_against", json!(checked_against))
                 .with("store_exists", json!(store_exists))
                 .into())

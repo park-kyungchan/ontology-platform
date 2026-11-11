@@ -78,6 +78,7 @@ fn violation(code: &'static str, pointer: impl Into<String>) -> Violation {
     Violation {
         code,
         pointer: pointer.into(),
+        message: None,
     }
 }
 fn esc(s: &str) -> String {

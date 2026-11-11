@@ -139,14 +139,24 @@ const SOURCE_KINDS: &[&str] = &[
     "command",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Violation {
     pub code: &'static str,
     pub pointer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 impl Violation {
     fn new(code: &'static str, pointer: String) -> Self {
-        Self { code, pointer }
+        Self {
+            code,
+            pointer,
+            message: None,
+        }
+    }
+    fn with_message(mut self, message: String) -> Self {
+        self.message = Some(message);
+        self
     }
 }
 impl fmt::Display for Violation {
@@ -1978,7 +1988,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
             }
             for (i, cond) in arms[0].1.iter().enumerate() {
                 let ptr = format!("{cp}/{}/{i}", arms[0].0);
-                check_condition(schema, at, cond, None, &ptr, &mut out);
+                check_condition(schema, at, cond, None, true, &ptr, &mut out);
             }
         }
         for (ri, rule) in at.rules.iter().enumerate() {
@@ -2448,6 +2458,7 @@ fn check_condition(
     at: &ActionType,
     cond: &Condition,
     context: Option<&str>,
+    allow_now: bool,
     pointer: &str,
     out: &mut Vec<Violation>,
 ) {
@@ -2462,6 +2473,42 @@ fn check_condition(
         _ => None,
     };
     if let Some((kind, pair)) = pair {
+        if allow_now && kind != "in" && pair.iter().any(|v| v.as_str() == Some("$now")) {
+            // With an explicit clock operand, unprefixed strings are literals.
+            // Legacy comparisons without $now keep their bare-property syntax.
+            for (i, operand) in pair.iter().enumerate() {
+                let ptr = format!("{pointer}/{kind}/{i}");
+                scan_params(schema, at, operand, &ptr, true, out);
+                let string_typed = match operand.as_str() {
+                    Some("$now") => true,
+                    Some(s) => match s.strip_prefix('$') {
+                        Some(p) => {
+                            let ty = match p.split_once('.') {
+                                Some((name, prop)) => parameter_property(schema, at, name, prop),
+                                None => at.parameters.get(p).map(|p| &p.ty),
+                            };
+                            ty.and_then(|ty| scalar_base(schema, ty)) == Some(ScalarType::String)
+                        }
+                        None => {
+                            if at.parameters.contains_key(s) {
+                                out.push(
+                                    Violation::new(codes::INVALID_CRITERION, ptr.clone())
+                                        .with_message(format!(
+                                            "Write ${s} to use the declared parameter."
+                                        )),
+                                );
+                            }
+                            true
+                        }
+                    },
+                    None => false,
+                };
+                if !string_typed {
+                    out.push(Violation::new(codes::INVALID_CRITERION, ptr));
+                }
+            }
+            return;
+        }
         if let (Some(ctx), Value::String(first)) = (context, &pair[0])
             && !first.starts_with('$')
         {
@@ -2587,23 +2634,47 @@ fn check_condition(
                 }
                 for (i, c) in arms[0].1.iter().enumerate() {
                     let ptr = format!("{pointer}/linked/where/{}/{i}", arms[0].0);
-                    check_condition(schema, at, c, target, &ptr, out);
+                    check_condition(schema, at, c, target, false, &ptr, out);
                 }
             }
         }
         Condition::All(cs) => {
             for (i, c) in cs.iter().enumerate() {
-                check_condition(schema, at, c, context, &format!("{pointer}/all/{i}"), out);
+                check_condition(
+                    schema,
+                    at,
+                    c,
+                    context,
+                    allow_now,
+                    &format!("{pointer}/all/{i}"),
+                    out,
+                );
             }
         }
         Condition::Any(cs) => {
             for (i, c) in cs.iter().enumerate() {
-                check_condition(schema, at, c, context, &format!("{pointer}/any/{i}"), out);
+                check_condition(
+                    schema,
+                    at,
+                    c,
+                    context,
+                    allow_now,
+                    &format!("{pointer}/any/{i}"),
+                    out,
+                );
             }
         }
         Condition::NoneOf(cs) => {
             for (i, c) in cs.iter().enumerate() {
-                check_condition(schema, at, c, context, &format!("{pointer}/none/{i}"), out);
+                check_condition(
+                    schema,
+                    at,
+                    c,
+                    context,
+                    allow_now,
+                    &format!("{pointer}/none/{i}"),
+                    out,
+                );
             }
         }
         _ => {}
