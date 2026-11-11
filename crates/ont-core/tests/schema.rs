@@ -228,6 +228,59 @@ fn value_validation_refusals() {
     );
 }
 
+fn pattern_schema(pattern: &str) -> Schema {
+    serde_json::from_value(json!({
+        "format":"ontology-schema/v1","domain":"work","version":1,
+        "namespace":{"instance":"vps://palantirkc","account":"root"},
+        "value_types":{"code":{"base":"string","pattern":pattern}},
+        "object_types":{"thing":{"owner":"ontology","primary_key":{"from":"$action_id"},
+            "properties":{"code":{"type":{"value_type":"code"},"required":true}}}}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn pattern_must_match_the_whole_value() {
+    let schema = pattern_schema("[a-z]+");
+    assert!(schema.check(&BTreeSet::new()).is_empty());
+    let fields = |v: &str| BTreeMap::from([("code".to_string(), Knowledge::Value(json!(v)))]);
+    // Matching value.
+    assert_eq!(schema.validate_fields("thing", &fields("abc")), Ok(()));
+    // Non-matching value.
+    assert_eq!(
+        schema
+            .validate_fields("thing", &fields("ABC"))
+            .unwrap_err()
+            .code,
+        "value_constraint_violation"
+    );
+    // A value that matches only a part must refuse (whole-value semantics).
+    assert_eq!(
+        schema
+            .validate_fields("thing", &fields("abc1"))
+            .unwrap_err()
+            .code,
+        "value_constraint_violation"
+    );
+}
+
+#[test]
+fn pattern_that_does_not_compile_refuses_at_check() {
+    let schema = pattern_schema("(");
+    let found = schema.check(&BTreeSet::new());
+    assert!(
+        found
+            .iter()
+            .any(|x| x.code == "invalid_value_type_definition" && x.pointer == "/value_types/code"),
+        "{found:?}"
+    );
+    let fields = BTreeMap::from([("code".to_string(), Knowledge::Value(json!("abc")))]);
+    assert_eq!(
+        schema.validate_fields("thing", &fields).unwrap_err().code,
+        "value_constraint_violation"
+    );
+}
+
 #[test]
 fn schema_set_answers_declaration_properties_owner_and_links() {
     let schema = Schema::parse(EXAMPLE).unwrap();

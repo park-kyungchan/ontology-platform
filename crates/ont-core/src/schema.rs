@@ -104,18 +104,52 @@ pub struct PropertyDef {
     pub max_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValueTypeDef {
     pub base: ScalarType,
     #[serde(rename = "enum", default, skip_serializing_if = "Option::is_none")]
     pub enum_values: Option<Vec<Value>>,
+    /// Whole-value match: the pattern must match the entire string value;
+    /// it is compiled as `^(?:pattern)$` (see `compile_pattern`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<Value>,
+    /// Compiled `pattern`, filled once by `check` and reused by validation.
+    #[serde(skip)]
+    compiled_pattern: std::sync::OnceLock<Option<regex_lite::Regex>>,
+}
+impl PartialEq for ValueTypeDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base
+            && self.enum_values == other.enum_values
+            && self.pattern == other.pattern
+            && self.min == other.min
+            && self.max == other.max
+    }
+}
+impl ValueTypeDef {
+    fn compiled(&self) -> Option<&regex_lite::Regex> {
+        self.compiled_pattern
+            .get_or_init(|| {
+                self.pattern
+                    .as_deref()
+                    .and_then(|p| compile_pattern(p).ok())
+            })
+            .as_ref()
+    }
+    fn pattern_matches(&self, text: &str) -> bool {
+        self.pattern.is_none() || self.compiled().is_some_and(|re| re.is_match(text))
+    }
+}
+
+/// Compile a value-type `pattern` for whole-value matching: the pattern
+/// must match the whole value, so it is wrapped as `^(?:pattern)$`.
+fn compile_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    regex_lite::Regex::new(&format!("^(?:{pattern})$"))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -506,9 +540,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
         {
             v("invalid_value_type_definition", p.clone(), &mut out);
         }
-        if let Some(pat) = &def.pattern
-            && Regex::compile(pat).is_none()
-        {
+        if def.pattern.is_some() && def.compiled().is_none() {
             v("invalid_value_type_definition", p.clone(), &mut out);
         }
         if let (Some(a), Some(b)) = (&def.min, &def.max)
@@ -949,11 +981,10 @@ fn validate_value(schema: &Schema, ty: &PropertyType, v: &Value) -> Result<(), &
             {
                 return Err("value_constraint_violation");
             }
-            if let (ScalarType::String, Some(pat), Value::String(s)) = (def.base, &def.pattern, v) {
-                match Regex::compile(pat) {
-                    Some(re) if re.is_match(s) => {}
-                    _ => return Err("value_constraint_violation"),
-                }
+            if let (ScalarType::String, Value::String(s)) = (def.base, v)
+                && !def.pattern_matches(s)
+            {
+                return Err("value_constraint_violation");
             }
             if let Some(min) = &def.min
                 && compare_values(v, min) == Some(std::cmp::Ordering::Less)
@@ -1064,330 +1095,6 @@ fn valid_date(s: &str) -> bool {
         31,
     ];
     d <= days[(m - 1) as usize]
-}
-
-/// Small backtracking regex (search semantics): literals, `.`, classes,
-/// escapes `\d\w\s` (+negations), groups, alternation, `* + ? {n,m}`, `^ $`.
-#[derive(Debug, Clone)]
-enum Node {
-    Char(char),
-    Any,
-    Class {
-        neg: bool,
-        ranges: Vec<(char, char)>,
-    },
-    Start,
-    End,
-    Seq(Vec<Node>),
-    Alt(Vec<Node>),
-    Repeat {
-        node: Box<Node>,
-        min: u32,
-        max: Option<u32>,
-    },
-}
-#[derive(Debug)]
-struct Regex {
-    root: Node,
-}
-impl Regex {
-    fn compile(pattern: &str) -> Option<Self> {
-        let chars: Vec<char> = pattern.chars().collect();
-        let mut p = Parser {
-            chars: &chars,
-            pos: 0,
-        };
-        let root = p.alt()?;
-        if p.pos != chars.len() {
-            return None;
-        }
-        Some(Self { root })
-    }
-    fn is_match(&self, text: &str) -> bool {
-        let chars: Vec<char> = text.chars().collect();
-        (0..=chars.len()).any(|start| !match_node(&self.root, &chars, start).is_empty())
-    }
-}
-struct Parser<'a> {
-    chars: &'a [char],
-    pos: usize,
-}
-impl Parser<'_> {
-    fn peek(&self) -> Option<char> {
-        self.chars.get(self.pos).copied()
-    }
-    fn alt(&mut self) -> Option<Node> {
-        let mut arms = vec![self.seq()?];
-        while self.peek() == Some('|') {
-            self.pos += 1;
-            arms.push(self.seq()?);
-        }
-        if arms.len() == 1 {
-            arms.pop()
-        } else {
-            Some(Node::Alt(arms))
-        }
-    }
-    fn seq(&mut self) -> Option<Node> {
-        let mut nodes = Vec::new();
-        while let Some(c) = self.peek() {
-            if c == '|' || c == ')' {
-                break;
-            }
-            let atom = self.atom()?;
-            nodes.push(self.repeat(atom)?);
-        }
-        Some(Node::Seq(nodes))
-    }
-    fn repeat(&mut self, atom: Node) -> Option<Node> {
-        let (min, max) = match self.peek() {
-            Some('*') => {
-                self.pos += 1;
-                (0, None)
-            }
-            Some('+') => {
-                self.pos += 1;
-                (1, None)
-            }
-            Some('?') => {
-                self.pos += 1;
-                (0, Some(1))
-            }
-            Some('{') => {
-                let save = self.pos;
-                self.pos += 1;
-                let mut min_s = String::new();
-                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                    min_s.push(self.peek()?);
-                    self.pos += 1;
-                }
-                if min_s.is_empty() {
-                    self.pos = save;
-                    return Some(atom);
-                }
-                let min: u32 = min_s.parse().ok()?;
-                let max = if self.peek() == Some(',') {
-                    self.pos += 1;
-                    let mut max_s = String::new();
-                    while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                        max_s.push(self.peek()?);
-                        self.pos += 1;
-                    }
-                    if max_s.is_empty() {
-                        None
-                    } else {
-                        Some(max_s.parse().ok()?)
-                    }
-                } else {
-                    Some(min)
-                };
-                if self.peek() != Some('}') {
-                    return None;
-                }
-                self.pos += 1;
-                (min, max)
-            }
-            _ => return Some(atom),
-        };
-        Some(Node::Repeat {
-            node: Box::new(atom),
-            min,
-            max,
-        })
-    }
-    fn atom(&mut self) -> Option<Node> {
-        match self.peek()? {
-            '(' => {
-                self.pos += 1;
-                if self.chars[self.pos..].starts_with(&['?', ':']) {
-                    self.pos += 2;
-                }
-                let inner = self.alt()?;
-                if self.peek() != Some(')') {
-                    return None;
-                }
-                self.pos += 1;
-                Some(inner)
-            }
-            '[' => {
-                self.pos += 1;
-                let neg = self.peek() == Some('^');
-                if neg {
-                    self.pos += 1;
-                }
-                let mut ranges = Vec::new();
-                let mut first = true;
-                loop {
-                    let c = self.peek()?;
-                    if c == ']' && !first {
-                        self.pos += 1;
-                        break;
-                    }
-                    first = false;
-                    self.pos += 1;
-                    let lo = if c == '\\' {
-                        let e = self.peek()?;
-                        self.pos += 1;
-                        match e {
-                            'd' => {
-                                ranges.push(('0', '9'));
-                                continue;
-                            }
-                            'w' => {
-                                ranges.extend([('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')]);
-                                continue;
-                            }
-                            's' => {
-                                ranges.extend([(' ', ' '), ('\t', '\t'), ('\n', '\n')]);
-                                continue;
-                            }
-                            other => other,
-                        }
-                    } else {
-                        c
-                    };
-                    if self.peek() == Some('-')
-                        && self.chars.get(self.pos + 1).is_some_and(|n| *n != ']')
-                    {
-                        self.pos += 1;
-                        let hi = self.peek()?;
-                        self.pos += 1;
-                        ranges.push((lo, hi));
-                    } else {
-                        ranges.push((lo, lo));
-                    }
-                }
-                Some(Node::Class { neg, ranges })
-            }
-            '.' => {
-                self.pos += 1;
-                Some(Node::Any)
-            }
-            '^' => {
-                self.pos += 1;
-                Some(Node::Start)
-            }
-            '$' => {
-                self.pos += 1;
-                Some(Node::End)
-            }
-            '\\' => {
-                self.pos += 1;
-                let e = self.peek()?;
-                self.pos += 1;
-                Some(match e {
-                    'd' => Node::Class {
-                        neg: false,
-                        ranges: vec![('0', '9')],
-                    },
-                    'D' => Node::Class {
-                        neg: true,
-                        ranges: vec![('0', '9')],
-                    },
-                    'w' => Node::Class {
-                        neg: false,
-                        ranges: vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')],
-                    },
-                    'W' => Node::Class {
-                        neg: true,
-                        ranges: vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')],
-                    },
-                    's' => Node::Class {
-                        neg: false,
-                        ranges: vec![(' ', ' '), ('\t', '\t'), ('\n', '\n'), ('\r', '\r')],
-                    },
-                    'S' => Node::Class {
-                        neg: true,
-                        ranges: vec![(' ', ' '), ('\t', '\t'), ('\n', '\n'), ('\r', '\r')],
-                    },
-                    other => Node::Char(other),
-                })
-            }
-            other => {
-                self.pos += 1;
-                Some(Node::Char(other))
-            }
-        }
-    }
-}
-fn match_node(node: &Node, text: &[char], pos: usize) -> BTreeSet<usize> {
-    match node {
-        Node::Char(c) => {
-            if text.get(pos) == Some(c) {
-                BTreeSet::from([pos + 1])
-            } else {
-                BTreeSet::new()
-            }
-        }
-        Node::Any => {
-            if pos < text.len() {
-                BTreeSet::from([pos + 1])
-            } else {
-                BTreeSet::new()
-            }
-        }
-        Node::Class { neg, ranges } => match text.get(pos) {
-            Some(c) if ranges.iter().any(|(lo, hi)| lo <= c && c <= hi) != *neg => {
-                BTreeSet::from([pos + 1])
-            }
-            _ => BTreeSet::new(),
-        },
-        Node::Start => {
-            if pos == 0 {
-                BTreeSet::from([pos])
-            } else {
-                BTreeSet::new()
-            }
-        }
-        Node::End => {
-            if pos == text.len() {
-                BTreeSet::from([pos])
-            } else {
-                BTreeSet::new()
-            }
-        }
-        Node::Seq(nodes) => {
-            let mut cur = BTreeSet::from([pos]);
-            for n in nodes {
-                let mut next = BTreeSet::new();
-                for p in cur {
-                    next.extend(match_node(n, text, p));
-                }
-                cur = next;
-                if cur.is_empty() {
-                    break;
-                }
-            }
-            cur
-        }
-        Node::Alt(arms) => arms.iter().flat_map(|a| match_node(a, text, pos)).collect(),
-        Node::Repeat { node, min, max } => {
-            let mut result = BTreeSet::new();
-            let mut cur = BTreeSet::from([pos]);
-            if *min == 0 {
-                result.insert(pos);
-            }
-            let limit = max.unwrap_or(text.len() as u32 + 1);
-            let mut count = 0u32;
-            while count < limit {
-                let mut next = BTreeSet::new();
-                for p in &cur {
-                    next.extend(match_node(node, text, *p));
-                }
-                // Zero-width repeats cannot progress; stop to avoid a loop.
-                next.retain(|p| *p != pos || count >= *min);
-                if next.is_empty() {
-                    break;
-                }
-                count += 1;
-                if count >= *min {
-                    result.extend(&next);
-                }
-                cur = next;
-            }
-            result
-        }
-    }
 }
 
 /// Several checked domains held together; type names are unique across it.

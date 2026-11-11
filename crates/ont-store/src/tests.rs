@@ -221,6 +221,46 @@ fn seed_and_append_roll_back_domain_namespace_and_invalid_scope_failures() {
     }
 }
 #[test]
+fn schema_only_change_kinds_refused_in_both_store_modes() {
+    fn counts(store: &Store) -> (i64, i64) {
+        let objects: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM objects", [], |r| r.get(0))
+            .unwrap();
+        let observations: i64 = store
+            .connection
+            .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
+            .unwrap();
+        (objects, observations)
+    }
+    for mode in [StoreMode::Education, StoreMode::Program] {
+        let mut store = memory(mode);
+        let item = object(mode, "root");
+        store.seed(std::slice::from_ref(&item), &[]).unwrap();
+        let before = counts(&store);
+        for (change, revision) in [
+            (Change::Update, "r-update"),
+            (Change::Refresh, "r-refresh"),
+            (Change::Retraction, "r-retraction"),
+        ] {
+            let mut append = correction(&item, revision);
+            append.observation.change = change.clone();
+            assert!(
+                append.observation.validate().is_ok(),
+                "{change:?} must be valid by Observation::validate"
+            );
+            assert_eq!(
+                store.append_batch(std::slice::from_ref(&append)),
+                Err(Error::InvalidEvidence),
+                "mode version {} change {change:?}",
+                mode.version()
+            );
+            assert_eq!(counts(&store), before);
+        }
+        assert_eq!(read(&mut store, &item), Some(item));
+    }
+}
+#[test]
 fn program_history_preserves_order_scope_and_revision_conflicts_atomically() {
     let mut store = Store::memory_program().unwrap();
     let item = object(StoreMode::Program, "root");
