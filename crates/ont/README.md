@@ -2,6 +2,23 @@
 
 The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `action list|validate|apply` over a format 3 store.
 
+`describe` lists readable views with their `name`, `args` and `object_type`,
+including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
+for `describe` and `action list`; commands with required fields report the first
+missing field. Reference search filters require a full Id, obtainable by searching
+the referenced type. Refusals may include a top-level `hint`; submission hints use
+fixed recovery text selected by failed criterion codes (unknown codes get a generic
+repair), without request values. File and commit installs refuse symbolic-link store paths
+with `store_path_is_symlink` and field `--store`; the creating SQLite open uses
+`SQLITE_OPEN_NOFOLLOW` against a swapped final path. Parent-directory symlinks are
+outside this guarantee. Default-store aliases retain
+`install_requires_commit`. Git provenance strips userinfo only when its host boundary is
+certain. Raw-slash credentials and ambiguous port/path-`@` forms use the checkout
+path as provenance instead; `strip_credentials` returns `None` for ambiguity.
+Scp-like userinfo requires exactly one `@` and no `/` before the first `:`;
+a `:` before the first `@` falls back rather than assuming a password boundary.
+Ordinary ports and local paths remain intact.
+
 ## actions
 - Requests are one JSON object on stdin, one JSON line on stdout; exit 0 ok, 2 refused, 1 internal. `ont [--store PATH] [--client NAME] action list` takes `{"op":"list_actions","domain"?}` and lists each granted action type with its parameters (name, type, required, allowed values), criteria codes with messages, and the object types its rules edit. `action validate` takes `{"op":"validate_action","action_type","parameters":{…},"agent"?,"session"?,"request_id"?}` and answers `valid`, every criterion with `passed`, `basis` (the heads read with their revisions), `edits` (what apply would write; with a `request_id`, the same revisions apply would write) and the schema pin in the envelope; it writes nothing. `action apply` takes the same fields plus `"expected":[{"id","revision"}]?` and `"request_id"?`.
 - Apply runs in ONE IMMEDIATE transaction: grant check (`action_forbidden`), parameter typing (`invalid_parameter` with the parameter name), every head named in `expected` re-read and compared (`revision_conflict` naming the id), every criterion re-evaluated (`submission_criteria` with the failed codes and their declared messages), action id allocated, the observations of every rule appended, the `action_log` row inserted, commit; then the `edits.jsonl` append. When `expected` is absent, the transaction itself still guarantees that the criteria were evaluated on the heads it wrote against, because both happen inside the same IMMEDIATE transaction.

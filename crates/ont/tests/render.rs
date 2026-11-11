@@ -1036,3 +1036,58 @@ fn expect_blocks_refuses_write_and_section_combinations_without_writing() {
         assert_eq!(std::fs::read(&file).unwrap(), original);
     }
 }
+
+#[test]
+fn describe_discovers_readable_views_and_arguments_on_cli_and_mcp() {
+    let t = Temp::new();
+    let mut schema = schema();
+    schema["object_types"]["hidden"] = json!({"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{"title":{"type":"string"}}});
+    schema["views"]["hidden_view"] = json!({"object_type":"hidden","order":[{"property":"title","direction":"asc"}],"columns":[{"header":"Title","property":"title"}]});
+    t.install(schema);
+    let expected = json!([
+        {"domain":"board","name":"items","args":[],"object_type":"item"},
+        {"domain":"board","name":"named_items","args":["title"],"object_type":"item"}
+    ]);
+    for input in [
+        json!({}),
+        json!({"domain":"board"}),
+        json!({"object_type":"item"}),
+    ] {
+        let (code, answer) = t.run(&["describe"], input.clone());
+        assert_eq!(code, 0, "{answer}");
+        assert_eq!(answer["result"]["views"], expected);
+        let config = ont::mcp::Config {
+            store: t.0.join("store.sqlite"),
+            now: Some(1000),
+            client: "test".into(),
+        };
+        let mut server = ont::mcp::Server::new(config, &ont::cli::execute);
+        let response = server.handle_line(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ont_describe","arguments":input}}).to_string().as_bytes()).unwrap();
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let body: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(body["result"]["views"], expected);
+    }
+    assert_eq!(
+        t.run(&["describe"], json!({"object_type":"hidden"})).1["result"]["views"],
+        json!([])
+    );
+    let (_, help) = t.run(&["help"], json!({}));
+    let describe = help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["command"] == "describe")
+        .unwrap();
+    assert_eq!(
+        describe["fields"],
+        "op?: describe|null; domain?: string|null; object_type?: string|null"
+    );
+    assert!(
+        describe["notes"]
+            .as_str()
+            .unwrap()
+            .contains("lists views and args")
+    );
+}

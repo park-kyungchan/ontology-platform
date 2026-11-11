@@ -235,6 +235,12 @@ impl Checker<'_> {
             if let Err(v) = self.set.validate_fields(self.object_type, &fields)
                 && v.code == ont_core::schema::codes::WRONG_VALUE_TYPE
             {
+                if matches!(def.ty, PropertyType::Ref(_)) && value.is_string() {
+                    return Err(Refusal::input("wrong_value_type", "/where",
+                        "filter value must satisfy the declared property type; prefix requires a string")
+                        .with("hint", json!("A reference filter takes the full Id object with object_type, namespace and native_key; search on the referenced type returns it."))
+                        .into());
+                }
                 return Err(refuse_property("wrong_value_type", property));
             }
         }

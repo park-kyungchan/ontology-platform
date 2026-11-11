@@ -150,7 +150,12 @@ fn install_at_default(
     default: &std::path::Path,
 ) -> Result<Answer, Failure> {
     if same_store_path(&ctx.store, default) {
-        return Err(Refusal::new("install_requires_commit").into());
+        return Err(Refusal::input(
+            "install_requires_commit",
+            "--store",
+            "default store schema install requires a merged commit",
+        )
+        .into());
     }
     if let Some(repo) = &req.source_repository
         && !valid_slug(repo)
@@ -192,17 +197,19 @@ pub fn install_commit(ctx: &Context, req: &CommitInstallRequest) -> Result<Answe
     )
 }
 
-fn install_bytes(
-    ctx: &Context,
-    bytes: &[u8],
-    source_repository: Option<String>,
-    source_commit: Option<String>,
-    source_path: Option<String>,
-) -> Result<Answer, Failure> {
+// Both install forms reach this single creating open. The metadata check
+// provides a field refusal; SQLite NOFOLLOW at open_file closes the swap window.
+fn open_install_store(ctx: &Context, bytes: &[u8]) -> Result<(Store, bool), Failure> {
+    if std::fs::symlink_metadata(&ctx.store).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Refusal::input(
+            "store_path_is_symlink",
+            "--store",
+            "schema install requires a store path that is not a symbolic link",
+        )
+        .into());
+    }
     let store_exists = ctx.store.exists();
-    let mut store = if store_exists {
-        st!(Store::open_schema(&ctx.store))
-    } else {
+    if !store_exists {
         // Check first; a refused check must not create a store.
         check_outcome(bytes, &BTreeSet::new(), Vec::new(), false)?;
         let parent = ctx.store.parent();
@@ -223,8 +230,18 @@ fn install_bytes(
                 return Err(Failure::Internal(crate::internal!("store_create_failed")));
             }
         }
-        st!(Store::open_schema(&ctx.store))
-    };
+    }
+    Ok((st!(Store::open_schema(&ctx.store)), store_exists))
+}
+
+fn install_bytes(
+    ctx: &Context,
+    bytes: &[u8],
+    source_repository: Option<String>,
+    source_commit: Option<String>,
+    source_path: Option<String>,
+) -> Result<Answer, Failure> {
+    let (mut store, store_exists) = open_install_store(ctx, bytes)?;
     let set = st!(store.schema_set()).clone();
     let checked = match Schema::check_bytes(bytes, &others_for(&set, &candidate_domain(bytes))) {
         Ok(c) => c,
@@ -414,7 +431,7 @@ pub(crate) fn schema_input_refusal(
         "invalid_name"
             if matches!(
                 v.pointer.split('/').collect::<Vec<_>>().as_slice(),
-                ["", "action_types", _, "parameters", _]
+                ["", "action_types", _, "parameters", "now"]
             ) =>
         {
             "1 to 64 ASCII characters: lowercase letter first; then lowercase letters, digits or underscore; now is reserved for action parameters"
@@ -521,7 +538,7 @@ mod tests {
             };
             assert!(same_store_path(&ctx.store, &default), "{alias}");
             assert!(
-                matches!(install_at_default(&ctx, &req, &default), Err(Failure::Refused(r)) if r.code == "install_requires_commit")
+                matches!(install_at_default(&ctx, &req, &default), Err(Failure::Refused(r)) if r.code == "install_requires_commit" && r.extra["field"] == "--store")
             );
             assert_eq!(std::fs::read(&default).unwrap(), before);
             assert!(!root.join("real/backup").exists());

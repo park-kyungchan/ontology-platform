@@ -212,6 +212,11 @@ fn read_request(stdin: impl Read) -> Result<Vec<u8>, Refusal> {
             "readable JSON request of at most 65536 bytes",
         ));
     }
+    // Let typed parsing report the first required field for an empty request;
+    // optional-only requests use their ordinary defaults.
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        bytes = b"{}".to_vec();
+    }
     Ok(bytes)
 }
 

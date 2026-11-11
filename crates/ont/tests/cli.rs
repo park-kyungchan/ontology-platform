@@ -747,10 +747,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
         b"",
     );
     assert_eq!(code, 0, "{ans}");
-    assert_eq!(
-        ans["result"]["source_repository"],
-        "example.com:park/repo.git"
-    );
+    assert_eq!(ans["result"]["source_repository"], repo);
     assert_eq!(ans["result"]["source_commit"], commit);
     assert_eq!(ans["result"]["source_path"], "ontology/work.schema.json");
     // Same bytes installed twice by commit are idempotent.
@@ -766,7 +763,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
     assert_eq!(domain["domain"], "work");
     assert_eq!(domain["version"], 1);
     assert_eq!(domain["sha256"], sha256_hex(EXAMPLE));
-    assert_eq!(domain["repository"], "example.com:park/repo.git");
+    assert_eq!(domain["repository"], repo);
     assert_eq!(domain["commit"], commit);
     assert_eq!(domain["path"], "ontology/work.schema.json");
 }
@@ -936,4 +933,271 @@ fn commit_oversize_refuses_without_a_store() {
     );
     assert_eq!((code, ans["code"].as_str()), (2, Some("invalid_request")));
     assert!(!std::path::Path::new(&t.store()).exists());
+}
+
+#[test]
+fn empty_stdin_defaults_optional_requests_and_names_required_fields() {
+    let t = Temp::new();
+    assert_eq!(install_example(&t).0, 0);
+    for bytes in [&b""[..], &b" \t\r\n"[..]] {
+        for command in [&["describe"][..], &["action", "list"][..]] {
+            let store = t.store();
+            let mut args = vec!["--store", &store];
+            args.extend_from_slice(command);
+            assert_eq!(run(&args, bytes), run(&args, b"{}"));
+            assert_eq!(run(&args, bytes).0, 0);
+        }
+        for (command, field) in [
+            (&["get"][..], "/id"),
+            (&["search"][..], "/object_type"),
+            (&["render"][..], "/view"),
+            (&["action", "validate"][..], "/action_type"),
+            (&["action", "apply"][..], "/action_type"),
+        ] {
+            let store = t.store();
+            let mut args = vec!["--store", &store];
+            args.extend_from_slice(command);
+            let (code, answer) = run(&args, bytes);
+            assert_eq!(code, 2, "{answer}");
+            assert_eq!(answer["code"], "invalid_request");
+            assert_eq!(answer["field"], field, "{answer}");
+        }
+    }
+}
+
+#[test]
+fn file_install_refuses_dangling_and_existing_store_links() {
+    let t = Temp::new();
+    let file = t.file("example.json", EXAMPLE);
+    let target = t.0.join("target.sqlite");
+    let link = t.0.join("link.sqlite");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for existing in [false, true] {
+        if existing {
+            assert_eq!(
+                run(
+                    &[
+                        "--store",
+                        target.to_str().unwrap(),
+                        "schema",
+                        "install",
+                        &file
+                    ],
+                    b""
+                )
+                .0,
+                0
+            );
+        }
+        let before = std::fs::read(&target).ok();
+        let (code, answer) = run(
+            &[
+                "--store",
+                link.to_str().unwrap(),
+                "schema",
+                "install",
+                &file,
+            ],
+            b"",
+        );
+        assert_eq!(code, 2, "{answer}");
+        assert_eq!(answer["code"], "store_path_is_symlink");
+        assert_eq!(answer["field"], "--store");
+        assert_eq!(std::fs::read(&target).ok(), before);
+    }
+    assert_eq!(
+        run(
+            &[
+                "--store",
+                target.to_str().unwrap(),
+                "schema",
+                "install",
+                &file
+            ],
+            b""
+        )
+        .0,
+        0
+    );
+}
+
+// Each hostile environment is confined to a child test process; the parallel
+// test runner's environment never changes (and no unsafe set_var is needed).
+#[test]
+fn git_env_read_child() {
+    let Some(repo) = std::env::var_os("ONT_TEST_GIT_REPO") else {
+        return;
+    };
+    let commit = std::env::var("ONT_TEST_GIT_COMMIT").unwrap();
+    let got = ont::gitread::read_schema(
+        std::path::Path::new(&repo),
+        &commit,
+        "ontology/work.schema.json",
+    )
+    .unwrap();
+    assert_eq!(got.bytes, EXAMPLE);
+    assert_eq!(
+        got.repository,
+        std::path::Path::new(&repo).display().to_string()
+    );
+}
+
+#[test]
+fn git_reads_committed_bytes_despite_every_local_environment_override() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let names = git(
+        std::path::Path::new(&repo),
+        &["rev-parse", "--local-env-vars"],
+    );
+    let mut hostile: BTreeMap<String, String> = names
+        .lines()
+        .map(|s| (s.into(), "/absent-o17b-hostile".into()))
+        .collect();
+    hostile.extend([
+        (
+            "GIT_CONFIG_PARAMETERS".into(),
+            "'core.repositoryformatversion=999'".into(),
+        ),
+        ("GIT_CONFIG_COUNT".into(), "1".into()),
+        (
+            "GIT_CONFIG_KEY_0".into(),
+            "core.repositoryformatversion".into(),
+        ),
+        ("GIT_CONFIG_VALUE_0".into(), "999".into()),
+        ("GIT_OBJECT_DIRECTORY".into(), "/absent-o17b-objects".into()),
+    ]);
+    for variables in hostile
+        .iter()
+        .map(|(k, v)| BTreeMap::from([(k.clone(), v.clone())]))
+        .chain(std::iter::once(hostile.clone()))
+    {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "git_env_read_child", "--nocapture"])
+            .env("ONT_TEST_GIT_REPO", &repo)
+            .env("ONT_TEST_GIT_COMMIT", &commit)
+            .envs(&variables)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "variables {:?}: {} {}",
+            variables.keys(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+    }
+}
+
+#[test]
+fn provenance_records_only_certain_remotes_or_checkout_fallback() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    for (remote, expected) in [
+        ("https://host:443/p@n", repo.as_str()),
+        ("https://host:8443/@scope/repo.git", repo.as_str()),
+        ("https://u:12/34@h/x", repo.as_str()),
+        ("https://u:p/w@x/y@h/z", repo.as_str()),
+        ("user:p@w/x@host:path", repo.as_str()),
+        ("/a@b/c:d", "/a@b/c:d"),
+        ("git@host:path", "host:path"),
+        ("user:password@host:path", repo.as_str()),
+        ("ssh://user@host:22/x", "ssh://host:22/x"),
+        ("https://host:443/x", "https://host:443/x"),
+        ("https://[::1]:443/x", "https://[::1]:443/x"),
+        ("ssh://user:pw@[::1]:22/x", "ssh://[::1]:22/x"),
+        ("file:///a@b/c:d", "file:///a@b/c:d"),
+    ] {
+        git(
+            std::path::Path::new(&repo),
+            &["config", "remote.origin.url", remote],
+        );
+        let got = ont::gitread::read_schema(
+            std::path::Path::new(&repo),
+            &commit,
+            "ontology/work.schema.json",
+        )
+        .unwrap();
+        assert_eq!(got.repository, expected, "remote={remote}");
+        assert_eq!(got.bytes, EXAMPLE);
+    }
+}
+
+#[test]
+fn commit_install_refuses_dangling_and_existing_store_links() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    let target = t.0.join("target.sqlite");
+    let link = t.0.join("link.sqlite");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    for existing in [false, true] {
+        if existing {
+            assert_eq!(
+                run(
+                    &commit_install_args(
+                        target.to_str().unwrap(),
+                        &repo,
+                        &commit,
+                        "ontology/work.schema.json"
+                    ),
+                    b""
+                )
+                .0,
+                0
+            );
+        }
+        let before = std::fs::read(&target).ok();
+        let (exit, answer) = run(
+            &commit_install_args(
+                link.to_str().unwrap(),
+                &repo,
+                &commit,
+                "ontology/work.schema.json",
+            ),
+            b"",
+        );
+        assert_eq!(exit, 2, "{answer}");
+        assert_eq!(answer["code"], "store_path_is_symlink");
+        assert_eq!(answer["field"], "--store");
+        assert_eq!(std::fs::read(&target).ok(), before);
+    }
+    assert_eq!(
+        run(
+            &commit_install_args(
+                target.to_str().unwrap(),
+                &repo,
+                &commit,
+                "ontology/work.schema.json"
+            ),
+            b""
+        )
+        .0,
+        0
+    );
+}
+
+#[test]
+fn scp_provenance_strips_certain_userinfo_and_falls_back_on_password_shape() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    for (remote, expected) in [
+        ("git@host:path", "host:path"),
+        ("user:pass@host:path", repo.as_str()),
+        ("user@host:a@b", "host:a@b"),
+        ("host:path", "host:path"),
+        ("user@[::1]:path", "[::1]:path"),
+    ] {
+        git(
+            std::path::Path::new(&repo),
+            &["config", "remote.origin.url", remote],
+        );
+        let got = ont::gitread::read_schema(
+            std::path::Path::new(&repo),
+            &commit,
+            "ontology/work.schema.json",
+        )
+        .unwrap();
+        assert_eq!(got.repository, expected, "remote={remote}");
+    }
 }

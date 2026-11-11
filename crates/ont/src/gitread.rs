@@ -33,40 +33,49 @@ pub fn valid_repo_path(path: &str) -> bool {
         .any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Remove any userinfo (a credential part) from a remote URL.
-pub fn strip_credentials(url: &str) -> String {
+/// Return a remote only when the credential boundary is certain; None makes
+/// repository_of record the checkout path. Scp-like userinfo requires exactly
+/// one @ and no / before the first colon; a colon before the first @ is
+/// ambiguous and returns None, rather than guessing a host or exposing a password.
+pub fn strip_credentials(url: &str) -> Option<String> {
     if let Some(scheme) = url.find("://") {
         let prefix_end = scheme + 3;
         let rest = &url[prefix_end..];
         let end = rest.find('/').unwrap_or(rest.len());
         let authority = &rest[..end];
-        let at = authority.rfind('@').or_else(|| {
-            // Recover malformed raw-slash passwords, while leaving a host
-            // with a numeric port (and @ in its path) untouched.
-            let (_, password) = authority.split_once(':')?;
-            if authority.starts_with('[') || password.bytes().all(|b| b.is_ascii_digit()) {
+        let path = &rest[end..];
+        if let Some(at) = authority.rfind('@') {
+            // A colon-bearing userinfo plus a later @ could instead be a
+            // password spanning raw slashes: the remaining host is uncertain.
+            if authority[at + 1..].is_empty()
+                || (authority[..at].contains(':') && path.contains('@'))
+            {
                 return None;
             }
-            let first_at = rest.find('@')?;
-            let host_end = rest[first_at..]
-                .find('/')
-                .map_or(rest.len(), |i| first_at + i);
-            rest[..host_end].rfind('@')
-        });
-        if let Some(at) = at {
-            return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
+            return Some(format!("{}{}", &url[..prefix_end], &rest[at + 1..]));
         }
-    } else if let Some(first_at) = url.find('@') {
-        // The host separator follows userinfo; @ in the repository path
-        // belongs to the path, not to the password.
-        if let Some(colon) = url[first_at..].find(':') {
-            let host_end = first_at + colon;
-            if let Some(at) = url[..host_end].rfind('@') {
-                return url[at + 1..].to_string();
-            }
+        if !authority.starts_with('[') && authority.contains(':') && path.contains('@') {
+            return None;
         }
+    } else if !url.starts_with('/')
+        && !url.starts_with("./")
+        && !url.starts_with("../")
+        && let Some(first_at) = url.find('@')
+        && let Some(first_colon) = url.find(':')
+    {
+        if first_colon < first_at {
+            return None;
+        }
+        let host_part = &url[..first_colon];
+        if host_part.contains('/')
+            || host_part.contains('\\')
+            || host_part.bytes().filter(|b| *b == b'@').count() != 1
+        {
+            return None;
+        }
+        return Some(url[first_at + 1..].to_string());
     }
-    url.to_string()
+    Some(url.to_string())
 }
 
 struct GitOut {
@@ -141,8 +150,10 @@ fn repository_of(checkout: &Path) -> String {
         && out.success
     {
         let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !url.is_empty() {
-            return strip_credentials(&url);
+        if !url.is_empty()
+            && let Some(remote) = strip_credentials(&url)
+        {
+            return remote;
         }
     }
     checkout.display().to_string()
@@ -216,28 +227,53 @@ pub fn read_schema(checkout: &Path, commit: &str, path: &str) -> Result<GitSchem
 mod tests {
     use super::*;
     #[test]
+    fn ambiguous_credentials_are_not_returned_to_future_callers() {
+        for remote in [
+            "https://u:12/34@h/x",
+            "https://u:p/w@x/y@h/z",
+            "user:p@w/x@host:path",
+            "user:pass@host:path",
+        ] {
+            assert_eq!(
+                serde_json::to_value(strip_credentials(remote))
+                    .unwrap_or(serde_json::Value::Bool(false)),
+                serde_json::Value::Null
+            );
+        }
+    }
+    #[test]
     fn credentials_are_stripped_and_paths_checked() {
         for (remote, stripped) in [
             (
-                "https://user:secret@example.com/a/b.git",
                 "https://example.com/a/b.git",
+                Some("https://example.com/a/b.git"),
             ),
-            ("https://example.com/a/b.git", "https://example.com/a/b.git"),
-            ("git@example.com:a/b.git", "example.com:a/b.git"),
-            ("user:pass@host:path", "host:path"),
-            ("https://user:pa/ss@host/path", "https://host/path"),
-            ("user:pa/ss@host:path", "host:path"),
-            ("https://host/path@name", "https://host/path@name"),
-            ("https://TOKEN@host/o/r@x", "https://host/o/r@x"),
-            ("user:pw@host:org/re@po", "host:org/re@po"),
-            ("https://host:443/p@n", "https://host:443/p@n"),
-            ("https://user:p@ss@host/x", "https://host/x"),
-            ("ssh://user:pw@host:22/x", "ssh://host:22/x"),
-            ("user:p@ss@host:org/re@po", "host:org/re@po"),
-            ("https://user:pa/ss@host/o/r@x", "https://host/o/r@x"),
-            ("https://[::1]:443/p@n", "https://[::1]:443/p@n"),
+            ("git@example.com:a/b.git", Some("example.com:a/b.git")),
+            ("user:pass@host:path", None),
+            ("user:pa/ss@host:path", None),
+            ("https://host/path@name", Some("https://host/path@name")),
+            ("https://TOKEN@host/o/r@x", Some("https://host/o/r@x")),
+            ("user:pw@host:org/re@po", None),
+            ("https://host:443/p@n", None),
+            ("https://user:p@ss@host/x", Some("https://host/x")),
+            ("ssh://user:pw@host:22/x", Some("ssh://host:22/x")),
+            ("user:p@ss@host:org/re@po", None),
+            ("https://[::1]:443/p@n", Some("https://[::1]:443/p@n")),
+            ("https://u:12/34@h/x", None),
+            ("https://u:12/34@h", None),
+            ("https://host:443/p@n/x", None),
+            ("./a@b/c:d", Some("./a@b/c:d")),
+            ("/a@b/c:d", Some("/a@b/c:d")),
+            ("git@host:path", Some("host:path")),
+            ("ssh://user@host:22/x", Some("ssh://host:22/x")),
+            ("https://host:443/x", Some("https://host:443/x")),
+            ("ssh://user:password@[::1]:22/x", Some("ssh://[::1]:22/x")),
         ] {
-            assert_eq!(strip_credentials(remote), stripped, "remote: {remote}");
+            assert_eq!(
+                strip_credentials(remote).as_deref(),
+                stripped,
+                "remote: {remote}"
+            );
         }
         assert!(valid_commit("843195b82f8041edcfc585aa8198bd4dc1558b3c"));
         assert!(!valid_commit("843195B82F8041EDCFC585AA8198BD4DC1558B3C"));

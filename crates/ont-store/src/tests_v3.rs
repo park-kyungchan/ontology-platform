@@ -1513,3 +1513,21 @@ fn open_schema_existing_writable_writes_but_never_creates_or_initialises() {
     install(&mut store, &work_bytes(2), 101);
     assert_eq!(store.schema_pins().unwrap()["work"].version, 2);
 }
+
+#[test]
+fn creating_sqlite_open_refuses_final_symlink_at_open_time() {
+    let temp = Temp::new();
+    let target = temp.0.join("target.sqlite");
+    let link = temp.0.join("link.sqlite");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    // Bypass any CLI precheck: exercise the creating SQLite open itself.
+    for existing in [false, true] {
+        if existing {
+            drop(Store::open_schema(&target).unwrap());
+        }
+        let before = std::fs::read(&target).ok();
+        assert!(open_file(&link).is_err());
+        assert_eq!(std::fs::read(&target).ok(), before);
+    }
+    assert!(open_file(&target).is_ok());
+}
