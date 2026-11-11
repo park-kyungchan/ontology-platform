@@ -35,20 +35,26 @@ pub fn valid_repo_path(path: &str) -> bool {
 
 /// Remove any userinfo (a credential part) from a remote URL.
 pub fn strip_credentials(url: &str) -> String {
-    if let Some(scheme_end) = url.find("://") {
-        let rest = &url[scheme_end + 3..];
-        let authority_end = rest.find('/').unwrap_or(rest.len());
-        let authority = &rest[..authority_end];
-        if let Some(at) = authority.rfind('@') {
-            return format!("{}{}", &url[..scheme_end + 3], &rest[at + 1..]);
-        }
-        return url.to_string();
+    let prefix_end = url.find("://").map_or(0, |i| i + 3);
+    let rest = &url[prefix_end..];
+    // Use the last @, including malformed userinfo containing a raw slash.
+    // Never retain a credential merely because its password is not URL-encoded.
+    if let Some(at) = rest.rfind('@')
+        && ((prefix_end > 0 && (!rest[..at].contains('/') || rest[..at].contains(':')))
+            || (prefix_end == 0
+                && rest[at + 1..]
+                    .split('/')
+                    .next()
+                    .is_some_and(|host| host.contains(':'))))
+    {
+        return format!("{}{}", &url[..prefix_end], &rest[at + 1..]);
     }
     url.to_string()
 }
 
 struct GitOut {
     success: bool,
+    code: Option<i32>,
     stdout: Vec<u8>,
 }
 
@@ -108,6 +114,7 @@ fn run_git(checkout: &Path, args: &[&str], limit: usize) -> Result<GitOut, GitFa
     }
     Ok(GitOut {
         success: status.success(),
+        code: status.code(),
         stdout,
     })
 }
@@ -146,7 +153,12 @@ pub fn read_schema(checkout: &Path, commit: &str, path: &str) -> Result<GitSchem
     )
     .map_err(GitFail::into_failure)?;
     if !ancestor.success {
-        return Err(Refusal::new("commit_not_merged").into());
+        return Err(Refusal::new(if ancestor.code == Some(1) {
+            "commit_not_merged"
+        } else {
+            "git_unavailable"
+        })
+        .into());
     }
     let shown = match run_git(
         checkout,
@@ -181,7 +193,17 @@ mod tests {
         );
         assert_eq!(
             strip_credentials("git@example.com:a/b.git"),
-            "git@example.com:a/b.git"
+            "example.com:a/b.git"
+        );
+        assert_eq!(strip_credentials("user:pass@host:path"), "host:path");
+        assert_eq!(
+            strip_credentials("https://user:pa/ss@host/path"),
+            "https://host/path"
+        );
+        assert_eq!(strip_credentials("user:pa/ss@host:path"), "host:path");
+        assert_eq!(
+            strip_credentials("https://host/path@name"),
+            "https://host/path@name"
         );
         assert!(valid_commit("843195b82f8041edcfc585aa8198bd4dc1558b3c"));
         assert!(!valid_commit("843195B82F8041EDCFC585AA8198BD4DC1558B3C"));
