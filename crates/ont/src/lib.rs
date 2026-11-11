@@ -34,6 +34,7 @@ pub mod index;
 pub mod mcp;
 pub mod principal;
 pub mod refusal;
+pub mod render;
 pub mod schema;
 pub mod search;
 pub(crate) mod sources;

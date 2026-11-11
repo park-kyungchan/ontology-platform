@@ -51,3 +51,62 @@ A domain server uses the library without the command: `Context::new(store_path, 
 - Tools, exactly four: `ont_describe`, `ont_get`, `ont_search`, `ont_index`. The arguments are the JSON object that the subcommand reads on stdin (for `ont_index`, the object `index` takes: `{"sources":[...]}`). Each call opens the store, runs the same operation as the subcommand, closes it and binds the principal for that call; the server never creates a store and holds nothing between calls. `ont_index` takes the same run lock (`index_busy`).
 - Result: `{"content":[{"type":"text","text":T}],"isError":B}`. `T` is the line the subcommand prints for the same request, store and `now`, without its trailing newline; an internal failure (exit 1, which prints no stdout) is `{"status":"internal","code":"<code>@<file>:<line>"}`. `isError` is true exactly when the subcommand's exit code would not be 0: a refusal, `source_failed`, an internal failure (a panic inside one call is contained and answered `panic@<file>:<line>`). There is no `structuredContent`.
 - Bounds: a request line over 1,048,576 bytes is answered `-32600` `request_too_large` and discarded as it is read; a `T` over 262,144 bytes (measured on the `text` bytes; the wire line is that text JSON-escaped and can be up to about twice as long) is replaced by the refusal `response_too_large` (with `bytes` and, for `ont_search`, `retry_with_smaller_limit`: true); `tools/list` is constant and at most 2,000 bytes.
+
+## Generated blocks
+
+A schema's optional `views` map declares a table over a type in the same domain.
+For example, the synthetic `render-board.json` test fixture declares:
+
+```json
+"items": {
+  "object_type": "item",
+  "order": [{"property": "rank", "direction": "asc"}],
+  "columns": [
+    {"header": "Key", "property": "$key"},
+    {"header": "Title", "property": "title"},
+    {"header": "Rank", "property": "rank"}
+  ]
+}
+```
+
+`filter` accepts the search grammar; a string `$title` takes the string argument
+`title`, declared in `args: ["title"]`. `limit` defaults to 200 (maximum 1000).
+`order` and `columns` must be nonempty. Order ties use the object key. Retracted
+objects are omitted; stale values have ` (stale)` appended. Unresolved knowledge
+states appear as `(missing)`, `(null)`, `(blank)`, `(unknown)`, `(not_performed)`.
+Cells escape pipes, line breaks and HTML comment delimiters. Rendering uses
+search admission and its 10,000-head bound, with no hidden-object totals.
+
+Three forms (use `--store` with a test store; omitting it selects the host store):
+
+```sh
+printf '%s\n' '{"op":"render","view":"items","args":{}}' | ont --store /tmp/demo/store.sqlite render
+ont --store /tmp/demo/store.sqlite render --write /tmp/demo/BOARD.md --section named_items --arg title=equal --preimage-dir /tmp/demo/preimages
+ont --store /tmp/demo/store.sqlite render --check /tmp/demo/BOARD.md
+```
+
+`--write` requires an existing regular file with exactly one matching, closed
+block. It saves the previous bytes in the existing preimage directory with mode
+0600 and a SHA-256 suffix, then renames a temporary file over the target, keeping
+its mode and all bytes outside the block. An identical block causes no write and
+answers `changed:false` with `preimage:null`. Argument values must be nonempty
+and contain only ASCII letters, digits, `.`, `_`, `:`, `/` or `-`; opening-line
+arguments are sorted by name. A check reports the opening line of each drifting,
+unknown or unclosed block and exits 2; a clean check exits 0.
+
+The `deterministic_order_ties_arguments_and_actions` test renders this exact block:
+
+```markdown
+<!-- ont:render items schema=board@1 -->
+| Key | Title | Rank |
+| --- | --- | --- |
+| a | equal | 2 |
+| b | equal | 2 |
+| z | last | 10 |
+<!-- /ont:render -->
+```
+
+An argument-bearing opening line has the form
+`<!-- ont:render named_items title=equal schema=board@1 -->`.
+More matching rows than the limit add a final table row containing
+`(+N more; limit L)` with the exact omitted count. No timestamp is generated.

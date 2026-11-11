@@ -1,0 +1,190 @@
+{
+  "format": "ontology-schema/v1",
+  "domain": "board",
+  "version": 1,
+  "namespace": {
+    "instance": "test",
+    "account": "root"
+  },
+  "object_types": {
+    "item": {
+      "owner": "ontology",
+      "primary_key": {
+        "from": "$action_id"
+      },
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "flag": {
+          "type": "boolean"
+        },
+        "ref": {
+          "type": {
+            "ref": "item"
+          }
+        },
+        "tags": {
+          "type": {
+            "array": "string"
+          }
+        },
+        "meta": {
+          "type": {
+            "struct": {
+              "x": "string"
+            }
+          }
+        },
+        "missing": {
+          "type": "string"
+        },
+        "null": {
+          "type": "string"
+        },
+        "blank": {
+          "type": "string"
+        },
+        "unknown": {
+          "type": "string"
+        },
+        "not_performed": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "action_types": {
+    "create_item": {
+      "parameters": {
+        "title": {
+          "type": "string",
+          "required": true
+        },
+        "rank": {
+          "type": "integer",
+          "required": true
+        }
+      },
+      "rules": [
+        {
+          "create_object": "item",
+          "set": {
+            "title": "$title",
+            "rank": "$rank"
+          }
+        }
+      ]
+    },
+    "modify_item": {
+      "parameters": {
+        "item": {
+          "type": {
+            "ref": "item"
+          },
+          "required": true
+        },
+        "title": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "rules": [
+        {
+          "modify_object": "item",
+          "set": {
+            "title": "$title"
+          }
+        }
+      ]
+    },
+    "delete_item": {
+      "parameters": {
+        "item": {
+          "type": {
+            "ref": "item"
+          },
+          "required": true
+        }
+      },
+      "rules": [
+        {
+          "delete_object": "item"
+        }
+      ]
+    }
+  },
+  "grants": [
+    {
+      "principal": "agent",
+      "read": [
+        "item"
+      ],
+      "actions": [
+        "create_item",
+        "modify_item",
+        "delete_item"
+      ]
+    }
+  ],
+  "views": {
+    "items": {
+      "object_type": "item",
+      "order": [
+        {
+          "property": "rank",
+          "direction": "asc"
+        }
+      ],
+      "columns": [
+        {
+          "header": "Key",
+          "property": "$key"
+        },
+        {
+          "header": "Title",
+          "property": "title"
+        },
+        {
+          "header": "Rank",
+          "property": "rank"
+        }
+      ]
+    },
+    "named_items": {
+      "object_type": "item",
+      "order": [
+        {
+          "property": "rank",
+          "direction": "asc"
+        }
+      ],
+      "columns": [
+        {
+          "header": "Key",
+          "property": "$key"
+        },
+        {
+          "header": "Title",
+          "property": "title"
+        },
+        {
+          "header": "Rank",
+          "property": "rank"
+        }
+      ],
+      "filter": {
+        "eq": [
+          "title",
+          "$title"
+        ]
+      },
+      "args": [
+        "title"
+      ]
+    }
+  }
+}
