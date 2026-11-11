@@ -1231,8 +1231,30 @@ fn bound_answer(after_a: String) -> Value {
         NOW,
     )
     .unwrap();
-    g.merge(git_population(&config, capture.population(), &bindings, BoundFake, || NOW).unwrap())
-        .unwrap();
+    let emitted: BTreeSet<Id> = g
+        .objects
+        .iter()
+        .filter(|o| {
+            o.id.object_type == "measurement"
+                && o.observations.first().is_some_and(|observation| {
+                    observation.fields.get("source_qualified")
+                        == Some(&Knowledge::Value(Value::Bool(true)))
+                })
+        })
+        .map(|o| o.id.clone())
+        .collect();
+    g.merge(
+        git_population(
+            &config,
+            capture.population(),
+            &bindings,
+            &emitted,
+            BoundFake,
+            || NOW,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let answer = render(
         g,
         config.policy().unwrap(),
@@ -1255,6 +1277,145 @@ fn v2_bound_endpoints_have_empty_gaps_and_qualified_attribution() {
     let attribution = &v["response"]["result"]["report"]["attributions"][0];
     assert_eq!(attribution["attribution"]["gaps"], json!([]));
     assert_eq!(attribution["source_qualified"], true);
+}
+fn git_gaps(g: &Graph) -> Value {
+    let m = g
+        .objects
+        .iter()
+        .find(|o| o.id.native_key == "git-exact-paths")
+        .unwrap();
+    match &m.observations[0].fields["attribution"] {
+        Knowledge::Value(v) => v["gaps"].clone(),
+        _ => panic!("attribution must be a value"),
+    }
+}
+fn bound_git(bindings: &[(v2::model::Identity, String, String)], emitted: &BTreeSet<Id>) -> Graph {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let config = bound_config(&f, "4".repeat(40));
+    git_population(
+        &config,
+        capture.population(),
+        bindings,
+        emitted,
+        BoundFake,
+        || NOW,
+    )
+    .unwrap()
+}
+#[test]
+fn v2_failed_repository_row_does_not_bind() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let capture = f.capture().unwrap();
+    assert!(capture.endpoint_bindings().is_empty());
+}
+#[test]
+fn v2_unqualified_repository_row_does_not_bind() {
+    let f = program::v2::tests::failed_repository_fixture();
+    let capture = f.capture().unwrap();
+    let bindings = capture.endpoint_bindings();
+    let emitted = BTreeSet::from([v2::legacy_measurement_id(
+        &namespace(false),
+        "synthetic-test",
+    )]);
+    assert_eq!(
+        endpoint_measurement(&bindings, &emitted, 42, "owner-b/same", &"5".repeat(40)),
+        None
+    );
+}
+#[test]
+fn v2_window_excluding_the_measurement_does_not_bind() {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let narrow = snapshots_v2(
+        &capture,
+        ReportWindow {
+            start: 0,
+            end: NOW - 10,
+        },
+        NOW,
+    )
+    .unwrap();
+    let emitted: BTreeSet<Id> = narrow
+        .objects
+        .iter()
+        .filter(|o| o.id.object_type == "measurement")
+        .map(|o| o.id.clone())
+        .collect();
+    assert!(!emitted.contains(&v2::legacy_measurement_id(
+        &namespace(false),
+        "synthetic-test"
+    )));
+    let bindings = capture.endpoint_bindings();
+    let g = bound_git(&bindings, &emitted);
+    assert!(
+        git_gaps(&g)
+            .as_array()
+            .unwrap()
+            .contains(&json!("endpoint_binding"))
+    );
+}
+#[test]
+fn v2_duplicate_rows_choose_latest_end_then_measurement_id() {
+    let mut f = program::v2::tests::fixture();
+    let mut f2 = program::v2::tests::fixture();
+    let mut request2: Value =
+        serde_json::from_slice(&f2.evidence["synthetic-test"]["request.json"]).unwrap();
+    request2["measurement_id"] = json!("synthetic-test-2");
+    f2.replace_artifact("request.json", request2);
+    f2.row["measurement_id"] = json!("synthetic-test-2");
+    let mut journal = serde_json::to_vec(&f.row).unwrap();
+    journal.push(b'\n');
+    journal.extend(serde_json::to_vec(&f2.row).unwrap());
+    journal.push(b'\n');
+    f.evidence.insert(
+        "synthetic-test-2".into(),
+        f2.evidence["synthetic-test"].clone(),
+    );
+    let capture = v2::Capture::recorded(
+        &journal,
+        &f.manifest,
+        f.evidence.clone(),
+        NOW + 1,
+        NOW + 2,
+        f.contract.clone(),
+    )
+    .unwrap();
+    let bindings = capture.endpoint_bindings();
+    let a: Vec<_> = bindings
+        .iter()
+        .filter(|(identity, commit, _)| identity.github_id == 41 && commit == &"4".repeat(40))
+        .collect();
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].2, "synthetic-test-2");
+}
+#[test]
+fn v2_same_commit_with_a_different_repository_identity_does_not_bind() {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let bindings = capture.endpoint_bindings();
+    let emitted = BTreeSet::from([v2::legacy_measurement_id(
+        &namespace(false),
+        "synthetic-test",
+    )]);
+    assert_eq!(
+        endpoint_measurement(&bindings, &emitted, 999, "owner-a/same", &"4".repeat(40)),
+        None
+    );
+    assert_eq!(
+        endpoint_measurement(&bindings, &emitted, 41, "owner-x/same", &"4".repeat(40)),
+        None
+    );
+}
+#[test]
+fn v2_fully_unbound_case_keeps_endpoint_binding_gap() {
+    let g = bound_git(&[], &BTreeSet::new());
+    assert!(
+        git_gaps(&g)
+            .as_array()
+            .unwrap()
+            .contains(&json!("endpoint_binding"))
+    );
 }
 #[test]
 fn v2_one_unbound_endpoint_keeps_endpoint_binding_gap() {
