@@ -379,9 +379,16 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         );
         let view = match response {
             Ok(Response::Ok {
+                authorization_revision,
                 result: Output::Objects { mut objects },
-                ..
-            }) if objects.len() == 1 => objects.remove(0),
+            }) if objects.len() == 1 => {
+                // The same check as `get`: the answer's generation is the
+                // one the principal was bound under.
+                if authorization_revision != revision {
+                    return Err(Failure::Internal(internal!("authority_generation_changed")));
+                }
+                objects.remove(0)
+            }
             Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => continue,
             _ => return Err(Failure::Internal(internal!("authority_failure"))),
         };

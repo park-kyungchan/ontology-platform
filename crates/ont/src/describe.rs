@@ -149,7 +149,10 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                     "domain":domain,
                     "name":name,
                     "kind":src.kind,
-                    "options":src.options
+                    "options":src.options,
+                    "exclude_rule":src.options.get("exclude").map(|_| {
+                        "an exclude pattern that matches a directory excludes everything under it"
+                    })
                 }));
             }
         }

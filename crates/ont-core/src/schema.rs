@@ -61,6 +61,8 @@ pub mod codes {
     pub const INVALID_SOURCE_OPTION: &str = "invalid_source_option";
     pub const INVALID_GLOB: &str = "invalid_glob";
     pub const INVALID_TRANSFORM: &str = "invalid_transform";
+    pub const SOURCE_SCOPE_KEYS_UNMAPPED: &str = "source_scope_keys_unmapped";
+    pub const UNKNOWN_SOURCE_FIELD: &str = "unknown_source_field";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
         INVALID_VERSION,
@@ -112,6 +114,8 @@ pub mod codes {
         INVALID_SOURCE_OPTION,
         INVALID_GLOB,
         INVALID_TRANSFORM,
+        SOURCE_SCOPE_KEYS_UNMAPPED,
+        UNKNOWN_SOURCE_FIELD,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -358,6 +362,8 @@ pub struct Glob {
 }
 /// Longest glob text, in bytes.
 pub const MAX_GLOB_BYTES: usize = 4_096;
+/// Most `**` segments in one glob.
+pub const MAX_GLOB_ANY_DIRS: usize = 8;
 impl Glob {
     /// Refuses a relative glob, an empty segment, `.` or `..`, a NUL, any of
     /// `{ } [ ] \`, `**` mixed with other characters, and a final `**`.
@@ -392,7 +398,13 @@ impl Glob {
                 segments.push(GlobSegment::Literal(part.to_string()));
             }
         }
-        if matches!(segments.last(), Some(GlobSegment::AnyDirs)) {
+        if matches!(segments.last(), Some(GlobSegment::AnyDirs))
+            || segments
+                .iter()
+                .filter(|s| matches!(s, GlobSegment::AnyDirs))
+                .count()
+                > MAX_GLOB_ANY_DIRS
+        {
             return Err("invalid_glob");
         }
         Ok(Self {
@@ -415,17 +427,37 @@ impl Glob {
         segments_match(&self.segments, &parts)
     }
 }
+/// Time proportional to segments times parts: on a mismatch the matcher
+/// backs up only to the most recent `**`.
 fn segments_match(segments: &[GlobSegment], parts: &[&str]) -> bool {
-    match segments.split_first() {
-        None => parts.is_empty(),
-        Some((GlobSegment::AnyDirs, rest)) => {
-            (0..=parts.len()).any(|skip| segments_match(rest, &parts[skip..]))
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None;
+    while j < parts.len() {
+        match segments.get(i) {
+            Some(GlobSegment::AnyDirs) => {
+                star = Some((i, j));
+                i += 1;
+                continue;
+            }
+            Some(seg) if seg.matches(parts[j]) => {
+                i += 1;
+                j += 1;
+                continue;
+            }
+            _ => {}
         }
-        Some((seg, rest)) => match parts.split_first() {
-            Some((first, tail)) => seg.matches(first) && segments_match(rest, tail),
-            None => false,
-        },
+        match star {
+            Some((si, sj)) => {
+                i = si + 1;
+                j = sj + 1;
+                star = Some((si, sj + 1));
+            }
+            None => return false,
+        }
     }
+    segments[i..]
+        .iter()
+        .all(|s| matches!(s, GlobSegment::AnyDirs))
 }
 
 /// Which compiled file source a `SourceDef` is.
@@ -456,6 +488,19 @@ pub struct SourceOptionError {
 const MAX_HEAD_LINES: u64 = 10_000;
 const MAX_FRESH_FOR_S: u64 = 315_360_000;
 const MAX_GLOB_LIST: usize = 256;
+
+impl FileSourceKind {
+    /// The record fields (first pointer segments) this kind produces.
+    pub fn record_fields(self) -> &'static [&'static str] {
+        match self {
+            Self::MarkdownFields => &[
+                "path", "dir", "dir_path", "stem", "stem_id", "sha256", "size", "mtime", "line1",
+                "fields",
+            ],
+            Self::FileDigest => &["path", "sha256", "size", "mtime", "mode"],
+        }
+    }
+}
 
 impl SourceDef {
     /// `Ok(None)` for a kind that has no compiled file reader here.
@@ -1213,6 +1258,46 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 format!("{base}/owner/source"),
                 &mut out,
             );
+        }
+        if let Owner::Source(s) = &ty.owner
+            && let Some(Ok(Some(spec))) = schema.sources.get(s).map(SourceDef::file_spec)
+        {
+            if !schema.scope_keys.is_empty() {
+                v(
+                    codes::SOURCE_SCOPE_KEYS_UNMAPPED,
+                    format!("{base}/owner/source"),
+                    &mut out,
+                );
+            }
+            let first = |from: &str| -> Option<String> {
+                from.strip_prefix('/').map(|r| {
+                    r.split('/')
+                        .next()
+                        .unwrap_or("")
+                        .replace("~1", "/")
+                        .replace("~0", "~")
+                })
+            };
+            let known = spec.kind.record_fields();
+            let pk = &ty.primary_key.from;
+            if pk != "$action_id" && first(pk).is_some_and(|f| !known.contains(&f.as_str())) {
+                v(
+                    codes::UNKNOWN_SOURCE_FIELD,
+                    format!("{base}/primary_key/from"),
+                    &mut out,
+                );
+            }
+            for (pname, prop) in &ty.properties {
+                if let Some(from) = &prop.from
+                    && first(from).is_some_and(|f| !known.contains(&f.as_str()))
+                {
+                    v(
+                        codes::UNKNOWN_SOURCE_FIELD,
+                        format!("{base}/properties/{}/from", esc(pname)),
+                        &mut out,
+                    );
+                }
+            }
         }
         let pk = &ty.primary_key.from;
         if pk != "$action_id" && !(pk.starts_with('/') && pk.len() > 1) {
@@ -2067,6 +2152,20 @@ mod source_tests {
         assert!(!g.matches("/w/a/f10.md"));
         let g = Glob::parse("/w/a*b*c").unwrap();
         assert!(g.matches("/w/abc") && g.matches("/w/aXXbYYc") && !g.matches("/w/aXXbYY"));
+    }
+
+    #[test]
+    fn double_star_matching_is_polynomial_and_capped() {
+        // Eight `**` against a 64-segment path that does not match: the
+        // time bound (5 s) is generous; the old matcher took exponential time.
+        let glob = format!("/{}x", "**/".repeat(8));
+        let g = Glob::parse(&glob).unwrap();
+        let path = format!("/{}", vec!["a"; 64].join("/"));
+        let start = std::time::Instant::now();
+        assert!(!g.matches(&path));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert!(g.matches("/a/b/x"));
+        assert!(Glob::parse(&format!("/{}x", "**/".repeat(9))).is_err());
     }
 
     #[test]

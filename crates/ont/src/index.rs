@@ -96,6 +96,7 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
         }
     }
     let mut store = open_store(&ctx.store, true)?;
+    let _run_lock = take_run_lock(&ctx.store)?;
     let set = st!(store.schema_set()).clone();
     let revision = fresh_revision()?;
     // (domain, source) in the order to run.
@@ -181,6 +182,27 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
             result,
         }
     })
+}
+
+/// One `index` run at a time per store: an exclusive non-blocking advisory
+/// lock on `<store>.index.lock` (mode 0600), held until the returned file is
+/// dropped. A held lock is the refusal `index_busy`.
+fn take_run_lock(store: &std::path::Path) -> Result<std::fs::File, Failure> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut name = store.as_os_str().to_os_string();
+    name.push(".index.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(&name)
+        .map_err(|_| Failure::Internal(crate::internal!("index_lock_failed")))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Refusal::new("index_busy").into()),
+        Err(_) => Err(Failure::Internal(crate::internal!("index_lock_failed"))),
+    }
 }
 
 /// Run one source. The outer `Err` is a failure of the whole command (a busy
@@ -310,7 +332,9 @@ fn run_source(
                         (Change::Initial, None, n)
                     } else if obs.fields != m.fields {
                         (Change::Update, Some(obs.revision.clone()), n)
-                    } else if now > obs.fresh_until {
+                    } else if now > obs.fresh_until || obs.lineage.artifact_sha256 != m.sha256 {
+                        // Same values: a stale head, or bytes that differ
+                        // from the ones the head's lineage names.
                         (Change::Refresh, Some(obs.revision.clone()), n)
                     } else {
                         counts.unchanged += 1;

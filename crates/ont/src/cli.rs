@@ -152,13 +152,14 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
         ["describe"] => describe(ctx, &DescribeRequest::parse(&read_request(stdin)?)?),
         ["get"] => get(ctx, &GetRequest::parse(&read_request(stdin)?)?),
         ["backup"] => backup(ctx, &BackupRequest::default()),
-        ["index"] => index(
-            ctx,
-            &IndexRequest {
-                op: None,
-                sources: (!cli.sources.is_empty()).then(|| cli.sources.clone()),
-            },
-        ),
+        ["index"] => {
+            let request = if cli.sources.is_empty() {
+                json!({"op":"index"})
+            } else {
+                json!({"op":"index","sources":cli.sources})
+            };
+            index(ctx, &IndexRequest::parse(request.to_string().as_bytes())?)
+        }
         ["search"] => search(ctx, &SearchRequest::parse(&read_request(stdin)?)?),
         _ => Err(invalid_argument("command").into()),
     }

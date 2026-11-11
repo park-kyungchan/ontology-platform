@@ -423,7 +423,7 @@ fn one_failed_source_beside_a_good_one() {
 
 #[test]
 fn source_failures_have_located_causes() {
-    // key_unresolved, duplicate_key, schema_violation, scope_keys_unmapped,
+    // key_unresolved, duplicate_key, schema_violation,
     // source_kind_unsupported, fresh_until_overflow, too_many_records.
     let t = Temp::new();
     t.task("a", "# a\n");
@@ -456,12 +456,6 @@ fn source_failures_have_located_causes() {
         c.starts_with("schema_violation:wrong_value_type@/fields/state_sha256"),
         "{c}"
     );
-    let t = Temp::new();
-    t.task("a", "# a\n");
-    let mut s = schema(&t);
-    s["scope_keys"] = json!(["class_key"]);
-    s["grants"][0]["scope"] = json!({"class_key":"C1"});
-    assert_eq!(cause(&t, &s, 5), "scope_keys_unmapped@/scope_keys");
     let t = Temp::new();
     t.task("a", "# a\n");
     let mut s = schema(&t);
@@ -906,6 +900,38 @@ fn schema_check_refuses_bad_source_options_globs_and_transforms() {
             "/object_types/task/primary_key/transform"
         )
     );
+    // Source-owned types: scope keys and unknown record fields are refused
+    // at check time.
+    assert_eq!(
+        with(&|s| {
+            s["scope_keys"] = json!(["class_key"]);
+            s["grants"][0]["scope"] = json!({"class_key":"C1"});
+        }),
+        p(
+            "source_scope_keys_unmapped",
+            "/object_types/task/owner/source"
+        )
+    );
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["primary_key"]["from"] = json!("/nope")),
+        p(
+            "unknown_source_field",
+            "/object_types/task/primary_key/from"
+        )
+    );
+    assert_eq!(
+        with(
+            &|s| s["object_types"]["task"]["properties"]["owner_line"]["from"] = json!("/bogus/x")
+        ),
+        p(
+            "unknown_source_field",
+            "/object_types/task/properties/owner_line/from"
+        )
+    );
+    assert_eq!(
+        with(&|s| s["sources"]["task_states"]["glob"] = json!(format!("/a/{}f", "**/".repeat(9)))),
+        p("invalid_glob", "/sources/task_states/glob")
+    );
     // The new options are described.
     install(&t, &base);
     let (_, ans) = run(&["--store", &t.store(), "describe"], b"{}");
@@ -954,4 +980,184 @@ fn backup_keeps_three_and_reports_no_retention_failure() {
     }
     let dir = t.0.join("backup");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
+}
+
+#[test]
+fn a_replaced_glob_root_fails_the_source_and_retracts_nothing() {
+    let t = Temp::new();
+    for n in ["a", "b", "c"] {
+        t.task(n, "# x\n");
+    }
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    // `tasks` becomes a symlink to a directory that holds nothing.
+    let moved = t.0.join("moved");
+    std::fs::rename(t.tasks(), &moved).unwrap();
+    let empty = t.0.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    symlink(&empty, t.tasks()).unwrap();
+    let (code, ans) = index(&t, 11, &[]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_is_symlink");
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    let (_, ans) = search(&t, 11, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "b", "c"]);
+}
+
+#[test]
+fn file_digest_literal_paths_symlinked_parent_and_fifo() {
+    let t = Temp::new();
+    let real = t.0.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("f.txt"), "x").unwrap();
+    symlink(&real, t.0.join("linked")).unwrap();
+    let mut s = schema(&t);
+    s["sources"]["files"] = json!({"kind":"file_digest",
+        "paths":[t.0.join("linked/f.txt").display().to_string()],"fresh_for_s":60});
+    s["object_types"]["digest"] = json!({"owner":{"source":"files"},"primary_key":{"from":"/path"},
+        "properties":{"sha256":{"type":"string","required":true,"from":"/sha256"}}});
+    s["grants"][0]["read"] = json!(["task", "digest"]);
+    install(&t, &s);
+    let (code, ans) = index(&t, 1, &["--source", "files"]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_is_symlink");
+    // A FIFO is not a regular file; the run does not block.
+    let fifo = t.0.join("pipe");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut s2 = schema(&t);
+    s2["version"] = json!(2);
+    s2["sources"]["files"] = json!({"kind":"file_digest",
+        "paths":[fifo.display().to_string()],"fresh_for_s":60});
+    s2["object_types"]["digest"] = s["object_types"]["digest"].clone();
+    s2["grants"][0]["read"] = json!(["task", "digest"]);
+    let file = t.file("s2.json", &serde_json::to_vec(&s2).unwrap());
+    let (code, _) = run(&["--store", &t.store(), "schema", "install", &file], b"");
+    assert_eq!(code, 0);
+    let (code, ans) = index(&t, 2, &["--source", "files"]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "not_regular_file");
+}
+
+#[test]
+fn bytes_that_differ_outside_the_mapped_fields_refresh_the_lineage() {
+    let t = Temp::new();
+    t.task("a", "# a\nOwner: x\n");
+    let mut s = schema(&t);
+    s["object_types"]["task"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("state_sha256");
+    install(&t, &s);
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    t.task("a", "# a\nOwner: x\nunrelated prose\n");
+    let (_, ans) = index(&t, 11, &[]);
+    assert_eq!(appended(first_source(&ans)), [0, 0, 1, 0], "{ans}");
+    let (_, ans) = search(&t, 11, &json!({"object_type":"task"}));
+    let head = &ans["result"]["objects"][0]["head"];
+    assert_eq!(head["change"], "refresh");
+    let bytes = std::fs::read(t.tasks().join("a/STATE.md")).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        head["lineage"]["artifact_sha256"],
+        format!("{:x}", Sha256::digest(bytes))
+    );
+    // Unchanged bytes: nothing.
+    let (_, ans) = index(&t, 12, &[]);
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+}
+
+#[test]
+fn one_index_run_at_a_time_per_store() {
+    let t = Temp::new();
+    t.task("a", "# a\n");
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    let lock_path = format!("{}.index.lock", t.store());
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    held.try_lock().unwrap();
+    let (code, ans) = index(&t, 11, &[]);
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("index_busy")),
+        "{ans}"
+    );
+    // Search is not blocked by the lock.
+    assert_eq!(search(&t, 11, &json!({"object_type":"task"})).0, 0);
+    drop(held);
+    assert_eq!(index(&t, 12, &[]).0, 0);
+}
+
+#[test]
+fn same_second_changes_get_distinct_revisions_and_double_star_globs_index() {
+    let t = Temp::new();
+    t.task("a", "# one\n");
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 1000, &[]).0, 0);
+    for (text, rev) in [("# two\n", "r1@1000"), ("# one\n", "r2@1000")] {
+        t.task("a", text);
+        let (_, ans) = index(&t, 1000, &[]);
+        assert_eq!(appended(first_source(&ans)), [0, 1, 0, 0], "{ans}");
+        let (_, ans) = search(&t, 1000, &json!({"object_type":"task"}));
+        assert_eq!(ans["result"]["objects"][0]["head"]["revision"], rev);
+    }
+    // `**`: zero or more directories.
+    let t = Temp::new();
+    t.task("a/b", "# nested\n");
+    t.task("c", "# c\n");
+    std::fs::write(t.tasks().join("STATE.md"), "# top\n").unwrap();
+    let mut s = schema(&t);
+    s["sources"]["task_states"]["glob"] = json!(format!("{}/**/STATE.md", t.tasks().display()));
+    install(&t, &s);
+    let (code, ans) = index(&t, 5, &[]);
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(first_source(&ans)["records"], 3);
+    let (_, ans) = search(&t, 5, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["b", "c", "tasks"]);
+}
+
+#[test]
+fn filter_limits_and_none_counts_unresolved() {
+    let t = operator_fixture();
+    let mut deep = json!({"eq":["count",1]});
+    for _ in 0..9 {
+        deep = json!({"all":[deep]});
+    }
+    let (code, ans) = search(&t, 10, &json!({"object_type":"task","where":deep}));
+    assert_eq!((code, ans["code"].as_str()), (2, Some("filter_too_large")));
+    let many: Vec<i64> = (0..101).collect();
+    let (code, ans) = search(
+        &t,
+        10,
+        &json!({"object_type":"task","where":{"in":["count",many]}}),
+    );
+    assert_eq!((code, ans["code"].as_str()), (2, Some("filter_too_large")));
+    let (k, b) = matched(&t, json!({"none":[{"eq":["count",1]}]}));
+    assert_eq!(k, ["t2", "t3"]);
+    assert_eq!(b["unresolved_excluded"], 1);
+    assert_eq!(b["qualified"], false);
+}
+
+#[test]
+fn index_request_parse() {
+    use ont::index::IndexRequest;
+    let r = IndexRequest::parse(br#"{"op":"index","sources":["a","b"]}"#).unwrap();
+    assert_eq!(r.sources, Some(vec!["a".to_string(), "b".to_string()]));
+    assert!(IndexRequest::parse(b"{}").unwrap().sources.is_none());
+    assert!(IndexRequest::parse(br#"{"op":"get"}"#).is_err());
+    assert!(IndexRequest::parse(br#"{"sources":"a"}"#).is_err());
+    assert!(IndexRequest::parse(br#"{"x":1}"#).is_err());
 }

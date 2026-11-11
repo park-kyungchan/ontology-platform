@@ -9,7 +9,7 @@
 use ont_core::schema::{FileSourceKind, FileSourceSpec, Glob, GlobSegment};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -56,68 +56,141 @@ pub struct Listing {
     pub skipped_symlinks: usize,
 }
 
+/// The bounds of one source run. `Bounds::default()` is what `ont` uses;
+/// tests inject smaller ones.
+#[derive(Debug, Clone, Copy)]
+pub struct Bounds {
+    /// Directory entries one listing may look at (each directory is read
+    /// once per glob).
+    pub max_visited: usize,
+    pub max_records: usize,
+    /// Bytes read from all files of one run.
+    pub max_total_bytes: u64,
+    /// Retained parsed text (record JSON) of one run.
+    pub max_text_bytes: usize,
+}
+impl Default for Bounds {
+    fn default() -> Self {
+        Self {
+            max_visited: MAX_VISITED,
+            max_records: MAX_RECORDS,
+            max_total_bytes: 1024 * 1024 * 1024,
+            max_text_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
 /// Read every record of a file source.
 pub fn read_files(spec: &FileSourceSpec) -> Result<Listing, SourceError> {
-    let mut walker = Walker {
-        exclude: &spec.exclude,
-        found: BTreeSet::new(),
-        symlinks: BTreeSet::new(),
-        visited: 0,
-    };
+    read_files_with(spec, &Bounds::default())
+}
+
+pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing, SourceError> {
+    let mut found: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut symlinks: BTreeSet<PathBuf> = BTreeSet::new();
     for glob in &spec.globs {
-        walker.walk(Path::new("/"), glob.segments(), 0)?;
+        let mut walker = Walker {
+            exclude: &spec.exclude,
+            found: &mut found,
+            symlinks: &mut symlinks,
+            visited: 0,
+            max_visited: bounds.max_visited,
+            listed: BTreeMap::new(),
+            done: BTreeSet::new(),
+        };
+        walker.walk(Path::new("/"), glob.segments(), 0, true)?;
     }
-    if walker.found.len() > MAX_RECORDS {
+    if found.len() > bounds.max_records {
         return Err(SourceError::new("too_many_records", spec.globs[0].as_str()));
     }
     let mut records = Vec::new();
-    for path in &walker.found {
-        let Some(read) = read_one(path, spec)? else {
+    let (mut bytes, mut text) = (0u64, 0usize);
+    for path in &found {
+        let Some((record, size)) = read_one(path, spec)? else {
             continue;
         };
-        records.push(read);
+        bytes += size;
+        text += record.value.to_string().len();
+        if bytes > bounds.max_total_bytes {
+            return Err(SourceError::new(
+                "source_bytes_too_large",
+                path.display().to_string(),
+            ));
+        }
+        if text > bounds.max_text_bytes {
+            return Err(SourceError::new(
+                "source_text_too_large",
+                path.display().to_string(),
+            ));
+        }
+        records.push(record);
     }
     Ok(Listing {
         records,
-        skipped_symlinks: walker.symlinks.len(),
+        skipped_symlinks: symlinks.len(),
     })
 }
 
+type Entries = Vec<(String, PathBuf)>;
+
 struct Walker<'a> {
     exclude: &'a [Glob],
-    found: BTreeSet<PathBuf>,
-    symlinks: BTreeSet<PathBuf>,
+    found: &'a mut BTreeSet<PathBuf>,
+    symlinks: &'a mut BTreeSet<PathBuf>,
     visited: usize,
+    max_visited: usize,
+    /// Directories already read for this glob (each is read once).
+    listed: BTreeMap<PathBuf, Entries>,
+    /// `(directory, segments left)` pairs already walked.
+    done: BTreeSet<(PathBuf, usize)>,
 }
 impl Walker<'_> {
-    fn walk(&mut self, dir: &Path, segs: &[GlobSegment], depth: usize) -> Result<(), SourceError> {
+    fn excluded(&self, path: &Path) -> bool {
+        path.to_str()
+            .is_some_and(|p| self.exclude.iter().any(|g| g.matches(p)))
+    }
+
+    /// `root`: every segment before this one is a wildcard-free name.
+    fn walk(
+        &mut self,
+        dir: &Path,
+        segs: &[GlobSegment],
+        depth: usize,
+        root: bool,
+    ) -> Result<(), SourceError> {
         if depth > MAX_DEPTH {
             return Err(SourceError::new(
                 "listing_too_large",
                 dir.display().to_string(),
             ));
         }
+        if !self.done.insert((dir.to_path_buf(), segs.len())) {
+            return Ok(());
+        }
         let Some((seg, rest)) = segs.split_first() else {
             return Ok(());
         };
         match seg {
-            GlobSegment::Literal(name) => self.visit(&dir.join(name), rest, depth),
+            GlobSegment::Literal(name) => self.visit(&dir.join(name), rest, depth, root),
             GlobSegment::Pattern(_) => {
                 for (name, path) in self.entries(dir)? {
                     if seg.matches(&name) {
-                        self.visit(&path, rest, depth)?;
+                        self.visit(&path, rest, depth, false)?;
                     }
                 }
                 Ok(())
             }
             GlobSegment::AnyDirs => {
-                self.walk(dir, rest, depth)?;
+                self.walk(dir, rest, depth, false)?;
                 for (_, path) in self.entries(dir)? {
+                    if self.excluded(&path) {
+                        continue;
+                    }
                     let Some(meta) = lstat(&path)? else { continue };
                     if meta.file_type().is_symlink() {
                         self.symlinks.insert(path);
                     } else if meta.is_dir() {
-                        self.walk(&path, segs, depth + 1)?;
+                        self.walk(&path, segs, depth + 1, false)?;
                     }
                 }
                 Ok(())
@@ -125,9 +198,12 @@ impl Walker<'_> {
         }
     }
 
-    /// The entries of `dir` with UTF-8 names; a missing or non-directory
-    /// `dir` has none.
-    fn entries(&mut self, dir: &Path) -> Result<Vec<(String, PathBuf)>, SourceError> {
+    /// The entries of `dir` with UTF-8 names, read once per glob; a missing
+    /// or non-directory `dir` has none.
+    fn entries(&mut self, dir: &Path) -> Result<Entries, SourceError> {
+        if let Some(cached) = self.listed.get(dir) {
+            return Ok(cached.clone());
+        }
         let iter = match std::fs::read_dir(dir) {
             Ok(i) => i,
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => return Ok(Vec::new()),
@@ -142,7 +218,7 @@ impl Walker<'_> {
         let mut out = Vec::new();
         for entry in iter {
             self.visited += 1;
-            if self.visited > MAX_VISITED {
+            if self.visited > self.max_visited {
                 return Err(SourceError::new(
                     "listing_too_large",
                     dir.display().to_string(),
@@ -155,36 +231,50 @@ impl Walker<'_> {
             }
         }
         out.sort();
+        self.listed.insert(dir.to_path_buf(), out.clone());
         Ok(out)
     }
 
+    /// `literal`: the segment and every one before it are wildcard-free
+    /// names (the glob's root); a symlink there is a declaration error, not
+    /// something to skip.
     fn visit(
         &mut self,
         path: &Path,
         rest: &[GlobSegment],
         depth: usize,
+        literal: bool,
     ) -> Result<(), SourceError> {
         let last = rest.is_empty();
-        if last
-            && path
-                .to_str()
-                .is_some_and(|p| self.exclude.iter().any(|g| g.matches(p)))
-        {
+        // An exclude pattern that matches a path excludes it, and a directory
+        // it matches is not read: nothing under it is a candidate.
+        if self.excluded(path) {
             return Ok(());
         }
         let Some(meta) = lstat(path)? else {
             return Ok(());
         };
         if meta.file_type().is_symlink() {
+            if literal {
+                return Err(SourceError::new(
+                    "glob_root_is_symlink",
+                    path.display().to_string(),
+                ));
+            }
             self.symlinks.insert(path.to_path_buf());
             return Ok(());
         }
         if last {
             if meta.is_file() {
                 self.found.insert(path.to_path_buf());
+            } else if literal {
+                return Err(SourceError::new(
+                    "not_regular_file",
+                    path.display().to_string(),
+                ));
             }
         } else if meta.is_dir() {
-            self.walk(path, rest, depth + 1)?;
+            self.walk(path, rest, depth + 1, literal)?;
         }
         Ok(())
     }
@@ -204,28 +294,44 @@ fn lstat(path: &Path) -> Result<Option<std::fs::Metadata>, SourceError> {
     }
 }
 
-/// Read, hash and map one file. `None` when it vanished after the listing.
-fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<Record>, SourceError> {
+/// Read, hash and map one file; the byte count read comes with the record.
+/// `None` when it vanished after the listing. The file is read only through
+/// one descriptor that proves what was opened: opened with `O_NOFOLLOW |
+/// O_NONBLOCK`, a regular file by the descriptor's own metadata, and its
+/// real path (`/proc/self/fd/<n>`) byte-equal to the candidate path, so a
+/// symlink anywhere in the path (a swapped parent directory included) is
+/// refused (`path_not_canonical`, also when `/proc` cannot be read).
+fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>, SourceError> {
+    use rustix::fs::OFlags;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
     let shown = path.display().to_string();
-    let Some(before) = lstat(path)? else {
-        return Ok(None);
-    };
-    if !before.is_file() {
-        return Ok(None);
-    }
-    if before.len() > MAX_FILE_BYTES {
-        return Err(SourceError::new("file_too_large", shown));
-    }
-    let file = match std::fs::File::open(path) {
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC).bits() as i32)
+        .open(path)
+    {
         Ok(f) => f,
         Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) => return Ok(None),
+        // ELOOP: the final component became a symlink after the listing.
+        Err(e) if e.raw_os_error() == Some(40) => {
+            return Err(SourceError::new("path_not_canonical", shown));
+        }
         Err(_) => return Err(SourceError::new("file_unreadable", shown)),
     };
     let meta = file
         .metadata()
         .map_err(|_| SourceError::new("file_unreadable", shown.clone()))?;
-    if !meta.is_file() || meta.dev() != before.dev() || meta.ino() != before.ino() {
-        return Err(SourceError::new("file_changed", shown));
+    if !meta.is_file() {
+        return Err(SourceError::new("not_regular_file", shown));
+    }
+    let real = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| SourceError::new("path_not_canonical", shown.clone()))?;
+    if real.as_os_str() != path.as_os_str() {
+        return Err(SourceError::new("path_not_canonical", shown));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(SourceError::new("file_too_large", shown));
     }
     let mut hasher = Sha256::new();
     let mut head: Vec<u8> = Vec::new();
@@ -303,11 +409,14 @@ fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<Record>, Source
             Value::Object(record)
         }
     };
-    Ok(Some(Record {
-        path: path_text,
-        sha256,
-        value,
-    }))
+    Ok(Some((
+        Record {
+            path: path_text,
+            sha256,
+            value,
+        },
+        total,
+    )))
 }
 
 /// The first line and the `Key: value` fields of the head of a file. The
@@ -316,8 +425,13 @@ fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<Record>, Source
 /// occurrence of a key wins; keys match exactly.
 pub fn parse_head(head: &[u8], truncated: bool, head_lines: usize) -> (String, Map<String, Value>) {
     let mut text = String::from_utf8_lossy(head).into_owned();
-    if truncated && let Some(cut) = text.rfind('\n') {
-        text.truncate(cut + 1);
+    if truncated {
+        // The cut may fall inside a line: keep whole lines only; no newline
+        // in the head means no lines.
+        match text.rfind('\n') {
+            Some(cut) => text.truncate(cut + 1),
+            None => text.clear(),
+        }
     }
     let mut fields = Map::new();
     let mut line1 = String::new();
@@ -353,6 +467,7 @@ fn field_of(line: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -366,6 +481,89 @@ mod tests {
         assert_eq!(f["owner"], "lower");
         assert_eq!(f["Note"], "");
         assert!(!f.contains_key("http"));
+    }
+
+    fn temp() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "ont-src-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    fn spec(glob: &str, exclude: &[String]) -> FileSourceSpec {
+        let def: ont_core::schema::SourceDef = serde_json::from_value(json!({
+            "kind":"markdown_fields","glob":glob,"exclude":exclude,"fresh_for_s":5
+        }))
+        .unwrap();
+        def.file_spec().unwrap().unwrap()
+    }
+
+    #[test]
+    fn exclude_prunes_a_directory_before_it_is_read() {
+        let d = temp();
+        std::fs::create_dir_all(d.join("keep/x")).unwrap();
+        std::fs::write(d.join("keep/x/a.md"), "x").unwrap();
+        std::fs::create_dir_all(d.join("big")).unwrap();
+        for i in 0..50 {
+            std::fs::write(d.join(format!("big/f{i}.md")), "x").unwrap();
+        }
+        let tight = Bounds {
+            max_visited: 20,
+            ..Bounds::default()
+        };
+        let glob = format!("{}/**/*.md", d.display());
+        // Without the exclude the big directory breaks the bound.
+        let err = read_files_with(&spec(&glob, &[]), &tight).unwrap_err();
+        assert_eq!(err.code, "listing_too_large");
+        // With it, the directory is never read and nothing under it is indexed.
+        let ex = [format!("{}/big", d.display())];
+        let listing = read_files_with(&spec(&glob, &ex), &tight).unwrap();
+        let paths: Vec<&str> = listing.records.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, [format!("{}/keep/x/a.md", d.display())]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_swapped_parent_is_not_read_and_aggregate_bounds_hold() {
+        let d = temp();
+        std::fs::create_dir_all(d.join("real")).unwrap();
+        std::fs::write(d.join("real/a.md"), "hello\n").unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("link")).unwrap();
+        let s = spec(&format!("{}/*/a.md", d.display()), &[]);
+        let err = read_one(&d.join("link/a.md"), &s).unwrap_err();
+        assert_eq!(err.code, "path_not_canonical");
+        assert!(read_one(&d.join("real/a.md"), &s).unwrap().is_some());
+        // The wildcard walk skips the symlinked directory and reads the real one.
+        let listing = read_files(&s).unwrap();
+        assert_eq!((listing.records.len(), listing.skipped_symlinks), (1, 1));
+        let small = Bounds {
+            max_total_bytes: 3,
+            ..Bounds::default()
+        };
+        assert_eq!(
+            read_files_with(&s, &small).unwrap_err().code,
+            "source_bytes_too_large"
+        );
+        let small = Bounds {
+            max_text_bytes: 10,
+            ..Bounds::default()
+        };
+        assert_eq!(
+            read_files_with(&s, &small).unwrap_err().code,
+            "source_text_too_large"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_head_cut_inside_one_line_has_no_lines() {
+        let (line1, f) = parse_head(b"Key: a very long line without a newline", true, 10);
+        assert_eq!(line1, "");
+        assert!(f.is_empty());
     }
 
     #[test]
