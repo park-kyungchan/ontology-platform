@@ -8,6 +8,90 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const FORMAT: &str = "ontology-schema/v1";
+
+/// Every violation code, from this one list.
+pub mod codes {
+    pub const INVALID_FORMAT: &str = "invalid_format";
+    pub const INVALID_VERSION: &str = "invalid_version";
+    pub const INVALID_NAMESPACE: &str = "invalid_namespace";
+    pub const INVALID_NAME: &str = "invalid_name";
+    pub const RESERVED_DOMAIN: &str = "reserved_domain";
+    pub const DUPLICATE_SCOPE_KEY: &str = "duplicate_scope_key";
+    pub const DUPLICATE_TYPE_NAME: &str = "duplicate_type_name";
+    pub const DUPLICATE_DOMAIN: &str = "duplicate_domain";
+    pub const DUPLICATE_LINK_NAME: &str = "duplicate_link_name";
+    pub const DUPLICATE_CRITERION_CODE: &str = "duplicate_criterion_code";
+    pub const INVALID_VALUE_TYPE_DEFINITION: &str = "invalid_value_type_definition";
+    pub const UNKNOWN_SOURCE_KIND: &str = "unknown_source_kind";
+    pub const UNKNOWN_SOURCE: &str = "unknown_source";
+    pub const UNKNOWN_TYPE: &str = "unknown_type";
+    pub const UNKNOWN_PROPERTY: &str = "unknown_property";
+    pub const UNKNOWN_VALUE_TYPE: &str = "unknown_value_type";
+    pub const UNKNOWN_LINK: &str = "unknown_link";
+    pub const UNKNOWN_PARAMETER: &str = "unknown_parameter";
+    pub const UNKNOWN_ACTION: &str = "unknown_action";
+    pub const UNKNOWN_SCOPE_KEY: &str = "unknown_scope_key";
+    pub const INVALID_PRINCIPAL: &str = "invalid_principal";
+    pub const INVALID_PRIMARY_KEY: &str = "invalid_primary_key";
+    pub const INVALID_FROM_POINTER: &str = "invalid_from_pointer";
+    pub const ONTOLOGY_PROPERTY_FROM: &str = "ontology_property_from";
+    pub const REQUIRED_PROPERTY_WITHOUT_FROM: &str = "required_property_without_from";
+    pub const STRUCT_IN_STRUCT: &str = "struct_in_struct";
+    pub const INVALID_LINK_BACKING: &str = "invalid_link_backing";
+    pub const INVALID_REFERENCE_PROPERTY: &str = "invalid_reference_property";
+    pub const INVALID_CRITERION: &str = "invalid_criterion";
+    pub const INVALID_RULE: &str = "invalid_rule";
+    pub const ACTION_EDITS_SOURCE_OWNED: &str = "action_edits_source_owned";
+    pub const UNKNOWN_FIELD: &str = "unknown_field";
+    pub const DUPLICATE_FIELD: &str = "duplicate_field";
+    pub const MISSING_FIELD: &str = "missing_field";
+    pub const INVALID_SCHEMA: &str = "invalid_schema";
+    pub const UNDECLARED_PROPERTY: &str = "undeclared_property";
+    pub const MISSING_REQUIRED_PROPERTY: &str = "missing_required_property";
+    pub const WRONG_VALUE_TYPE: &str = "wrong_value_type";
+    pub const VALUE_CONSTRAINT_VIOLATION: &str = "value_constraint_violation";
+    pub const ALL: &[&str] = &[
+        INVALID_FORMAT,
+        INVALID_VERSION,
+        INVALID_NAMESPACE,
+        INVALID_NAME,
+        RESERVED_DOMAIN,
+        DUPLICATE_SCOPE_KEY,
+        DUPLICATE_TYPE_NAME,
+        DUPLICATE_DOMAIN,
+        DUPLICATE_LINK_NAME,
+        DUPLICATE_CRITERION_CODE,
+        INVALID_VALUE_TYPE_DEFINITION,
+        UNKNOWN_SOURCE_KIND,
+        UNKNOWN_SOURCE,
+        UNKNOWN_TYPE,
+        UNKNOWN_PROPERTY,
+        UNKNOWN_VALUE_TYPE,
+        UNKNOWN_LINK,
+        UNKNOWN_PARAMETER,
+        UNKNOWN_ACTION,
+        UNKNOWN_SCOPE_KEY,
+        INVALID_PRINCIPAL,
+        INVALID_PRIMARY_KEY,
+        INVALID_FROM_POINTER,
+        ONTOLOGY_PROPERTY_FROM,
+        REQUIRED_PROPERTY_WITHOUT_FROM,
+        STRUCT_IN_STRUCT,
+        INVALID_LINK_BACKING,
+        INVALID_REFERENCE_PROPERTY,
+        INVALID_CRITERION,
+        INVALID_RULE,
+        ACTION_EDITS_SOURCE_OWNED,
+        UNKNOWN_FIELD,
+        DUPLICATE_FIELD,
+        MISSING_FIELD,
+        INVALID_SCHEMA,
+        UNDECLARED_PROPERTY,
+        MISSING_REQUIRED_PROPERTY,
+        WRONG_VALUE_TYPE,
+        VALUE_CONSTRAINT_VIOLATION,
+    ];
+}
 const SOURCE_KINDS: &[&str] = &[
     "markdown_fields",
     "markdown_table",
@@ -20,15 +104,12 @@ const SOURCE_KINDS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
-    pub code: String,
+    pub code: &'static str,
     pub pointer: String,
 }
 impl Violation {
-    fn new(code: &str, pointer: String) -> Self {
-        Self {
-            code: code.into(),
-            pointer,
-        }
+    fn new(code: &'static str, pointer: String) -> Self {
+        Self { code, pointer }
     }
 }
 impl fmt::Display for Violation {
@@ -181,17 +262,22 @@ impl Serialize for Owner {
 impl<'de> Deserialize<'de> for Owner {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OwnerMap {
+            source: String,
+        }
+        #[derive(Deserialize)]
         #[serde(untagged)]
         enum W {
             Text(String),
-            Map { source: String },
+            Map(OwnerMap),
         }
         match W::deserialize(d)? {
             W::Text(t) if t == "ontology" => Ok(Self::Ontology),
             W::Text(t) => Err(serde::de::Error::custom(format!(
                 "invalid owner {t:?}, expected \"ontology\""
             ))),
-            W::Map { source } => Ok(Self::Source(source)),
+            W::Map(m) => Ok(Self::Source(m.source)),
         }
     }
 }
@@ -247,15 +333,6 @@ pub struct ConditionGroup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub none: Option<Vec<Condition>>,
 }
-impl ConditionGroup {
-    fn arms(&self) -> Vec<&Vec<Condition>> {
-        [&self.all, &self.any, &self.none]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Condition {
@@ -324,12 +401,15 @@ pub struct ActionRule {
     pub set: BTreeMap<String, Value>,
 }
 impl ActionRule {
-    fn object_target(&self) -> Option<&str> {
-        self.create_object
-            .as_deref()
-            .or(self.modify_object.as_deref())
-            .or(self.create_or_modify_object.as_deref())
-            .or(self.delete_object.as_deref())
+    fn object_target(&self) -> Option<(&'static str, &str)> {
+        [
+            ("create_object", &self.create_object),
+            ("modify_object", &self.modify_object),
+            ("create_or_modify_object", &self.create_or_modify_object),
+            ("delete_object", &self.delete_object),
+        ]
+        .into_iter()
+        .find_map(|(f, v)| v.as_deref().map(|x| (f, x)))
     }
     fn kind_count(&self) -> usize {
         [
@@ -371,7 +451,7 @@ pub struct FunctionDef {
 pub struct SchemaGrant {
     pub principal: String,
     #[serde(default)]
-    pub scope: BTreeMap<String, Value>,
+    pub scope: BTreeMap<String, String>,
     #[serde(default)]
     pub read: Vec<String>,
     #[serde(default)]
@@ -413,7 +493,7 @@ pub struct SchemaPin {
     pub sha256: String,
 }
 impl SchemaPin {
-    pub fn for_bytes(domain: &str, version: u64, bytes: &[u8]) -> Self {
+    fn for_bytes(domain: &str, version: u64, bytes: &[u8]) -> Self {
         let mut h = Sha256::new();
         h.update(bytes);
         Self {
@@ -424,54 +504,87 @@ impl SchemaPin {
     }
 }
 
+/// A schema that passed `Schema::check_bytes`, paired with the pin of the
+/// exact bytes it was parsed from. Only `check_bytes` constructs it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedSchema {
+    schema: Schema,
+    pin: SchemaPin,
+}
+impl CheckedSchema {
+    pub fn schema(&self) -> &Schema {
+        &self.schema
+    }
+    pub fn pin(&self) -> &SchemaPin {
+        &self.pin
+    }
+}
+
 impl Schema {
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         serde_json::from_slice(bytes).map_err(|_| Error::SchemaViolation)
     }
-    pub fn pin(&self, bytes: &[u8]) -> SchemaPin {
-        SchemaPin::for_bytes(&self.domain, self.version, bytes)
-    }
     pub fn check(&self, other_domains_types: &BTreeSet<String>) -> Vec<Violation> {
         check(self, other_domains_types)
     }
-    /// Parse, check, and pin over the exact bytes.
+    /// Parse, check, and pin over the exact bytes. The only way to obtain a
+    /// pinned schema.
     pub fn check_bytes(
         bytes: &[u8],
         other_domains_types: &BTreeSet<String>,
-    ) -> Result<SchemaPin, Vec<Violation>> {
-        let schema: Self = serde_json::from_slice(bytes).map_err(|e| {
-            let msg = e.to_string();
+    ) -> Result<CheckedSchema, Vec<Violation>> {
+        if let Some(pointer) = duplicate_key_pointer(bytes) {
+            return Err(vec![Violation::new(codes::DUPLICATE_FIELD, pointer)]);
+        }
+        let mut de = serde_json::Deserializer::from_slice(bytes);
+        let schema: Self = serde_path_to_error::deserialize(&mut de).map_err(|e| {
+            let pointer = e
+                .path()
+                .iter()
+                .map(|seg| match seg {
+                    serde_path_to_error::Segment::Seq { index } => format!("/{index}"),
+                    serde_path_to_error::Segment::Map { key } => format!("/{}", esc(key)),
+                    serde_path_to_error::Segment::Enum { variant } => {
+                        format!("/{}", esc(variant))
+                    }
+                    _ => String::new(),
+                })
+                .collect::<String>();
+            let msg = e.inner().to_string();
             let code = if msg.contains("unknown field") {
-                "unknown_field"
+                codes::UNKNOWN_FIELD
             } else if msg.contains("duplicate field") {
-                "duplicate_field"
+                codes::DUPLICATE_FIELD
             } else if msg.contains("missing field") {
-                "missing_field"
+                codes::MISSING_FIELD
             } else {
-                "invalid_schema"
+                codes::INVALID_SCHEMA
             };
-            vec![Violation::new(code, String::new())]
+            vec![Violation::new(code, pointer)]
         })?;
         let violations = check(&schema, other_domains_types);
         if violations.is_empty() {
-            Ok(schema.pin(bytes))
+            Ok(CheckedSchema {
+                pin: SchemaPin::for_bytes(&schema.domain, schema.version, bytes),
+                schema,
+            })
         } else {
             Err(violations)
         }
     }
 
-    pub fn validate_fields(
+    pub(crate) fn validate_fields(
         &self,
         object_type: &str,
         fields: &BTreeMap<String, Knowledge>,
     ) -> Result<(), Violation> {
         let Some(ty) = self.object_types.get(object_type) else {
-            return Err(Violation::new("unknown_type", String::new()));
+            return Err(Violation::new(codes::UNKNOWN_TYPE, String::new()));
         };
         for name in fields.keys() {
             if !ty.properties.contains_key(name) {
                 return Err(Violation::new(
-                    "undeclared_property",
+                    codes::UNDECLARED_PROPERTY,
                     format!("/fields/{}", esc(name)),
                 ));
             }
@@ -480,7 +593,7 @@ impl Schema {
             match fields.get(name) {
                 None if prop.required => {
                     return Err(Violation::new(
-                        "missing_required_property",
+                        codes::MISSING_REQUIRED_PROPERTY,
                         format!("/fields/{}", esc(name)),
                     ));
                 }
@@ -491,7 +604,7 @@ impl Schema {
                         && s.len() as u64 > limit
                     {
                         return Err(Violation::new(
-                            "value_constraint_violation",
+                            codes::VALUE_CONSTRAINT_VIOLATION,
                             format!("/fields/{}", esc(name)),
                         ));
                     }
@@ -503,59 +616,262 @@ impl Schema {
     }
 }
 
+/// One pass over the JSON token stream: the pointer of the first duplicate
+/// key inside any object, if there is one. serde's map readers are last-wins,
+/// so duplicates are refused here before deserialization.
+fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
+    struct Scan<'a> {
+        b: &'a [u8],
+        i: usize,
+    }
+    impl Scan<'_> {
+        fn ws(&mut self) {
+            while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
+                self.i += 1;
+            }
+        }
+        fn string(&mut self) -> Option<String> {
+            if self.b.get(self.i) != Some(&b'"') {
+                return None;
+            }
+            self.i += 1;
+            let mut out = String::new();
+            loop {
+                let c = *self.b.get(self.i)?;
+                self.i += 1;
+                match c {
+                    b'"' => return Some(out),
+                    b'\\' => {
+                        let e = *self.b.get(self.i)?;
+                        self.i += 1;
+                        match e {
+                            b'"' => out.push('"'),
+                            b'\\' => out.push('\\'),
+                            b'/' => out.push('/'),
+                            b'b' => out.push('\u{0008}'),
+                            b'f' => out.push('\u{000C}'),
+                            b'n' => out.push('\n'),
+                            b'r' => out.push('\r'),
+                            b't' => out.push('\t'),
+                            b'u' => {
+                                let hex = |s: &Scan<'_>| -> Option<u32> {
+                                    let h = std::str::from_utf8(s.b.get(s.i..s.i + 4)?).ok()?;
+                                    u32::from_str_radix(h, 16).ok()
+                                };
+                                let mut cp = hex(self)?;
+                                self.i += 4;
+                                if (0xD800..0xDC00).contains(&cp)
+                                    && self.b.get(self.i) == Some(&b'\\')
+                                    && self.b.get(self.i + 1) == Some(&b'u')
+                                {
+                                    self.i += 2;
+                                    let lo = hex(self)?;
+                                    self.i += 4;
+                                    cp =
+                                        0x10000 + ((cp - 0xD800) << 10) + lo.saturating_sub(0xDC00);
+                                }
+                                out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                            }
+                            _ => return None,
+                        }
+                    }
+                    _ => {
+                        // Copy the full UTF-8 sequence verbatim.
+                        let start = self.i - 1;
+                        let len = if c < 0x80 {
+                            1
+                        } else if c >= 0xF0 {
+                            4
+                        } else if c >= 0xE0 {
+                            3
+                        } else {
+                            2
+                        };
+                        let end = (start + len).min(self.b.len());
+                        out.push_str(std::str::from_utf8(&self.b[start..end]).ok()?);
+                        self.i = end;
+                    }
+                }
+            }
+        }
+        fn value(&mut self, pointer: &str) -> Option<Option<String>> {
+            self.ws();
+            match *self.b.get(self.i)? {
+                b'{' => {
+                    self.i += 1;
+                    let mut keys = BTreeSet::new();
+                    self.ws();
+                    if self.b.get(self.i) == Some(&b'}') {
+                        self.i += 1;
+                        return Some(None);
+                    }
+                    loop {
+                        self.ws();
+                        let key = self.string()?;
+                        let kp = format!("{pointer}/{}", esc(&key));
+                        if !keys.insert(key) {
+                            return Some(Some(kp));
+                        }
+                        self.ws();
+                        if self.b.get(self.i) != Some(&b':') {
+                            return None;
+                        }
+                        self.i += 1;
+                        if let Some(d) = self.value(&kp)? {
+                            return Some(Some(d));
+                        }
+                        self.ws();
+                        match self.b.get(self.i) {
+                            Some(b',') => self.i += 1,
+                            Some(b'}') => {
+                                self.i += 1;
+                                return Some(None);
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'[' => {
+                    self.i += 1;
+                    self.ws();
+                    if self.b.get(self.i) == Some(&b']') {
+                        self.i += 1;
+                        return Some(None);
+                    }
+                    let mut idx = 0usize;
+                    loop {
+                        if let Some(d) = self.value(&format!("{pointer}/{idx}"))? {
+                            return Some(Some(d));
+                        }
+                        idx += 1;
+                        self.ws();
+                        match self.b.get(self.i) {
+                            Some(b',') => self.i += 1,
+                            Some(b']') => {
+                                self.i += 1;
+                                return Some(None);
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'"' => {
+                    self.string()?;
+                    Some(None)
+                }
+                _ => {
+                    while self.b.get(self.i).is_some_and(|c| {
+                        !matches!(c, b',' | b'}' | b']') && !c.is_ascii_whitespace()
+                    }) {
+                        self.i += 1;
+                    }
+                    Some(None)
+                }
+            }
+        }
+    }
+    let mut scan = Scan { b: bytes, i: 0 };
+    scan.value("").flatten()
+}
+
 /// Semantic checks of DESIGN section 3 "Format and checks".
 pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
-    let v = |code: &str, pointer: String, out: &mut Vec<Violation>| {
+    let v = |code: &'static str, pointer: String, out: &mut Vec<Violation>| {
         out.push(Violation::new(code, pointer));
     };
     if schema.format != FORMAT {
-        v("invalid_format", "/format".into(), &mut out);
+        v(codes::INVALID_FORMAT, "/format".into(), &mut out);
     }
     if !valid_name(&schema.domain) {
-        v("invalid_name", "/domain".into(), &mut out);
+        v(codes::INVALID_NAME, "/domain".into(), &mut out);
+    }
+    if schema.domain == crate::scope::PROGRAM_DOMAIN {
+        v(codes::RESERVED_DOMAIN, "/domain".into(), &mut out);
     }
     if schema.version == 0 {
-        v("invalid_version", "/version".into(), &mut out);
+        v(codes::INVALID_VERSION, "/version".into(), &mut out);
     }
-    if schema.namespace.instance.is_empty() || schema.namespace.account.is_empty() {
-        v("invalid_namespace", "/namespace".into(), &mut out);
+    for (field, value) in [
+        ("instance", &schema.namespace.instance),
+        ("account", &schema.namespace.account),
+    ] {
+        if value.is_empty() || value.len() > crate::scope::NAMESPACE_MAX_BYTES {
+            v(
+                codes::INVALID_NAMESPACE,
+                format!("/namespace/{field}"),
+                &mut out,
+            );
+        }
     }
     let mut seen_keys = BTreeSet::new();
     for (i, k) in schema.scope_keys.iter().enumerate() {
         if !valid_name(k) {
-            v("invalid_name", format!("/scope_keys/{i}"), &mut out);
+            v(codes::INVALID_NAME, format!("/scope_keys/{i}"), &mut out);
         }
         if !seen_keys.insert(k.clone()) {
-            v("duplicate_scope_key", format!("/scope_keys/{i}"), &mut out);
+            v(
+                codes::DUPLICATE_SCOPE_KEY,
+                format!("/scope_keys/{i}"),
+                &mut out,
+            );
         }
     }
     for (name, def) in &schema.value_types {
         let p = format!("/value_types/{}", esc(name));
         if !valid_name(name) {
-            v("invalid_name", p.clone(), &mut out);
+            v(codes::INVALID_NAME, p.clone(), &mut out);
         }
         if let Some(vals) = &def.enum_values
             && (vals.is_empty() || vals.iter().any(|x| !scalar_matches(def.base, x)))
         {
-            v("invalid_value_type_definition", p.clone(), &mut out);
+            v(
+                codes::INVALID_VALUE_TYPE_DEFINITION,
+                format!("{p}/enum"),
+                &mut out,
+            );
         }
-        if def.pattern.is_some() && def.compiled().is_none() {
-            v("invalid_value_type_definition", p.clone(), &mut out);
+        if def.pattern.is_some() && (def.base != ScalarType::String || def.compiled().is_none()) {
+            v(
+                codes::INVALID_VALUE_TYPE_DEFINITION,
+                format!("{p}/pattern"),
+                &mut out,
+            );
+        }
+        for (field, bound) in [("min", &def.min), ("max", &def.max)] {
+            if let Some(bound) = bound
+                && !min_max_matches(def.base, bound)
+            {
+                v(
+                    codes::INVALID_VALUE_TYPE_DEFINITION,
+                    format!("{p}/{field}"),
+                    &mut out,
+                );
+            }
         }
         if let (Some(a), Some(b)) = (&def.min, &def.max)
+            && min_max_matches(def.base, a)
+            && min_max_matches(def.base, b)
             && compare_values(a, b) == Some(std::cmp::Ordering::Greater)
         {
-            v("invalid_value_type_definition", p, &mut out);
+            v(
+                codes::INVALID_VALUE_TYPE_DEFINITION,
+                format!("{p}/max"),
+                &mut out,
+            );
         }
     }
     for (name, src) in &schema.sources {
         if !valid_name(name) {
-            v("invalid_name", format!("/sources/{}", esc(name)), &mut out);
+            v(
+                codes::INVALID_NAME,
+                format!("/sources/{}", esc(name)),
+                &mut out,
+            );
         }
         if !SOURCE_KINDS.contains(&src.kind.as_str()) {
             v(
-                "unknown_source_kind",
+                codes::UNKNOWN_SOURCE_KIND,
                 format!("/sources/{}/kind", esc(name)),
                 &mut out,
             );
@@ -564,20 +880,24 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
     for (name, ty) in &schema.object_types {
         let base = format!("/object_types/{}", esc(name));
         if !valid_name(name) {
-            v("invalid_name", base.clone(), &mut out);
+            v(codes::INVALID_NAME, base.clone(), &mut out);
         }
         if other_domains_types.contains(name) {
-            v("duplicate_type_name", base.clone(), &mut out);
+            v(codes::DUPLICATE_TYPE_NAME, base.clone(), &mut out);
         }
         if let Owner::Source(s) = &ty.owner
             && !schema.sources.contains_key(s)
         {
-            v("unknown_source", format!("{base}/owner"), &mut out);
+            v(
+                codes::UNKNOWN_SOURCE,
+                format!("{base}/owner/source"),
+                &mut out,
+            );
         }
         let pk = &ty.primary_key.from;
         if pk != "$action_id" && !(pk.starts_with('/') && pk.len() > 1) {
             v(
-                "invalid_primary_key",
+                codes::INVALID_PRIMARY_KEY,
                 format!("{base}/primary_key/from"),
                 &mut out,
             );
@@ -585,23 +905,25 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
         if let Some(title) = &ty.title
             && !ty.properties.contains_key(title)
         {
-            v("unknown_property", format!("{base}/title"), &mut out);
+            v(codes::UNKNOWN_PROPERTY, format!("{base}/title"), &mut out);
         }
         for (pname, prop) in &ty.properties {
             let pp = format!("{base}/properties/{}", esc(pname));
             if !valid_name(pname) {
-                v("invalid_name", pp.clone(), &mut out);
+                v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
-            check_type(schema, &prop.ty, &pp, false, &mut out);
+            check_type(schema, &prop.ty, &format!("{pp}/type"), false, &mut out);
             match (&ty.owner, &prop.from) {
-                (Owner::Ontology, Some(_)) => {
-                    v("ontology_property_from", format!("{pp}/from"), &mut out)
-                }
+                (Owner::Ontology, Some(_)) => v(
+                    codes::ONTOLOGY_PROPERTY_FROM,
+                    format!("{pp}/from"),
+                    &mut out,
+                ),
                 (Owner::Source(_), None) if prop.required => {
-                    v("required_property_without_from", pp.clone(), &mut out)
+                    v(codes::REQUIRED_PROPERTY_WITHOUT_FROM, pp.clone(), &mut out)
                 }
                 (_, Some(f)) if !f.starts_with('/') => {
-                    v("invalid_from_pointer", format!("{pp}/from"), &mut out)
+                    v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out)
                 }
                 _ => {}
             }
@@ -610,7 +932,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
     for name in schema.functions.keys() {
         if !valid_name(name) {
             v(
-                "invalid_name",
+                codes::INVALID_NAME,
                 format!("/functions/{}", esc(name)),
                 &mut out,
             );
@@ -621,34 +943,54 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
     for (name, lt) in &schema.link_types {
         let base = format!("/link_types/{}", esc(name));
         if !valid_name(name) {
-            v("invalid_name", base.clone(), &mut out);
+            v(codes::INVALID_NAME, base.clone(), &mut out);
         }
         for (field, target) in [("from", &lt.from), ("to", &lt.to)] {
             if !schema.object_types.contains_key(target) {
-                v("unknown_type", format!("{base}/{field}"), &mut out);
+                v(codes::UNKNOWN_TYPE, format!("{base}/{field}"), &mut out);
             }
         }
-        for lname in [&lt.names.forward, &lt.names.reverse] {
+        for (field, lname) in [
+            ("forward", &lt.names.forward),
+            ("reverse", &lt.names.reverse),
+        ] {
             if !valid_name(lname) {
-                v("invalid_name", format!("{base}/names"), &mut out);
+                v(
+                    codes::INVALID_NAME,
+                    format!("{base}/names/{field}"),
+                    &mut out,
+                );
             }
             if link_names.insert(lname.clone(), lt).is_some() {
-                v("duplicate_link_name", format!("{base}/names"), &mut out);
+                v(
+                    codes::DUPLICATE_LINK_NAME,
+                    format!("{base}/names/{field}"),
+                    &mut out,
+                );
             }
         }
         if let Some(from_ty) = schema.object_types.get(&lt.from) {
             match from_ty.properties.get(&lt.via) {
-                None => v("unknown_property", format!("{base}/via"), &mut out),
+                None => v(codes::UNKNOWN_PROPERTY, format!("{base}/via"), &mut out),
                 Some(prop) => {
-                    let ok = match (&prop.ty, lt.cardinality) {
-                        (PropertyType::Ref(r), Cardinality::ManyToOne) => r.target == lt.to,
-                        (PropertyType::Array(a), Cardinality::ManyToMany) => {
-                            matches!(&*a.array, PropertyType::Ref(r) if r.target == lt.to)
+                    let (backing, cardinality_ok) = match &prop.ty {
+                        PropertyType::Ref(r) => {
+                            (r.target == lt.to, lt.cardinality == Cardinality::ManyToOne)
                         }
-                        _ => false,
+                        PropertyType::Array(a) => (
+                            matches!(&*a.array, PropertyType::Ref(r) if r.target == lt.to),
+                            lt.cardinality == Cardinality::ManyToMany,
+                        ),
+                        _ => (false, false),
                     };
-                    if !ok {
-                        v("invalid_link_backing", format!("{base}/via"), &mut out);
+                    if !backing {
+                        v(codes::INVALID_LINK_BACKING, format!("{base}/via"), &mut out);
+                    } else if !cardinality_ok {
+                        v(
+                            codes::INVALID_LINK_BACKING,
+                            format!("{base}/cardinality"),
+                            &mut out,
+                        );
                     }
                 }
             }
@@ -658,56 +1000,63 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
     for (name, at) in &schema.action_types {
         let base = format!("/action_types/{}", esc(name));
         if !valid_name(name) {
-            v("invalid_name", base.clone(), &mut out);
+            v(codes::INVALID_NAME, base.clone(), &mut out);
         }
         for (pname, param) in &at.parameters {
             let pp = format!("{base}/parameters/{}", esc(pname));
             if !valid_name(pname) {
-                v("invalid_name", pp.clone(), &mut out);
+                v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
-            check_type(schema, &param.ty, &pp, false, &mut out);
+            check_type(schema, &param.ty, &format!("{pp}/type"), false, &mut out);
             if param.from.is_some() {
-                v("invalid_from_pointer", format!("{pp}/from"), &mut out);
+                v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out);
             }
         }
-        let mut codes = BTreeSet::new();
+        let mut seen_codes = BTreeSet::new();
         for (ci, crit) in at.submission_criteria.iter().enumerate() {
             let cp = format!("{base}/submission_criteria/{ci}");
             if !valid_name(&crit.code) {
-                v("invalid_name", format!("{cp}/code"), &mut out);
+                v(codes::INVALID_NAME, format!("{cp}/code"), &mut out);
             }
-            if !codes.insert(crit.code.clone()) {
-                v("duplicate_criterion_code", format!("{cp}/code"), &mut out);
+            if !seen_codes.insert(crit.code.clone()) {
+                v(
+                    codes::DUPLICATE_CRITERION_CODE,
+                    format!("{cp}/code"),
+                    &mut out,
+                );
             }
-            let arms: Vec<&Vec<Condition>> = [&crit.all, &crit.any, &crit.none]
-                .into_iter()
-                .flatten()
-                .collect();
+            let arms: Vec<(&str, &Vec<Condition>)> =
+                [("all", &crit.all), ("any", &crit.any), ("none", &crit.none)]
+                    .into_iter()
+                    .filter_map(|(n, a)| a.as_ref().map(|x| (n, x)))
+                    .collect();
             if arms.len() != 1 {
-                v("invalid_criterion", cp.clone(), &mut out);
+                v(codes::INVALID_CRITERION, cp.clone(), &mut out);
                 continue;
             }
-            for cond in arms[0] {
-                check_condition(schema, at, cond, None, &cp, &mut out);
+            for (i, cond) in arms[0].1.iter().enumerate() {
+                let ptr = format!("{cp}/{}/{i}", arms[0].0);
+                check_condition(schema, at, cond, None, &ptr, &mut out);
             }
         }
         for (ri, rule) in at.rules.iter().enumerate() {
             let rp = format!("{base}/rules/{ri}");
             if rule.kind_count() != 1 {
-                v("invalid_rule", rp.clone(), &mut out);
+                v(codes::INVALID_RULE, rp.clone(), &mut out);
                 continue;
             }
-            if let Some(target) = rule.object_target() {
+            if let Some((field, target)) = rule.object_target() {
+                let tp = format!("{rp}/{field}");
                 match schema.object_types.get(target) {
-                    None => v("unknown_type", rp.clone(), &mut out),
+                    None => v(codes::UNKNOWN_TYPE, tp, &mut out),
                     Some(ty) => {
                         if matches!(ty.owner, Owner::Source(_)) {
-                            v("action_edits_source_owned", rp.clone(), &mut out);
+                            v(codes::ACTION_EDITS_SOURCE_OWNED, tp, &mut out);
                         }
                         for key in rule.set.keys() {
                             if !ty.properties.contains_key(key) {
                                 v(
-                                    "unknown_property",
+                                    codes::UNKNOWN_PROPERTY,
                                     format!("{rp}/set/{}", esc(key)),
                                     &mut out,
                                 );
@@ -716,28 +1065,40 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                     }
                 }
             }
-            for val in rule.set.values() {
-                scan_params(schema, at, val, &rp, &mut out);
+            for (key, val) in &rule.set {
+                scan_params(schema, at, val, &format!("{rp}/set/{}", esc(key)), &mut out);
             }
-            for refr in [&rule.set_reference, &rule.clear_reference]
-                .into_iter()
-                .flatten()
+            for (field, refr) in [
+                ("set_reference", &rule.set_reference),
+                ("clear_reference", &rule.clear_reference),
+            ]
+            .into_iter()
+            .filter_map(|(f, r)| r.as_ref().map(|x| (f, x)))
             {
-                let tp = format!("{rp}/reference");
+                let tp = format!("{rp}/{field}");
                 match schema.object_types.get(&refr.object_type) {
-                    None => v("unknown_type", tp.clone(), &mut out),
-                    Some(ty) => match ty.properties.get(&refr.property) {
-                        None => v("unknown_property", tp.clone(), &mut out),
-                        Some(p)
-                            if !matches!(p.ty, PropertyType::Ref(_) | PropertyType::Array(_)) =>
-                        {
-                            v("invalid_reference_property", tp.clone(), &mut out)
+                    None => v(codes::UNKNOWN_TYPE, format!("{tp}/object_type"), &mut out),
+                    Some(ty) => {
+                        if matches!(ty.owner, Owner::Source(_)) {
+                            v(
+                                codes::ACTION_EDITS_SOURCE_OWNED,
+                                format!("{tp}/object_type"),
+                                &mut out,
+                            );
                         }
-                        _ => {}
-                    },
+                        match ty.properties.get(&refr.property) {
+                            None => v(codes::UNKNOWN_PROPERTY, format!("{tp}/property"), &mut out),
+                            Some(p) if !is_reference_type(&p.ty) => v(
+                                codes::INVALID_REFERENCE_PROPERTY,
+                                format!("{tp}/property"),
+                                &mut out,
+                            ),
+                            _ => {}
+                        }
+                    }
                 }
                 if let Some(val) = &refr.value {
-                    scan_params(schema, at, val, &tp, &mut out);
+                    scan_params(schema, at, val, &format!("{tp}/value"), &mut out);
                 }
             }
             if rule
@@ -745,23 +1106,42 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 .as_ref()
                 .is_some_and(|r| r.value.is_some())
             {
-                v("invalid_rule", rp, &mut out);
+                v(
+                    codes::INVALID_RULE,
+                    format!("{rp}/clear_reference/value"),
+                    &mut out,
+                );
             }
         }
     }
     for (gi, g) in schema.grants.iter().enumerate() {
         let gp = format!("/grants/{gi}");
         if g.principal.is_empty() {
-            v("invalid_principal", format!("{gp}/principal"), &mut out);
+            v(
+                codes::INVALID_PRINCIPAL,
+                format!("{gp}/principal"),
+                &mut out,
+            );
         }
-        for t in g.read.iter().chain(&g.derive) {
-            if !schema.object_types.contains_key(t) {
-                v("unknown_type", gp.clone(), &mut out);
+        for key in g.scope.keys() {
+            if !schema.scope_keys.contains(key) {
+                v(
+                    codes::UNKNOWN_SCOPE_KEY,
+                    format!("{gp}/scope/{}", esc(key)),
+                    &mut out,
+                );
             }
         }
-        for a in &g.actions {
+        for (field, types) in [("read", &g.read), ("derive", &g.derive)] {
+            for (i, t) in types.iter().enumerate() {
+                if !schema.object_types.contains_key(t) {
+                    v(codes::UNKNOWN_TYPE, format!("{gp}/{field}/{i}"), &mut out);
+                }
+            }
+        }
+        for (i, a) in g.actions.iter().enumerate() {
             if !schema.action_types.contains_key(a) {
-                v("unknown_action", gp.clone(), &mut out);
+                v(codes::UNKNOWN_ACTION, format!("{gp}/actions/{i}"), &mut out);
             }
         }
     }
@@ -779,26 +1159,51 @@ fn check_type(
         PropertyType::Scalar(_) => {}
         PropertyType::Ref(r) => {
             if !schema.object_types.contains_key(&r.target) {
-                out.push(Violation::new("unknown_type", pointer.into()));
+                out.push(Violation::new(codes::UNKNOWN_TYPE, pointer.into()));
             }
         }
         PropertyType::ValueType(vt) => {
             if !schema.value_types.contains_key(&vt.value_type) {
-                out.push(Violation::new("unknown_value_type", pointer.into()));
+                out.push(Violation::new(codes::UNKNOWN_VALUE_TYPE, pointer.into()));
             }
         }
-        PropertyType::Array(a) => check_type(schema, &a.array, pointer, in_struct, out),
+        PropertyType::Array(a) => check_type(
+            schema,
+            &a.array,
+            &format!("{pointer}/array"),
+            in_struct,
+            out,
+        ),
         PropertyType::Struct(s) => {
             if in_struct {
-                out.push(Violation::new("struct_in_struct", pointer.into()));
+                out.push(Violation::new(codes::STRUCT_IN_STRUCT, pointer.into()));
             }
             for (fname, fty) in &s.struct_ {
+                let fp = format!("{pointer}/struct/{}", esc(fname));
                 if !valid_name(fname) {
-                    out.push(Violation::new("invalid_name", pointer.into()));
+                    out.push(Violation::new(codes::INVALID_NAME, fp.clone()));
                 }
-                check_type(schema, fty, pointer, true, out);
+                check_type(schema, fty, &fp, true, out);
             }
         }
+    }
+}
+
+fn is_reference_type(ty: &PropertyType) -> bool {
+    match ty {
+        PropertyType::Ref(_) => true,
+        PropertyType::Array(a) => matches!(&*a.array, PropertyType::Ref(_)),
+        _ => false,
+    }
+}
+
+fn min_max_matches(base: ScalarType, v: &Value) -> bool {
+    match base {
+        ScalarType::Boolean => false,
+        ScalarType::Integer | ScalarType::Timestamp => v.as_i64().is_some() || v.as_u64().is_some(),
+        ScalarType::Decimal => v.as_str().is_some_and(|s| parse_decimal(s).is_some()),
+        ScalarType::Date => v.as_str().is_some_and(valid_date),
+        ScalarType::String => v.is_string(),
     }
 }
 
@@ -818,17 +1223,17 @@ fn scan_params(
             if let Some(p) = param_name(s)
                 && !at.parameters.contains_key(p)
             {
-                out.push(Violation::new("unknown_parameter", pointer.into()));
+                out.push(Violation::new(codes::UNKNOWN_PARAMETER, pointer.into()));
             }
         }
         Value::Array(items) => {
-            for i in items {
-                scan_params(schema, at, i, pointer, out);
+            for (i, item) in items.iter().enumerate() {
+                scan_params(schema, at, item, &format!("{pointer}/{i}"), out);
             }
         }
         Value::Object(map) => {
-            for i in map.values() {
-                scan_params(schema, at, i, pointer, out);
+            for (k, item) in map {
+                scan_params(schema, at, item, &format!("{pointer}/{}", esc(k)), out);
             }
         }
         _ => {}
@@ -843,49 +1248,71 @@ fn check_condition(
     pointer: &str,
     out: &mut Vec<Violation>,
 ) {
+    let pair = match cond {
+        Condition::Eq(p) => Some(("eq", p)),
+        Condition::Ne(p) => Some(("ne", p)),
+        Condition::In(p) => Some(("in", p)),
+        Condition::Lt(p) => Some(("lt", p)),
+        Condition::Le(p) => Some(("le", p)),
+        Condition::Gt(p) => Some(("gt", p)),
+        Condition::Ge(p) => Some(("ge", p)),
+        _ => None,
+    };
+    if let Some((kind, pair)) = pair {
+        if let (Some(ctx), Value::String(first)) = (context, &pair[0])
+            && !first.starts_with('$')
+        {
+            let known = schema
+                .object_types
+                .get(ctx)
+                .is_some_and(|t| t.properties.contains_key(first));
+            if !known {
+                out.push(Violation::new(
+                    codes::UNKNOWN_PROPERTY,
+                    format!("{pointer}/{kind}/0"),
+                ));
+            }
+        }
+        for (i, operand) in pair.iter().enumerate() {
+            scan_params(schema, at, operand, &format!("{pointer}/{kind}/{i}"), out);
+        }
+        return;
+    }
     match cond {
         Condition::Exists(s) | Condition::Fresh(s) => {
+            let kind = if matches!(cond, Condition::Exists(_)) {
+                "exists"
+            } else {
+                "fresh"
+            };
             if let Some(p) = param_name(s)
                 && !at.parameters.contains_key(p)
             {
-                out.push(Violation::new("unknown_parameter", pointer.into()));
+                out.push(Violation::new(
+                    codes::UNKNOWN_PARAMETER,
+                    format!("{pointer}/{kind}"),
+                ));
             }
         }
-        Condition::Eq(pair)
-        | Condition::Ne(pair)
-        | Condition::In(pair)
-        | Condition::Lt(pair)
-        | Condition::Le(pair)
-        | Condition::Gt(pair)
-        | Condition::Ge(pair) => {
-            if let (Some(ctx), Value::String(first)) = (context, &pair[0])
-                && !first.starts_with('$')
-            {
-                let known = schema
-                    .object_types
-                    .get(ctx)
-                    .is_some_and(|t| t.properties.contains_key(first));
-                if !known {
-                    out.push(Violation::new("unknown_property", pointer.into()));
-                }
-            }
-            for operand in pair {
-                scan_params(schema, at, operand, pointer, out);
-            }
-        }
-        Condition::Actor(val) => scan_params(schema, at, val, pointer, out),
+        Condition::Actor(val) => scan_params(schema, at, val, &format!("{pointer}/actor"), out),
         Condition::Linked(link) => {
             if let Some(p) = param_name(&link.from)
                 && !at.parameters.contains_key(p)
             {
-                out.push(Violation::new("unknown_parameter", pointer.into()));
+                out.push(Violation::new(
+                    codes::UNKNOWN_PARAMETER,
+                    format!("{pointer}/linked/from"),
+                ));
             }
             let lt = schema
                 .link_types
                 .values()
                 .find(|l| l.names.forward == link.link || l.names.reverse == link.link);
             let Some(lt) = lt else {
-                out.push(Violation::new("unknown_link", pointer.into()));
+                out.push(Violation::new(
+                    codes::UNKNOWN_LINK,
+                    format!("{pointer}/linked/link"),
+                ));
                 return;
             };
             // Resolve the type reached by following the named link.
@@ -901,24 +1328,52 @@ fn check_condition(
                 _ => None,
             };
             if let Some(group) = &link.condition {
-                let arms = group.arms();
+                let arms: Vec<(&str, &Vec<Condition>)> = [
+                    ("all", &group.all),
+                    ("any", &group.any),
+                    ("none", &group.none),
+                ]
+                .into_iter()
+                .filter_map(|(n, a)| a.as_ref().map(|x| (n, x)))
+                .collect();
                 if arms.len() != 1 {
-                    out.push(Violation::new("invalid_criterion", pointer.into()));
+                    out.push(Violation::new(
+                        codes::INVALID_CRITERION,
+                        format!("{pointer}/linked/where"),
+                    ));
                     return;
                 }
-                for c in arms[0] {
-                    check_condition(schema, at, c, target, pointer, out);
+                for (i, c) in arms[0].1.iter().enumerate() {
+                    let ptr = format!("{pointer}/linked/where/{}/{i}", arms[0].0);
+                    check_condition(schema, at, c, target, &ptr, out);
                 }
             }
         }
-        Condition::All(cs) | Condition::Any(cs) | Condition::NoneOf(cs) => {
-            for c in cs {
-                check_condition(schema, at, c, context, pointer, out);
+        Condition::All(cs) => {
+            for (i, c) in cs.iter().enumerate() {
+                check_condition(schema, at, c, context, &format!("{pointer}/all/{i}"), out);
             }
         }
+        Condition::Any(cs) => {
+            for (i, c) in cs.iter().enumerate() {
+                check_condition(schema, at, c, context, &format!("{pointer}/any/{i}"), out);
+            }
+        }
+        Condition::NoneOf(cs) => {
+            for (i, c) in cs.iter().enumerate() {
+                check_condition(schema, at, c, context, &format!("{pointer}/none/{i}"), out);
+            }
+        }
+        _ => {}
     }
 }
 
+/// Accepted scalar grammars. `decimal`: `-?digits[.digits]` with ASCII
+/// digits only, at least one digit on each side of the dot when a dot is
+/// present; no leading `+`, no exponent (so `+1`, `.5` and `1.` are refused).
+/// `date`: `YYYY-MM-DD` with ASCII digits and `-` separators only; no sign
+/// inside any field. `timestamp` and `integer`: a JSON integer (`i64`/`u64`),
+/// never a float or a string.
 fn scalar_matches(base: ScalarType, v: &Value) -> bool {
     match base {
         ScalarType::String => v.is_string(),
@@ -935,19 +1390,22 @@ fn validate_value(schema: &Schema, ty: &PropertyType, v: &Value) -> Result<(), &
             if scalar_matches(*s, v) {
                 Ok(())
             } else {
-                Err("wrong_value_type")
+                Err(codes::WRONG_VALUE_TYPE)
             }
         }
         PropertyType::Ref(r) => {
-            let id: Id = serde_json::from_value(v.clone()).map_err(|_| "wrong_value_type")?;
+            // The namespace of a referenced Id is not compared with the
+            // schema namespace here; packet O2 sets that rule in the store,
+            // which knows the installed namespaces.
+            let id: Id = serde_json::from_value(v.clone()).map_err(|_| codes::WRONG_VALUE_TYPE)?;
             if id.validate().is_err() || id.object_type != r.target {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             }
             Ok(())
         }
         PropertyType::Array(a) => {
             let Value::Array(items) = v else {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             };
             for item in items {
                 validate_value(schema, &a.array, item)?;
@@ -956,45 +1414,45 @@ fn validate_value(schema: &Schema, ty: &PropertyType, v: &Value) -> Result<(), &
         }
         PropertyType::Struct(s) => {
             let Value::Object(map) = v else {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             };
             for (fname, fty) in &s.struct_ {
                 match map.get(fname) {
                     Some(fv) => validate_value(schema, fty, fv)?,
-                    None => return Err("wrong_value_type"),
+                    None => return Err(codes::WRONG_VALUE_TYPE),
                 }
             }
             if map.keys().any(|k| !s.struct_.contains_key(k)) {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             }
             Ok(())
         }
         PropertyType::ValueType(vt) => {
             let Some(def) = schema.value_types.get(&vt.value_type) else {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             };
             if !scalar_matches(def.base, v) {
-                return Err("wrong_value_type");
+                return Err(codes::WRONG_VALUE_TYPE);
             }
             if let Some(vals) = &def.enum_values
                 && !vals.contains(v)
             {
-                return Err("value_constraint_violation");
+                return Err(codes::VALUE_CONSTRAINT_VIOLATION);
             }
             if let (ScalarType::String, Value::String(s)) = (def.base, v)
                 && !def.pattern_matches(s)
             {
-                return Err("value_constraint_violation");
+                return Err(codes::VALUE_CONSTRAINT_VIOLATION);
             }
             if let Some(min) = &def.min
                 && compare_values(v, min) == Some(std::cmp::Ordering::Less)
             {
-                return Err("value_constraint_violation");
+                return Err(codes::VALUE_CONSTRAINT_VIOLATION);
             }
             if let Some(max) = &def.max
                 && compare_values(v, max) == Some(std::cmp::Ordering::Greater)
             {
-                return Err("value_constraint_violation");
+                return Err(codes::VALUE_CONSTRAINT_VIOLATION);
             }
             Ok(())
         }
@@ -1022,16 +1480,19 @@ type DecimalParts = (bool, String, String);
 fn parse_decimal(s: &str) -> Option<DecimalParts> {
     let (neg, rest) = match s.strip_prefix('-') {
         Some(r) => (true, r),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
+        None => (false, s),
     };
+    if rest.starts_with('+') {
+        return None;
+    }
     let (int, frac) = match rest.split_once('.') {
         Some((i, f)) => (i, f),
         None => (rest, ""),
     };
-    if int.is_empty() && frac.is_empty() {
+    if int.is_empty() || !int.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    if !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+    if rest.contains('.') && (frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit())) {
         return None;
     }
     Some((
@@ -1069,6 +1530,13 @@ fn valid_date(s: &str) -> bool {
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return false;
     }
+    if !b
+        .iter()
+        .enumerate()
+        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return false;
+    }
     let (Ok(y), Ok(m), Ok(d)) = (
         s[0..4].parse::<i64>(),
         s[5..7].parse::<u32>(),
@@ -1104,11 +1572,15 @@ pub struct SchemaSet {
     pins: BTreeMap<String, SchemaPin>,
 }
 impl SchemaSet {
-    pub fn new(schemas: Vec<Schema>) -> Result<Self, Vec<Violation>> {
-        Self::build(schemas.into_iter().map(|s| (s, None)).collect())
-    }
-    pub fn with_pins(entries: Vec<(Schema, SchemaPin)>) -> Result<Self, Vec<Violation>> {
-        Self::build(entries.into_iter().map(|(s, p)| (s, Some(p))).collect())
+    /// Build from schemas that each passed `Schema::check_bytes`; the set
+    /// re-checks them against each other (duplicate domains and type names).
+    pub fn new(checked: Vec<CheckedSchema>) -> Result<Self, Vec<Violation>> {
+        Self::build(
+            checked
+                .into_iter()
+                .map(|c| (c.schema, Some(c.pin)))
+                .collect(),
+        )
     }
     fn build(entries: Vec<(Schema, Option<SchemaPin>)>) -> Result<Self, Vec<Violation>> {
         let types_by_domain: Vec<(String, BTreeSet<String>)> = entries
@@ -1120,7 +1592,7 @@ impl SchemaSet {
         let mut pins = BTreeMap::new();
         for (schema, pin) in entries {
             if domains.contains_key(&schema.domain) {
-                violations.push(Violation::new("duplicate_domain", "/domain".into()));
+                violations.push(Violation::new(codes::DUPLICATE_DOMAIN, "/domain".into()));
                 continue;
             }
             let others: BTreeSet<String> = types_by_domain
@@ -1181,7 +1653,7 @@ impl SchemaSet {
     ) -> Result<(), Violation> {
         match self.schema_of(object_type) {
             Some(s) => s.validate_fields(object_type, fields),
-            None => Err(Violation::new("unknown_type", String::new())),
+            None => Err(Violation::new(codes::UNKNOWN_TYPE, String::new())),
         }
     }
 }

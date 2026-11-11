@@ -295,6 +295,20 @@ fn domain_scope_round_trips_and_refusals() {
 }
 
 #[test]
+fn education_and_program_scopes_with_keys_are_refused() {
+    let ns = r#""namespace":{"instance":"synthetic://same-host","account":"A"}"#;
+    for raw in [
+        format!(r#"{{{ns},"class_key":"C1","student_key":"001","keys":{{}}}}"#),
+        format!(r#"{{{ns},"domain":"program","program_key":"001","keys":{{}}}}"#),
+    ] {
+        assert!(
+            serde_json::from_str::<Scope>(&raw).is_err(),
+            "accepted {raw}"
+        );
+    }
+}
+
+#[test]
 fn conformance_fixture_scopes_round_trip() {
     let dir = format!("{}/../../conformance/fixtures", env!("CARGO_MANIFEST_DIR"));
     let mut found = 0;

@@ -5,6 +5,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub(crate) const NAMESPACE_MAX_BYTES: usize = 512;
+pub(crate) const PROGRAM_DOMAIN: &str = "program";
+
 /// Exact authorization dimensions. Education retains its original wire shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -104,7 +107,7 @@ impl Scope {
         let namespace = self.namespace();
         if [&namespace.instance, &namespace.account]
             .iter()
-            .any(|s| s.is_empty() || s.len() > 512)
+            .any(|s| s.is_empty() || s.len() > NAMESPACE_MAX_BYTES)
         {
             return Err(Error::InvalidRequest);
         }
@@ -117,7 +120,7 @@ impl Scope {
             Self::Program { program_key, .. } => program_key.is_empty(),
             Self::Domain { domain, keys, .. } => {
                 domain.is_empty()
-                    || domain == "program"
+                    || domain == PROGRAM_DOMAIN
                     || keys.iter().any(|(k, v)| k.is_empty() || v.is_empty())
             }
         };
