@@ -747,10 +747,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
         b"",
     );
     assert_eq!(code, 0, "{ans}");
-    assert_eq!(
-        ans["result"]["source_repository"],
-        "example.com:park/repo.git"
-    );
+    assert_eq!(ans["result"]["source_repository"], repo);
     assert_eq!(ans["result"]["source_commit"], commit);
     assert_eq!(ans["result"]["source_path"], "ontology/work.schema.json");
     // Same bytes installed twice by commit are idempotent.
@@ -766,7 +763,7 @@ fn commit_install_installs_and_describe_shows_provenance() {
     assert_eq!(domain["domain"], "work");
     assert_eq!(domain["version"], 1);
     assert_eq!(domain["sha256"], sha256_hex(EXAMPLE));
-    assert_eq!(domain["repository"], "example.com:park/repo.git");
+    assert_eq!(domain["repository"], repo);
     assert_eq!(domain["commit"], commit);
     assert_eq!(domain["path"], "ontology/work.schema.json");
 }
@@ -1039,7 +1036,10 @@ fn git_env_read_child() {
     )
     .unwrap();
     assert_eq!(got.bytes, EXAMPLE);
-    assert_eq!(got.repository, "example.com:park/repo.git");
+    assert_eq!(
+        got.repository,
+        std::path::Path::new(&repo).display().to_string()
+    );
 }
 
 #[test]
@@ -1087,5 +1087,39 @@ fn git_reads_committed_bytes_despite_every_local_environment_override() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+    }
+}
+
+#[test]
+fn provenance_records_only_certain_remotes_or_checkout_fallback() {
+    let t = Temp::new();
+    let (repo, commit) = setup_git(&t);
+    for (remote, expected) in [
+        ("https://host:443/p@n", repo.as_str()),
+        ("https://host:8443/@scope/repo.git", repo.as_str()),
+        ("https://u:12/34@h/x", repo.as_str()),
+        ("https://u:p/w@x/y@h/z", repo.as_str()),
+        ("user:p@w/x@host:path", repo.as_str()),
+        ("/a@b/c:d", "/a@b/c:d"),
+        ("git@host:path", "host:path"),
+        ("user:password@host:path", "host:path"),
+        ("ssh://user@host:22/x", "ssh://host:22/x"),
+        ("https://host:443/x", "https://host:443/x"),
+        ("https://[::1]:443/x", "https://[::1]:443/x"),
+        ("ssh://user:pw@[::1]:22/x", "ssh://[::1]:22/x"),
+        ("file:///a@b/c:d", "file:///a@b/c:d"),
+    ] {
+        git(
+            std::path::Path::new(&repo),
+            &["config", "remote.origin.url", remote],
+        );
+        let got = ont::gitread::read_schema(
+            std::path::Path::new(&repo),
+            &commit,
+            "ontology/work.schema.json",
+        )
+        .unwrap();
+        assert_eq!(got.repository, expected, "remote={remote}");
+        assert_eq!(got.bytes, EXAMPLE);
     }
 }
