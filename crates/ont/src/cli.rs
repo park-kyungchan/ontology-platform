@@ -3,7 +3,9 @@
 use crate::backup::{BackupRequest, backup};
 use crate::describe::{DescribeRequest, describe};
 use crate::get::{GetRequest, get};
+use crate::index::{IndexRequest, index};
 use crate::schema::{CheckRequest, InstallRequest, check, install};
+use crate::search::{SearchRequest, search};
 use crate::{Answer, Context, Failure, MAX_REQUEST, Refusal, TRUST_LIMIT, check_uid};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -11,7 +13,6 @@ use std::io::Read;
 use std::path::PathBuf;
 
 const DEFAULT_STORE: &str = "/var/lib/ontology-platform/ont/ontology.sqlite";
-const PRINCIPAL: &str = crate::principal::PRINCIPAL;
 
 /// What the process prints and returns.
 #[derive(Debug)]
@@ -45,6 +46,7 @@ struct Cli {
     version: bool,
     source_repository: Option<String>,
     source_commit: Option<String>,
+    sources: Vec<String>,
     command: Vec<String>,
 }
 
@@ -60,6 +62,7 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
         version: false,
         source_repository: None,
         source_commit: None,
+        sources: Vec::new(),
         command: Vec::new(),
     };
     let mut it = args.iter();
@@ -84,6 +87,13 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
                 cli.source_commit = Some(
                     it.next()
                         .ok_or_else(|| invalid_argument("--source-commit"))?
+                        .clone(),
+                );
+            }
+            "--source" => {
+                cli.sources.push(
+                    it.next()
+                        .ok_or_else(|| invalid_argument("--source"))?
                         .clone(),
                 );
             }
@@ -121,6 +131,9 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
     if !is_install && (cli.source_repository.is_some() || cli.source_commit.is_some()) {
         return Err(invalid_argument("--source-*").into());
     }
+    if cmd.as_slice() != ["index"] && !cli.sources.is_empty() {
+        return Err(invalid_argument("--source").into());
+    }
     match cmd.as_slice() {
         ["schema", "check", file] => check(
             ctx,
@@ -139,8 +152,42 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
         ["describe"] => describe(ctx, &DescribeRequest::parse(&read_request(stdin)?)?),
         ["get"] => get(ctx, &GetRequest::parse(&read_request(stdin)?)?),
         ["backup"] => backup(ctx, &BackupRequest::default()),
+        ["index"] => {
+            let request = if cli.sources.is_empty() {
+                json!({"op":"index"})
+            } else {
+                json!({"op":"index","sources":cli.sources})
+            };
+            index(ctx, &IndexRequest::parse(request.to_string().as_bytes())?)
+        }
+        ["search"] => search(ctx, &SearchRequest::parse(&read_request(stdin)?)?),
         _ => Err(invalid_argument("command").into()),
     }
+}
+
+fn envelope(
+    pins: &std::collections::BTreeMap<String, ont_core::schema::SchemaPin>,
+    revision: u64,
+    result: Value,
+    now: u64,
+    status: &str,
+    code: i32,
+) -> Outcome {
+    let schema: Map<String, Value> = pins
+        .iter()
+        .map(|(d, p)| (d.clone(), json!({"version":p.version,"sha256":p.sha256})))
+        .collect();
+    Outcome::line(
+        &json!({
+            "status":status,
+            "authorization_revision":revision,
+            "now":now,
+            "schema":schema,
+            "trust_limit":TRUST_LIMIT,
+            "result":result
+        }),
+        code,
+    )
 }
 
 fn render(result: Result<Answer, Failure>, now: u64) -> Outcome {
@@ -150,23 +197,12 @@ fn render(result: Result<Answer, Failure>, now: u64) -> Outcome {
             pins,
             revision,
             result,
-        }) => {
-            let schema: Map<String, Value> = pins
-                .iter()
-                .map(|(d, p)| (d.clone(), json!({"version":p.version,"sha256":p.sha256})))
-                .collect();
-            Outcome::line(
-                &json!({
-                    "status":"ok",
-                    "authorization_revision":revision,
-                    "now":now,
-                    "schema":schema,
-                    "trust_limit":TRUST_LIMIT,
-                    "result":result
-                }),
-                0,
-            )
-        }
+        }) => envelope(&pins, revision, result, now, "ok", 0),
+        Ok(Answer::Failed {
+            pins,
+            revision,
+            result,
+        }) => envelope(&pins, revision, result, now, "source_failed", 2),
         Err(Failure::Refused(refusal)) => {
             let mut body = Map::new();
             body.insert("status".into(), json!("refused"));
@@ -211,7 +247,6 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
     let ctx = Context {
         store: cli.store.clone(),
         now,
-        principal: PRINCIPAL.to_string(),
     };
     render(dispatch(&cli, stdin, &ctx), now)
 }

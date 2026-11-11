@@ -6,7 +6,9 @@
 //! every transaction (read or write) first compares the latest
 //! `schema_installs` rows with the cache and rebuilds the set inside that
 //! transaction when they differ.
-use super::{Append, Store, StoreMode, db, decode, open_file, open_file_read_only};
+use super::{
+    Append, Store, StoreMode, db, decode, open_file, open_file_no_create, open_file_read_only,
+};
 use ont_core::schema::{PropertyType, Schema, SchemaPin, SchemaSet, Violation, codes};
 use ont_core::{Change, Error, Id, Knowledge, Observation, Scope};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -274,11 +276,28 @@ impl Store {
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
     pub fn open_schema_existing(path: &Path) -> Result<Self, StoreRefusal> {
+        Self::open_schema_existing_with(path, false)
+    }
+    /// Like [`Store::open_schema_existing`] but the connection may write
+    /// (`Store::write`). It has no create flag and never initialises: a
+    /// missing file is `store_not_found`, an empty or foreign file is
+    /// `store_failure` with its bytes unchanged. `open_schema` stays the
+    /// only open that creates or initialises.
+    pub fn open_schema_existing_writable(path: &Path) -> Result<Self, StoreRefusal> {
+        Self::open_schema_existing_with(path, true)
+    }
+    fn open_schema_existing_with(path: &Path, writable: bool) -> Result<Self, StoreRefusal> {
         if !path.exists() {
             return Err(StoreRefusal::new("store_not_found"));
         }
+        let connection = if writable {
+            open_file_no_create(path)
+        } else {
+            open_file_read_only(path)
+        }
+        .map_err(StoreRefusal::from)?;
         let mut store = Self::configure_with_busy(
-            open_file_read_only(path).map_err(StoreRefusal::from)?,
+            connection,
             StoreMode::Schema,
             Duration::from_secs(10),
             false,

@@ -2,11 +2,10 @@
 //! object the principal may not read and an object that does not exist give
 //! the same answer (`unavailable`).
 use crate::principal::Principal;
-use crate::refusal::st;
+use crate::refusal::{open_store, st};
 use crate::{Answer, Context, Failure, Refusal, internal, pin_json};
 use ont_core::schema::SchemaPin;
 use ont_core::{Id, Object, Query, Response, Snapshot};
-use ont_store::Store;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -30,7 +29,7 @@ impl GetRequest {
     }
 }
 
-struct OneObject(Option<Object>);
+pub(crate) struct OneObject(pub(crate) Option<Object>);
 impl Snapshot for OneObject {
     fn get(&self, id: &Id) -> Result<Option<Object>, ont_core::Error> {
         Ok(self.0.clone().filter(|o| &o.id == id))
@@ -45,7 +44,7 @@ fn not_found() -> Failure {
 }
 
 pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
-    let mut store = st!(Store::open_schema_existing(&ctx.store));
+    let mut store = open_store(&ctx.store, false)?;
     let history = match st!(store.history(&req.id)) {
         Some(h) => h,
         None => return Err(not_found()),
@@ -85,7 +84,8 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
         Err(ont_core::Error::InvalidRequest) => return Err(Refusal::new("invalid_request").into()),
         Err(_) => return Err(Failure::Internal(internal!("authority_failure"))),
     };
-    if revision != principal.revision() {
+    let policy_revision = principal.revision()?;
+    if revision != policy_revision {
         return Err(Failure::Internal(internal!("authority_generation_changed")));
     }
     // Attach each observation's stored pin.
@@ -122,7 +122,7 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
         .collect();
     Ok(Answer::Enveloped {
         pins,
-        revision: principal.revision(),
+        revision: policy_revision,
         result,
     })
 }

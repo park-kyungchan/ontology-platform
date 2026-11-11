@@ -1,19 +1,23 @@
-//! `ont`: schema check/install, describe, get and backup over a format 3
-//! store.
+//! `ont`: schema check/install, describe, get, backup, index and search over
+//! a format 3 store.
 //!
 //! Layout: [`cli`] parses arguments and builds every answer line, exit code
 //! and the error text (the only place that does); [`schema`], [`describe`],
 //! [`get`] and [`backup`] are one public operation each, from a typed request
-//! and a [`Context`] to `Result<Answer, Failure>`; [`principal`] holds the one
+//! and a [`Context`] to `Result<Answer, Failure>` (as are [`index`] and
+//! [`search`]; [`sources`] holds the file readers of `index`); [`principal`] holds the one
 //! grant view that both admission and `describe` use.
 //!
 //! Opening rule: only `schema install` may create or initialise a store
 //! file (it creates it with mode 0600 before SQLite opens it). Every other
 //! operation opens an existing format 3 file through
-//! `Store::open_schema_existing`, which cannot create or initialise.
+//! `Store::open_schema_existing` (read-only) or, for `index`,
+//! `Store::open_schema_existing_writable`; neither can create or initialise.
 //!
 //! `authorization_revision` is the policy generation of the `Authority`
-//! built for the request ([`principal::Principal::revision`]).
+//! built for the request ([`principal::Principal::revision`], or
+//! [`principal::fresh_revision`] where no principal is bound), read through
+//! `Authority::generation`.
 //!
 //! Behaviours worth knowing: a backup taken before an install that then
 //! refuses remains; `--now` also sets the install time and the backup name
@@ -24,9 +28,12 @@ pub mod backup;
 pub mod cli;
 pub mod describe;
 pub mod get;
+pub mod index;
 pub mod principal;
 pub mod refusal;
 pub mod schema;
+pub mod search;
+pub(crate) mod sources;
 
 pub use cli::{Outcome, run};
 pub use refusal::{Failure, Internal, Refusal};
@@ -54,7 +61,6 @@ pub fn check_uid(real: u32, effective: u32) -> Result<(), &'static str> {
 pub struct Context {
     pub store: PathBuf,
     pub now: u64,
-    pub principal: String,
 }
 
 /// An operation's answer; `run` wraps `Enveloped` into the common envelope.
@@ -67,6 +73,13 @@ pub enum Answer {
     },
     /// A complete answer object (`schema check`).
     Plain(Value),
+    /// An enveloped answer of an operation that ran but whose work failed in
+    /// part (`index` with a failed source): same envelope, exit 2.
+    Failed {
+        pins: BTreeMap<String, SchemaPin>,
+        revision: u64,
+        result: Value,
+    },
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {

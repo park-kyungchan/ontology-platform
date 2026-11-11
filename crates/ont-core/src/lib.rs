@@ -340,6 +340,12 @@ impl Authority {
             generation: guard.generation,
         })
     }
+    /// The current policy generation (read lock; a poisoned lock is
+    /// `AuthorityFailure`). Exposes nothing else.
+    pub fn generation(&self) -> Result<u64, Error> {
+        let guard = self.current.read().map_err(|_| Error::AuthorityFailure)?;
+        Ok(guard.generation)
+    }
     /// Revocation linearizes when the write guard is acquired. In-flight publication completes first.
     pub fn replace_trusted(&self, policy: Policy) -> Result<(), Error> {
         let mut guard = self.current.write().map_err(|_| Error::AuthorityFailure)?;
@@ -470,5 +476,18 @@ impl Admission<'_> {
             authorization_revision: self.guard.generation,
             result,
         })
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    #[test]
+    fn generation_is_read_only_and_follows_replacement() {
+        let authority = Authority::new(Policy::default());
+        assert_eq!(authority.generation(), Ok(1));
+        assert_eq!(authority.replace_trusted(Policy::default()), Ok(()));
+        assert_eq!(authority.generation(), Ok(2));
     }
 }

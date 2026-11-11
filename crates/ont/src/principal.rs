@@ -104,8 +104,14 @@ impl GrantView {
     }
 }
 
-/// The generation a freshly built `Authority` starts with.
-const FRESH_GENERATION: u64 = 1;
+/// The policy generation of a fresh `Authority`, read from the `Authority`
+/// (never a literal). Operations that bind no principal (`backup`, `index`,
+/// `schema install`) take their `authorization_revision` from here.
+pub fn fresh_revision() -> Result<u64, Failure> {
+    Authority::new(Policy::default())
+        .generation()
+        .map_err(|_| Failure::Internal(internal!("authority_failure")))
+}
 
 /// The bound principal of one request.
 pub struct Principal {
@@ -137,10 +143,12 @@ impl Principal {
     pub fn session(&self) -> &Session {
         &self.session
     }
-    /// `authorization_revision` of every answer: the policy generation of
-    /// the `Authority` built for this request (always the first generation,
-    /// because the policy is rebuilt from the store for each request).
-    pub fn revision(&self) -> u64 {
-        FRESH_GENERATION
+    /// `authorization_revision` of an answer: the policy generation of the
+    /// `Authority` built for this request, read through
+    /// `Authority::generation` (a poisoned lock is `authority_failure`).
+    pub fn revision(&self) -> Result<u64, Failure> {
+        self.authority
+            .generation()
+            .map_err(|_| Failure::Internal(internal!("authority_failure")))
     }
 }

@@ -41,6 +41,12 @@ columns plus `ingested_at`, `schema_domain`, `schema_version` and
 (see `schema-v3.sql`). The S07 tables are not created here; they arrive
 additively only when a schema declares an effect action (packet O10).
 
+Opening an existing store: `open_schema` is the only open that creates or
+initialises a file. `open_schema_existing` (read-only) and
+`open_schema_existing_writable` (read-write, for `Store::write`) have no create
+flag and never initialise: a missing path is `store_not_found`, an empty or
+foreign file is `store_failure` with its bytes unchanged.
+
 An observation and an action-log row refer to the install they were written
 under by `(schema_domain, schema_version)`, a foreign key to
 `schema_installs(domain, version)`; the pin is read from that install row (one

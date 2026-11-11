@@ -58,6 +58,11 @@ pub mod codes {
     pub const INVALID_CHANGE_KIND: &str = "invalid_change_kind";
     pub const REFRESH_FIELDS_DIFFER: &str = "refresh_fields_differ";
     pub const VALUE_CONSTRAINT_VIOLATION: &str = "value_constraint_violation";
+    pub const INVALID_SOURCE_OPTION: &str = "invalid_source_option";
+    pub const INVALID_GLOB: &str = "invalid_glob";
+    pub const INVALID_TRANSFORM: &str = "invalid_transform";
+    pub const SOURCE_SCOPE_KEYS_UNMAPPED: &str = "source_scope_keys_unmapped";
+    pub const UNKNOWN_SOURCE_FIELD: &str = "unknown_source_field";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
         INVALID_VERSION,
@@ -106,6 +111,11 @@ pub mod codes {
         REF_NAMESPACE_MISMATCH,
         INVALID_CHANGE_KIND,
         REFRESH_FIELDS_DIFFER,
+        INVALID_SOURCE_OPTION,
+        INVALID_GLOB,
+        INVALID_TRANSFORM,
+        SOURCE_SCOPE_KEYS_UNMAPPED,
+        UNKNOWN_SOURCE_FIELD,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -199,7 +209,14 @@ pub struct PropertyDef {
     pub from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// One of `TRANSFORMS`: rewrites the value `from` resolves to. Only on a
+    /// property of a source-owned type that has `from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<String>,
 }
+
+/// The only transforms a mapping may name (applied by the indexer).
+pub const TRANSFORMS: &[&str] = &["first_word", "parse_integer"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -270,6 +287,307 @@ pub struct SourceDef {
     pub options: BTreeMap<String, Value>,
 }
 
+/// One token of a glob segment pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobToken {
+    Char(char),
+    /// `?`: one character inside a segment.
+    One,
+    /// `*`: any run of characters inside a segment.
+    Many,
+}
+/// One segment of an absolute glob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlobSegment {
+    /// A name without wildcards.
+    Literal(String),
+    /// A segment with `*` or `?`.
+    Pattern(Vec<GlobToken>),
+    /// `**`: any number of whole segments (zero or more).
+    AnyDirs,
+}
+impl GlobSegment {
+    /// Whether a single path component matches (`AnyDirs` matches any).
+    pub fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Literal(l) => l == name,
+            Self::AnyDirs => true,
+            Self::Pattern(tokens) => {
+                let chars: Vec<char> = name.chars().collect();
+                tokens_match(tokens, &chars)
+            }
+        }
+    }
+}
+fn tokens_match(tokens: &[GlobToken], name: &[char]) -> bool {
+    // Iterative wildcard match with one backtrack point.
+    let (mut t, mut n) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match tokens.get(t) {
+            Some(GlobToken::Many) => {
+                star = Some((t, n));
+                t += 1;
+            }
+            Some(GlobToken::One) => {
+                t += 1;
+                n += 1;
+            }
+            Some(GlobToken::Char(c)) if *c == name[n] => {
+                t += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((st, sn)) => {
+                    t = st + 1;
+                    n = sn + 1;
+                    star = Some((st, sn + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    while matches!(tokens.get(t), Some(GlobToken::Many)) {
+        t += 1;
+    }
+    t == tokens.len()
+}
+
+/// An absolute glob: `*` and `?` inside one path segment, `**` as a whole
+/// segment for any number of directories. No brace, class or escape syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Glob {
+    text: String,
+    segments: Vec<GlobSegment>,
+}
+/// Longest glob text, in bytes.
+pub const MAX_GLOB_BYTES: usize = 4_096;
+/// Most `**` segments in one glob.
+pub const MAX_GLOB_ANY_DIRS: usize = 8;
+impl Glob {
+    /// Refuses a relative glob, an empty segment, `.` or `..`, a NUL, any of
+    /// `{ } [ ] \`, `**` mixed with other characters, and a final `**`.
+    pub fn parse(text: &str) -> Result<Self, &'static str> {
+        if text.len() > MAX_GLOB_BYTES || !text.starts_with('/') || text.contains('\0') {
+            return Err("invalid_glob");
+        }
+        let mut segments = Vec::new();
+        for part in text[1..].split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                return Err("invalid_glob");
+            }
+            if part.contains(['{', '}', '[', ']', '\\']) {
+                return Err("invalid_glob");
+            }
+            if part.contains("**") {
+                if part != "**" {
+                    return Err("invalid_glob");
+                }
+                segments.push(GlobSegment::AnyDirs);
+            } else if part.contains(['*', '?']) {
+                segments.push(GlobSegment::Pattern(
+                    part.chars()
+                        .map(|c| match c {
+                            '*' => GlobToken::Many,
+                            '?' => GlobToken::One,
+                            c => GlobToken::Char(c),
+                        })
+                        .collect(),
+                ));
+            } else {
+                segments.push(GlobSegment::Literal(part.to_string()));
+            }
+        }
+        if matches!(segments.last(), Some(GlobSegment::AnyDirs))
+            || segments
+                .iter()
+                .filter(|s| matches!(s, GlobSegment::AnyDirs))
+                .count()
+                > MAX_GLOB_ANY_DIRS
+        {
+            return Err("invalid_glob");
+        }
+        Ok(Self {
+            text: text.to_string(),
+            segments,
+        })
+    }
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+    pub fn segments(&self) -> &[GlobSegment] {
+        &self.segments
+    }
+    /// Whether an absolute path matches the whole glob.
+    pub fn matches(&self, path: &str) -> bool {
+        let Some(rest) = path.strip_prefix('/') else {
+            return false;
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        segments_match(&self.segments, &parts)
+    }
+}
+/// Time proportional to segments times parts: on a mismatch the matcher
+/// backs up only to the most recent `**`.
+fn segments_match(segments: &[GlobSegment], parts: &[&str]) -> bool {
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None;
+    while j < parts.len() {
+        match segments.get(i) {
+            Some(GlobSegment::AnyDirs) => {
+                star = Some((i, j));
+                i += 1;
+                continue;
+            }
+            Some(seg) if seg.matches(parts[j]) => {
+                i += 1;
+                j += 1;
+                continue;
+            }
+            _ => {}
+        }
+        match star {
+            Some((si, sj)) => {
+                i = si + 1;
+                j = sj + 1;
+                star = Some((si, sj + 1));
+            }
+            None => return false,
+        }
+    }
+    segments[i..]
+        .iter()
+        .all(|s| matches!(s, GlobSegment::AnyDirs))
+}
+
+/// Which compiled file source a `SourceDef` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSourceKind {
+    MarkdownFields,
+    FileDigest,
+}
+/// The parsed options of a `markdown_fields` or `file_digest` source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSourceSpec {
+    pub kind: FileSourceKind,
+    /// `glob` (one entry) for `markdown_fields`; `paths` for `file_digest`.
+    pub globs: Vec<Glob>,
+    pub exclude: Vec<Glob>,
+    /// Lines parsed for `fields`; `markdown_fields` only (default 40).
+    pub head_lines: usize,
+    pub complete_listing: bool,
+    pub fresh_for_s: u64,
+}
+/// An option that is missing, mistyped or out of range: the refusal code
+/// and the JSON pointer below the source (`/glob`, `/paths/2`, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOptionError {
+    pub code: &'static str,
+    pub pointer: String,
+}
+const MAX_HEAD_LINES: u64 = 10_000;
+const MAX_FRESH_FOR_S: u64 = 315_360_000;
+const MAX_GLOB_LIST: usize = 256;
+
+impl FileSourceKind {
+    /// The record fields (first pointer segments) this kind produces.
+    pub fn record_fields(self) -> &'static [&'static str] {
+        match self {
+            Self::MarkdownFields => &[
+                "path", "dir", "dir_path", "stem", "stem_id", "sha256", "size", "mtime", "line1",
+                "fields",
+            ],
+            Self::FileDigest => &["path", "sha256", "size", "mtime", "mode"],
+        }
+    }
+}
+
+impl SourceDef {
+    /// `Ok(None)` for a kind that has no compiled file reader here.
+    pub fn file_spec(&self) -> Result<Option<FileSourceSpec>, SourceOptionError> {
+        let kind = match self.kind.as_str() {
+            "markdown_fields" => FileSourceKind::MarkdownFields,
+            "file_digest" => FileSourceKind::FileDigest,
+            _ => return Ok(None),
+        };
+        let err = |code: &'static str, pointer: &str| SourceOptionError {
+            code,
+            pointer: pointer.to_string(),
+        };
+        let allowed: &[&str] = match kind {
+            FileSourceKind::MarkdownFields => &[
+                "glob",
+                "exclude",
+                "head_lines",
+                "complete_listing",
+                "fresh_for_s",
+            ],
+            FileSourceKind::FileDigest => &["paths", "exclude", "complete_listing", "fresh_for_s"],
+        };
+        if let Some(key) = self.options.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(err(codes::INVALID_SOURCE_OPTION, &format!("/{}", esc(key))));
+        }
+        let glob_list =
+            |value: &Value, key: &str, min: usize| -> Result<Vec<Glob>, SourceOptionError> {
+                let Some(items) = value.as_array() else {
+                    return Err(err(codes::INVALID_SOURCE_OPTION, &format!("/{key}")));
+                };
+                if items.len() < min || items.len() > MAX_GLOB_LIST {
+                    return Err(err(codes::INVALID_SOURCE_OPTION, &format!("/{key}")));
+                }
+                let mut out = Vec::new();
+                for (i, item) in items.iter().enumerate() {
+                    let pointer = format!("/{key}/{i}");
+                    let Some(text) = item.as_str() else {
+                        return Err(err(codes::INVALID_SOURCE_OPTION, &pointer));
+                    };
+                    out.push(Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, &pointer))?);
+                }
+                Ok(out)
+            };
+        let globs = match kind {
+            FileSourceKind::MarkdownFields => match self.options.get("glob") {
+                Some(Value::String(text)) => {
+                    vec![Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, "/glob"))?]
+                }
+                _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/glob")),
+            },
+            FileSourceKind::FileDigest => match self.options.get("paths") {
+                Some(v) => glob_list(v, "paths", 1)?,
+                None => return Err(err(codes::INVALID_SOURCE_OPTION, "/paths")),
+            },
+        };
+        let exclude = match self.options.get("exclude") {
+            Some(v) => glob_list(v, "exclude", 0)?,
+            None => Vec::new(),
+        };
+        let head_lines = match self.options.get("head_lines") {
+            None => 40,
+            Some(v) => match v.as_u64() {
+                Some(n) if (1..=MAX_HEAD_LINES).contains(&n) => n as usize,
+                _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/head_lines")),
+            },
+        };
+        let complete_listing = match self.options.get("complete_listing") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(err(codes::INVALID_SOURCE_OPTION, "/complete_listing")),
+        };
+        let fresh_for_s = match self.options.get("fresh_for_s").and_then(Value::as_u64) {
+            Some(n) if (1..=MAX_FRESH_FOR_S).contains(&n) => n,
+            _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/fresh_for_s")),
+        };
+        Ok(Some(FileSourceSpec {
+            kind,
+            globs,
+            exclude,
+            head_lines,
+            complete_listing,
+            fresh_for_s,
+        }))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
     Ontology,
@@ -316,6 +634,9 @@ impl<'de> Deserialize<'de> for Owner {
 #[serde(deny_unknown_fields)]
 pub struct PrimaryKey {
     pub from: String,
+    /// `first_word` only (a key is a string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -913,6 +1234,13 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
+        if let Err(e) = src.file_spec() {
+            v(
+                e.code,
+                format!("/sources/{}{}", esc(name), e.pointer),
+                &mut out,
+            );
+        }
     }
     for (name, ty) in &schema.object_types {
         let base = format!("/object_types/{}", esc(name));
@@ -931,11 +1259,62 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
+        if let Owner::Source(s) = &ty.owner
+            && let Some(Ok(Some(spec))) = schema.sources.get(s).map(SourceDef::file_spec)
+        {
+            if !schema.scope_keys.is_empty() {
+                v(
+                    codes::SOURCE_SCOPE_KEYS_UNMAPPED,
+                    format!("{base}/owner/source"),
+                    &mut out,
+                );
+            }
+            let first = |from: &str| -> Option<String> {
+                from.strip_prefix('/').map(|r| {
+                    r.split('/')
+                        .next()
+                        .unwrap_or("")
+                        .replace("~1", "/")
+                        .replace("~0", "~")
+                })
+            };
+            let known = spec.kind.record_fields();
+            let pk = &ty.primary_key.from;
+            if pk != "$action_id" && first(pk).is_some_and(|f| !known.contains(&f.as_str())) {
+                v(
+                    codes::UNKNOWN_SOURCE_FIELD,
+                    format!("{base}/primary_key/from"),
+                    &mut out,
+                );
+            }
+            for (pname, prop) in &ty.properties {
+                if let Some(from) = &prop.from
+                    && first(from).is_some_and(|f| !known.contains(&f.as_str()))
+                {
+                    v(
+                        codes::UNKNOWN_SOURCE_FIELD,
+                        format!("{base}/properties/{}/from", esc(pname)),
+                        &mut out,
+                    );
+                }
+            }
+        }
         let pk = &ty.primary_key.from;
         if pk != "$action_id" && !(pk.starts_with('/') && pk.len() > 1) {
             v(
                 codes::INVALID_PRIMARY_KEY,
                 format!("{base}/primary_key/from"),
+                &mut out,
+            );
+        }
+        if let Some(t) = &ty.primary_key.transform
+            && (t != "first_word"
+                || !matches!(ty.owner, Owner::Source(_))
+                || ty.primary_key.from == "$action_id")
+        {
+            v(
+                codes::INVALID_TRANSFORM,
+                format!("{base}/primary_key/transform"),
                 &mut out,
             );
         }
@@ -950,6 +1329,31 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
             check_type(schema, &prop.ty, &format!("{pp}/type"), false, &mut out);
+            if let Some(t) = &prop.transform {
+                let wanted = match t.as_str() {
+                    "first_word" => Some(ScalarType::String),
+                    "parse_integer" => Some(ScalarType::Integer),
+                    _ => None,
+                };
+                let base = match &prop.ty {
+                    PropertyType::Scalar(s) => Some(*s),
+                    PropertyType::ValueType(r) => {
+                        schema.value_types.get(&r.value_type).map(|d| d.base)
+                    }
+                    _ => None,
+                };
+                if wanted.is_none()
+                    || base != wanted
+                    || prop.from.is_none()
+                    || !matches!(ty.owner, Owner::Source(_))
+                {
+                    v(
+                        codes::INVALID_TRANSFORM,
+                        format!("{pp}/transform"),
+                        &mut out,
+                    );
+                }
+            }
             match (&ty.owner, &prop.from) {
                 (Owner::Ontology, Some(_)) => v(
                     codes::ONTOLOGY_PROPERTY_FROM,
@@ -1047,6 +1451,13 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
             check_type(schema, &param.ty, &format!("{pp}/type"), false, &mut out);
             if param.from.is_some() {
                 v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out);
+            }
+            if param.transform.is_some() {
+                v(
+                    codes::INVALID_TRANSFORM,
+                    format!("{pp}/transform"),
+                    &mut out,
+                );
             }
         }
         let mut seen_codes = BTreeSet::new();
@@ -1714,5 +2125,72 @@ impl SchemaSet {
             Some(s) => s.validate_fields(object_type, fields),
             None => Err(Violation::new(codes::UNKNOWN_TYPE, String::new())),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod source_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn glob_syntax_is_refused_or_matched() {
+        for bad in [
+            "rel/*.md", "/a/{x,y}", "/a/[ab]", "/a/**", "/a/x**/f", "/a//f", "/a/./f", "/a/../f",
+            "/a/\\f", "/a/f/",
+        ] {
+            assert!(Glob::parse(bad).is_err(), "{bad}");
+        }
+        let g = Glob::parse("/w/*/STATE.md").unwrap();
+        assert!(g.matches("/w/a/STATE.md"));
+        assert!(!g.matches("/w/a/b/STATE.md"));
+        assert!(!g.matches("/w/STATE.md"));
+        let g = Glob::parse("/w/**/f?.md").unwrap();
+        assert!(g.matches("/w/f1.md"));
+        assert!(g.matches("/w/a/b/c/f1.md"));
+        assert!(!g.matches("/w/a/f10.md"));
+        let g = Glob::parse("/w/a*b*c").unwrap();
+        assert!(g.matches("/w/abc") && g.matches("/w/aXXbYYc") && !g.matches("/w/aXXbYY"));
+    }
+
+    #[test]
+    fn double_star_matching_is_polynomial_and_capped() {
+        // Eight `**` against a 64-segment path that does not match: the
+        // time bound (5 s) is generous; the old matcher took exponential time.
+        let glob = format!("/{}x", "**/".repeat(8));
+        let g = Glob::parse(&glob).unwrap();
+        let path = format!("/{}", vec!["a"; 64].join("/"));
+        let start = std::time::Instant::now();
+        assert!(!g.matches(&path));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert!(g.matches("/a/b/x"));
+        assert!(Glob::parse(&format!("/{}x", "**/".repeat(9))).is_err());
+    }
+
+    #[test]
+    fn source_options_are_parsed_strictly() {
+        let def = |v: Value| -> SourceDef { serde_json::from_value(v).unwrap() };
+        let spec = def(json!({"kind":"markdown_fields","glob":"/a/*/S.md","fresh_for_s":5}))
+            .file_spec()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (spec.head_lines, spec.complete_listing, spec.fresh_for_s),
+            (40, false, 5)
+        );
+        assert!(
+            def(json!({"kind":"json_records","x":1}))
+                .file_spec()
+                .unwrap()
+                .is_none()
+        );
+        let err = def(json!({"kind":"markdown_fields","glob":"/a/*/S.md"}))
+            .file_spec()
+            .unwrap_err();
+        assert_eq!(
+            (err.code, err.pointer.as_str()),
+            ("invalid_source_option", "/fresh_for_s")
+        );
     }
 }
