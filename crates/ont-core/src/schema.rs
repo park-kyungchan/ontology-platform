@@ -65,6 +65,9 @@ pub mod codes {
     pub const UNKNOWN_SOURCE_FIELD: &str = "unknown_source_field";
     pub const UNKNOWN_TEMPLATE_FIELD: &str = "unknown_template_field";
     pub const INVALID_TEMPLATE: &str = "invalid_template";
+    pub const TEMPLATE_FIELD_NOT_STRING: &str = "template_field_not_string";
+    pub const REFERENCE_ARRAY_FROM_SOURCE_UNSUPPORTED: &str =
+        "reference_array_from_source_unsupported";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
         INVALID_VERSION,
@@ -120,6 +123,8 @@ pub mod codes {
         UNKNOWN_SOURCE_FIELD,
         UNKNOWN_TEMPLATE_FIELD,
         INVALID_TEMPLATE,
+        TEMPLATE_FIELD_NOT_STRING,
+        REFERENCE_ARRAY_FROM_SOURCE_UNSUPPORTED,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -207,6 +212,7 @@ pub struct ValueTypeRef {
 /// `replace_prefix`). Any other shape is kept as `Invalid` so that
 /// `schema check` can refuse it with `invalid_transform`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Transform {
     Named(String),
     SegmentAfter(String),
@@ -636,6 +642,16 @@ impl FileSourceKind {
                 "fields",
             ],
             Self::FileDigest => &["path", "sha256", "size", "mtime", "mode"],
+        }
+    }
+    /// The record fields of `record_fields()` whose value is a string for
+    /// this kind; the only fields a template placeholder may name.
+    pub fn string_record_fields(self) -> &'static [&'static str] {
+        match self {
+            Self::MarkdownFields => &[
+                "path", "dir", "dir_path", "stem", "stem_id", "sha256", "line1",
+            ],
+            Self::FileDigest => &["path", "sha256"],
         }
     }
 }
@@ -1291,22 +1307,33 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
 }
 
 /// Check one template: syntax and length (`invalid_template`), then each
-/// placeholder against `known` record fields when they are known
-/// (`unknown_template_field`).
+/// distinct placeholder name against the record fields when they are
+/// known: an undeclared field is `unknown_template_field`, a declared
+/// field that is never a string is `template_field_not_string`.
+/// `fields` is `(record_fields, string_record_fields)` of the source kind.
 fn check_template(
     template: &str,
-    known: Option<&[&str]>,
+    fields: Option<(&[&str], &[&str])>,
     pointer: String,
     out: &mut Vec<Violation>,
 ) {
     match template_placeholders(template) {
         Err(code) => out.push(Violation::new(code, pointer)),
         Ok(names) => {
-            if let Some(known) = known {
+            if let Some((known, strings)) = fields {
+                let mut seen = BTreeSet::new();
                 for name in &names {
+                    if !seen.insert(name.as_str()) {
+                        continue;
+                    }
                     if !known.contains(&name.as_str()) {
                         out.push(Violation::new(
                             codes::UNKNOWN_TEMPLATE_FIELD,
+                            pointer.clone(),
+                        ));
+                    } else if !strings.contains(&name.as_str()) {
+                        out.push(Violation::new(
+                            codes::TEMPLATE_FIELD_NOT_STRING,
                             pointer.clone(),
                         ));
                     }
@@ -1450,8 +1477,9 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 .and_then(|src| src.file_spec().ok().flatten()),
             Owner::Ontology => None,
         };
-        let known_fields: Option<&[&str]> =
-            file_spec.as_ref().map(|spec| spec.kind.record_fields());
+        let known_fields: Option<(&[&str], &[&str])> = file_spec
+            .as_ref()
+            .map(|spec| (spec.kind.record_fields(), spec.kind.string_record_fields()));
         if let Some(spec) = &file_spec {
             if !schema.scope_keys.is_empty() {
                 v(
@@ -1555,6 +1583,21 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
             check_type(schema, &prop.ty, &format!("{pp}/type"), false, &mut out);
+            if matches!(ty.owner, Owner::Source(_))
+                && matches!(&prop.ty, PropertyType::Array(a)
+                    if matches!(&*a.array, PropertyType::Ref(_)))
+                && (prop.from.is_some() || prop.template.is_some())
+            {
+                v(
+                    codes::REFERENCE_ARRAY_FROM_SOURCE_UNSUPPORTED,
+                    if prop.from.is_some() {
+                        format!("{pp}/from")
+                    } else {
+                        format!("{pp}/template")
+                    },
+                    &mut out,
+                );
+            }
             if prop.from.is_some() && prop.template.is_some() {
                 v(codes::INVALID_TEMPLATE, format!("{pp}/template"), &mut out);
             }

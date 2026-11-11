@@ -1349,6 +1349,25 @@ fn several_globs_union_dedup_exclude_retract_and_missing_root() {
     assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
     let (_, ans) = search(&t, 102, &json!({"object_type":"task"}));
     assert_eq!(keys(&ans), ["a", "c"]);
+    // `glob_root_not_directory` from the second glob: the same rule.
+    std::fs::write(t.0.join("afile"), "x").unwrap();
+    let mut s3 = s2.clone();
+    s3["version"] = json!(3);
+    s3["sources"]["task_states"]["glob"] = json!([
+        format!("{}/*/STATE.md", base.display()),
+        format!("{}/afile/*/STATE.md", t.0.display())
+    ]);
+    let file = t.file("s3.json", &serde_json::to_vec(&s3).unwrap());
+    assert_eq!(
+        run(&["--store", &t.store(), "schema", "install", &file], b"").0,
+        0
+    );
+    let (code, ans) = index(&t, 103, &[]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_not_directory");
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    let (_, ans) = search(&t, 103, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "c"]);
 }
 
 #[test]
@@ -1364,6 +1383,12 @@ fn key_template_and_references_from_record_strings() {
         std::fs::create_dir_all(packets.join(dir)).unwrap();
         std::fs::write(packets.join(dir).join(file), format!("# {file}\n")).unwrap();
     }
+    // An empty `Target:` field: an empty reference string (see below).
+    std::fs::write(
+        packets.join("alpha/TASK-one.md"),
+        "# TASK-one.md\nTarget:\n",
+    )
+    .unwrap();
     let prefix = format!("{}/", packets.display());
     let mut s = schema(&t);
     s["sources"]["packet_files"] = json!({"kind":"markdown_fields",
@@ -1385,7 +1410,8 @@ fn key_template_and_references_from_record_strings() {
         "task_by_segment_unresolved":{"type":{"ref":"task"},"required":false,
             "from":"/dir","transform":{"segment_after":prefix}},
         "task_by_replace_unresolved":{"type":{"ref":"task"},"required":false,
-            "from":"/dir","transform":{"replace_prefix":[prefix,"x"]}}
+            "from":"/dir","transform":{"replace_prefix":[prefix,"x"]}},
+        "task_empty":{"type":{"ref":"task"},"required":false,"from":"/fields/Target"}
     }});
     s["link_types"] = json!({"packet_task":{"from":"packet","via":"task_by_template",
         "to":"task","cardinality":"many_to_one","names":{"forward":"task","reverse":"packets"}}});
@@ -1416,6 +1442,21 @@ fn key_template_and_references_from_record_strings() {
     for prop in ["task_by_segment_unresolved", "task_by_replace_unresolved"] {
         assert_eq!(fields[prop]["kind"], "missing", "{prop}: {fields}");
     }
+    // An empty reference string is stored as missing, never an empty Id.
+    assert_eq!(fields["task_empty"]["kind"], "missing", "{fields}");
+    // Follow a resolved reference: `get` on its Id returns the target.
+    let target = fields["task_by_template"]["value"].clone();
+    let (code, ans) = get_obj(
+        &t,
+        target["object_type"].as_str().unwrap(),
+        target["native_key"].as_str().unwrap(),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["objects"][0]["id"]["native_key"], "alpha");
+    assert_eq!(
+        ans["result"]["objects"][0]["observations"][0]["fields"]["directory"]["value"],
+        t.tasks().join("alpha").display().to_string()
+    );
     // No hyphen in `TASK`: `stem_id` is absent, so the template is unresolved.
     let plain = objs
         .iter()
@@ -1453,6 +1494,28 @@ fn key_template_and_references_from_record_strings() {
     assert_eq!(
         keys(&ans),
         ["alpha/TASK", "alpha/TASK-one", "ghost/TASK-two"]
+    );
+    // Rename a packet file: the key template's input changes, so in one
+    // run the old object is retracted and the new one appended.
+    std::fs::rename(
+        packets.join("alpha/TASK-one.md"),
+        packets.join("alpha/TASK-three.md"),
+    )
+    .unwrap();
+    let (code, ans) = index(&t, 201, &[]);
+    assert_eq!(code, 0, "{ans}");
+    let packet_entry = ans["result"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["source"] == "packet_files")
+        .unwrap()
+        .clone();
+    assert_eq!(appended(&packet_entry), [1, 0, 0, 1], "{packet_entry}");
+    let (_, ans) = search(&t, 201, &json!({"object_type":"packet"}));
+    assert_eq!(
+        keys(&ans),
+        ["alpha/TASK", "alpha/TASK-three", "ghost/TASK-two"]
     );
 }
 
@@ -1554,6 +1617,52 @@ fn schema_check_refuses_templates_glob_arrays_and_new_transforms() {
         p(
             "invalid_template",
             "/object_types/task/primary_key/template"
+        )
+    );
+    // A placeholder naming a field that is never a string, and duplicate
+    // placeholder names giving one violation each.
+    for field in ["size", "mtime", "fields"] {
+        assert_eq!(
+            with(&|s| {
+                let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+                prop.as_object_mut().unwrap().remove("from");
+                prop["template"] = json!(format!("{{{field}}}"));
+            }),
+            p("template_field_not_string", tpl_ptr),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        with(&|s| {
+            let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+            prop.as_object_mut().unwrap().remove("from");
+            prop["template"] = json!("{nope}{nope}");
+        }),
+        p("unknown_template_field", tpl_ptr)
+    );
+    assert_eq!(
+        with(&|s| {
+            let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+            prop.as_object_mut().unwrap().remove("from");
+            prop["template"] = json!("{size}{size}");
+        }),
+        p("template_field_not_string", tpl_ptr)
+    );
+    // An array-of-references property filled from a source is refused.
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["properties"]["owner_line"] =
+            json!({"type":{"array":{"ref":"task"}},"required":false,"from":"/dir"})),
+        p(
+            "reference_array_from_source_unsupported",
+            "/object_types/task/properties/owner_line/from"
+        )
+    );
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["properties"]["owner_line"] =
+            json!({"type":{"array":{"ref":"task"}},"required":false,"template":"{dir}"})),
+        p(
+            "reference_array_from_source_unsupported",
+            "/object_types/task/properties/owner_line/template"
         )
     );
     // New transforms.

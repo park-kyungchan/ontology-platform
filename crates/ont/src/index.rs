@@ -570,7 +570,7 @@ fn apply_transform(value: &Value, transform: Option<&Transform>) -> Option<Value
             let s = value.as_str()?;
             let rest = s.strip_prefix(prefix.as_str())?;
             let segment = rest.split('/').next()?;
-            if segment.is_empty() {
+            if segment.is_empty() || segment == "." || segment == ".." {
                 None
             } else {
                 Some(json!(segment))
@@ -665,6 +665,20 @@ mod tests {
             Some(json!("my-task"))
         );
         assert_eq!(resolve_mapped(&rec, Some("/dir"), None, Some(&seg)), None);
+        // `.` and `..` are not segments; `//` is empty; a lone file name is.
+        for (value, want) in [
+            ("/w/../x", None),
+            ("/w/./x", None),
+            ("/w//x", None),
+            ("/w/x.md", Some(json!("x.md"))),
+        ] {
+            let rec = json!({"path": value});
+            assert_eq!(
+                resolve_mapped(&rec, Some("/path"), None, Some(&seg)),
+                want,
+                "{value}"
+            );
+        }
         let rep = Transform::ReplacePrefix(["/w/".to_string(), String::new()]);
         assert_eq!(
             resolve_mapped(&rec, Some("/path"), None, Some(&rep)),

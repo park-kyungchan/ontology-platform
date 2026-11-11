@@ -628,6 +628,19 @@ mod tests {
             let mut listed: Vec<&str> = kind.record_fields().to_vec();
             listed.sort_unstable();
             assert_eq!(produced, listed, "{kind:?}");
+            // The string-valued keys are exactly `string_record_fields()`.
+            let mut strings: Vec<&str> = record
+                .value
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, v)| v.is_string())
+                .map(|(k, _)| k.as_str())
+                .collect();
+            strings.sort_unstable();
+            let mut want_strings: Vec<&str> = kind.string_record_fields().to_vec();
+            want_strings.sort_unstable();
+            assert_eq!(strings, want_strings, "{kind:?}");
         }
         let _ = std::fs::remove_dir_all(&d);
     }
