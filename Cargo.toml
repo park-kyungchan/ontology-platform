@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ont-core", "crates/ont-store", "crates/ontd"]
+members = ["crates/ont-core", "crates/ont-store", "crates/ontd", "crates/ont"]
 resolver = "3"
 
 [workspace.package]
@@ -15,6 +15,7 @@ rusqlite = { version = "=0.32.1", features = ["bundled"] }
 sha2 = "=0.10.9"
 ont-core = { path = "crates/ont-core", version = "=0.1.0" }
 ont-store = { path = "crates/ont-store", version = "=0.1.0" }
+ont = { path = "crates/ont", version = "=0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

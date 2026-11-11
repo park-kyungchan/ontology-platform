@@ -1650,6 +1650,17 @@ impl SchemaSet {
     pub fn schema(&self, domain: &str) -> Option<&Schema> {
         self.domains.get(domain)
     }
+    /// This set with one domain replaced (or added) by a checked schema.
+    pub fn with_domain(&self, checked: CheckedSchema) -> Result<Self, Vec<Violation>> {
+        let mut entries: Vec<(Schema, Option<SchemaPin>)> = self
+            .domains
+            .iter()
+            .filter(|(d, _)| *d != &checked.schema.domain)
+            .map(|(d, s)| (s.clone(), self.pins.get(d).cloned()))
+            .collect();
+        entries.push((checked.schema, Some(checked.pin)));
+        Self::build(entries)
+    }
     pub fn pin(&self, domain: &str) -> Option<&SchemaPin> {
         self.pins.get(domain)
     }

@@ -1362,3 +1362,60 @@ fn busy_writer_holds_transaction_while_reader_reads_committed_row() {
         .unwrap();
     assert!(first.head(&held).unwrap().is_some());
 }
+
+#[test]
+fn panic_inside_write_closure_leaves_nothing_written() {
+    let mut store = store_with_work();
+    let thing = id("thing", "panic");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<(), StoreRefusal> = store.write(40, |tx| {
+            tx.append(&append(&thing, name_obs("r1", Change::Initial, None, "a")))?;
+            tx.log_action(&log_entry("act-panic"))?;
+            panic!("simulated closure panic");
+        });
+    }));
+    assert!(result.is_err());
+    assert_eq!(store.head(&thing).unwrap(), None);
+    assert_eq!(store.action_log().unwrap().len(), 0);
+    // The store still works afterwards.
+    store
+        .append_schema(
+            &[append(&thing, name_obs("r1", Change::Initial, None, "a"))],
+            41,
+        )
+        .unwrap();
+}
+
+#[test]
+fn log_action_refuses_domain_and_stale_schema_version() {
+    let mut store = store_with_work();
+    let mut wrong_domain = log_entry("act-x");
+    wrong_domain.domain = "academy".into();
+    assert_eq!(
+        store.append_action_log(&wrong_domain).unwrap_err().code,
+        "action_domain_mismatch"
+    );
+    let mut stale = log_entry("act-y");
+    stale.schema_version = 99;
+    assert_eq!(
+        store.append_action_log(&stale).unwrap_err().code,
+        "action_schema_mismatch"
+    );
+    assert!(store.action_log().unwrap().is_empty());
+}
+
+#[test]
+fn backup_to_refuses_existing_target_and_copy_opens_with_same_pins() {
+    let temp = Temp::new();
+    let path = temp.0.join("v3.sqlite");
+    let mut store = Store::open_schema(&path).unwrap();
+    install(&mut store, &work_bytes(1), 100);
+    let target = temp.0.join("copy.sqlite");
+    store.backup_to(&target).unwrap();
+    assert_eq!(
+        store.backup_to(&target).unwrap_err().code,
+        "backup_target_exists"
+    );
+    let mut copy = Store::open_schema(&target).unwrap();
+    assert_eq!(copy.schema_pins().unwrap(), store.schema_pins().unwrap());
+}
