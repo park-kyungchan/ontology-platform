@@ -1285,3 +1285,348 @@ fn a_literal_prefix_that_is_not_a_directory_fails_a_complete_listing_source() {
     let (code, ans) = index(&t, 13, &[]);
     assert_eq!(code, 0, "{ans}");
 }
+
+fn get_obj(t: &Temp, object_type: &str, key: &str) -> (i32, Value) {
+    let req = json!({"id":{"object_type":object_type,
+        "namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":key}});
+    run(
+        &["--store", &t.store(), "get"],
+        &serde_json::to_vec(&req).unwrap(),
+    )
+}
+fn ref_id(key: &str) -> Value {
+    json!({"object_type":"task",
+        "namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":key})
+}
+
+#[test]
+fn several_globs_union_dedup_exclude_retract_and_missing_root() {
+    let t = Temp::new();
+    let base = t.tasks();
+    std::fs::create_dir_all(base.join("a/b/c")).unwrap();
+    std::fs::create_dir_all(base.join("excluded")).unwrap();
+    std::fs::write(base.join("a/STATE.md"), "# a\n").unwrap();
+    std::fs::write(base.join("a/b/STATE.md"), "# b\n").unwrap();
+    std::fs::write(base.join("a/b/c/STATE.md"), "# c\n").unwrap();
+    std::fs::write(base.join("excluded/STATE.md"), "# x\n").unwrap();
+    let mut s = schema(&t);
+    s["sources"]["task_states"]["glob"] = json!([
+        format!("{}/*/STATE.md", base.display()),
+        format!("{}/*/*/STATE.md", base.display()),
+        format!("{}/**/STATE.md", base.display())
+    ]);
+    s["sources"]["task_states"]["exclude"] = json!([format!("{}/excluded", base.display())]);
+    install(&t, &s);
+    let (code, ans) = index(&t, 100, &[]);
+    assert_eq!(code, 0, "{ans}");
+    // Union: three distinct files; `a` and `b` are also matched by `**`.
+    assert_eq!(first_source(&ans)["records"], 3, "{ans}");
+    assert_eq!(appended(first_source(&ans)), [3, 0, 0, 0]);
+    let (_, ans) = search(&t, 100, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "b", "c"]);
+    // Remove the depth-2 file: retracted against the union.
+    std::fs::remove_file(base.join("a/b/STATE.md")).unwrap();
+    let (_, ans) = index(&t, 101, &[]);
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 1], "{ans}");
+    let (_, ans) = search(&t, 101, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "c"]);
+    // A glob with a missing literal root fails the whole source: nothing
+    // appended and nothing retracted.
+    let mut s2 = s.clone();
+    s2["version"] = json!(2);
+    s2["sources"]["task_states"]["glob"] = json!([
+        format!("{}/*/STATE.md", base.display()),
+        format!("{}/gone/*/STATE.md", base.display())
+    ]);
+    let file = t.file("s2.json", &serde_json::to_vec(&s2).unwrap());
+    assert_eq!(
+        run(&["--store", &t.store(), "schema", "install", &file], b"").0,
+        0
+    );
+    let (code, ans) = index(&t, 102, &[]);
+    assert_eq!(code, 2, "{ans}");
+    assert_eq!(first_source(&ans)["code"], "glob_root_missing");
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    let (_, ans) = search(&t, 102, &json!({"object_type":"task"}));
+    assert_eq!(keys(&ans), ["a", "c"]);
+}
+
+#[test]
+fn key_template_and_references_from_record_strings() {
+    let t = Temp::new();
+    t.task("alpha", "# Alpha\nOwner: lead\n");
+    let packets = t.0.join("packets");
+    for (dir, file) in [
+        ("alpha", "TASK-one.md"),
+        ("alpha", "TASK.md"),
+        ("ghost", "TASK-two.md"),
+    ] {
+        std::fs::create_dir_all(packets.join(dir)).unwrap();
+        std::fs::write(packets.join(dir).join(file), format!("# {file}\n")).unwrap();
+    }
+    let prefix = format!("{}/", packets.display());
+    let mut s = schema(&t);
+    s["sources"]["packet_files"] = json!({"kind":"markdown_fields",
+        "glob":format!("{}/*/TASK*.md", packets.display()),
+        "head_lines":40,"complete_listing":true,"fresh_for_s":3600});
+    s["object_types"]["packet"] = json!({
+    "owner":{"source":"packet_files"},
+    "primary_key":{"template":"{dir}/{stem}"},
+    "title":"title_line",
+    "properties":{
+        "title_line":{"type":"string","required":true,"from":"/line1"},
+        "task_by_template":{"type":{"ref":"task"},"required":false,"template":"{dir}"},
+        "task_by_segment":{"type":{"ref":"task"},"required":false,"from":"/dir_path",
+            "transform":{"segment_after":prefix}},
+        "task_by_replace":{"type":{"ref":"task"},"required":false,"from":"/dir_path",
+            "transform":{"replace_prefix":[prefix,""]}},
+        "task_by_template_unresolved":{"type":{"ref":"task"},"required":false,
+            "template":"{stem_id}"},
+        "task_by_segment_unresolved":{"type":{"ref":"task"},"required":false,
+            "from":"/dir","transform":{"segment_after":prefix}},
+        "task_by_replace_unresolved":{"type":{"ref":"task"},"required":false,
+            "from":"/dir","transform":{"replace_prefix":[prefix,"x"]}}
+    }});
+    s["link_types"] = json!({"packet_task":{"from":"packet","via":"task_by_template",
+        "to":"task","cardinality":"many_to_one","names":{"forward":"task","reverse":"packets"}}});
+    s["grants"][0]["read"] = json!(["task", "note", "packet"]);
+    install(&t, &s);
+    let (code, ans) = index(&t, 200, &[]);
+    assert_eq!(code, 0, "{ans}");
+    let (_, ans) = search(&t, 200, &json!({"object_type":"packet"}));
+    // Key template over two fields: `{dir}/{stem}`.
+    assert_eq!(
+        keys(&ans),
+        ["alpha/TASK", "alpha/TASK-one", "ghost/TASK-two"]
+    );
+    let objs = ans["result"]["objects"].as_array().unwrap();
+    let one = objs
+        .iter()
+        .find(|o| o["id"]["native_key"] == "alpha/TASK-one")
+        .unwrap();
+    let fields = &one["head"]["fields"];
+    for prop in ["task_by_template", "task_by_segment", "task_by_replace"] {
+        assert_eq!(fields[prop]["kind"], "value", "{prop}: {fields}");
+        assert_eq!(fields[prop]["value"], ref_id("alpha"), "{prop}");
+    }
+    assert_eq!(
+        fields["task_by_template_unresolved"]["value"],
+        ref_id("one")
+    );
+    for prop in ["task_by_segment_unresolved", "task_by_replace_unresolved"] {
+        assert_eq!(fields[prop]["kind"], "missing", "{prop}: {fields}");
+    }
+    // No hyphen in `TASK`: `stem_id` is absent, so the template is unresolved.
+    let plain = objs
+        .iter()
+        .find(|o| o["id"]["native_key"] == "alpha/TASK")
+        .unwrap();
+    assert_eq!(
+        plain["head"]["fields"]["task_by_template_unresolved"]["kind"],
+        "missing"
+    );
+    // Dangling reference: stored as it is; `get` returns the full Id even
+    // though no `ghost` task exists, and `search` on tasks finds none.
+    let (code, ans) = get_obj(&t, "packet", "ghost/TASK-two");
+    assert_eq!(code, 0, "{ans}");
+    let ghost_fields = &ans["result"]["objects"][0]["observations"][0]["fields"];
+    assert_eq!(ghost_fields["task_by_template"]["value"], ref_id("ghost"));
+    let (_, ans) = search(
+        &t,
+        200,
+        &json!({"object_type":"task","where":{"eq":["directory",
+            t.tasks().join("ghost").display().to_string()]}}),
+    );
+    assert_eq!(keys(&ans), Vec::<String>::new());
+    // `search` compares a reference with `eq` (full Id) and `unresolved`.
+    let (_, ans) = search(
+        &t,
+        200,
+        &json!({"object_type":"packet","where":{"eq":["task_by_template", ref_id("alpha")]}}),
+    );
+    assert_eq!(keys(&ans), ["alpha/TASK", "alpha/TASK-one"]);
+    let (_, ans) = search(
+        &t,
+        200,
+        &json!({"object_type":"packet","where":{"unresolved":"task_by_segment_unresolved"}}),
+    );
+    assert_eq!(
+        keys(&ans),
+        ["alpha/TASK", "alpha/TASK-one", "ghost/TASK-two"]
+    );
+}
+
+#[test]
+fn schema_check_refuses_templates_glob_arrays_and_new_transforms() {
+    let t = Temp::new();
+    let base = schema(&t);
+    let check = |s: &Value| -> Vec<(String, String)> {
+        let file = t.file("c.json", &serde_json::to_vec(s).unwrap());
+        let (_, ans) = run(&["--store", &t.store(), "schema", "check", &file], b"");
+        ans["violations"]
+            .as_array()
+            .map(|v| {
+                v.iter()
+                    .map(|x| {
+                        (
+                            x["code"].as_str().unwrap().to_string(),
+                            x["pointer"].as_str().unwrap().to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let with = |edit: &dyn Fn(&mut Value)| {
+        let mut s = base.clone();
+        edit(&mut s);
+        check(&s)
+    };
+    let p = |c: &str, p: &str| vec![(c.to_string(), p.to_string())];
+    // Glob array forms.
+    assert_eq!(
+        with(&|s| s["sources"]["task_states"]["glob"] = json!([])),
+        p("invalid_source_option", "/sources/task_states/glob")
+    );
+    assert_eq!(
+        with(&|s| s["sources"]["task_states"]["glob"] = json!(vec!["/a/*/S.md"; 17])),
+        p("invalid_source_option", "/sources/task_states/glob")
+    );
+    assert_eq!(
+        with(&|s| s["sources"]["task_states"]["glob"] = json!(["/a/*/S.md", "rel/S.md"])),
+        p("invalid_glob", "/sources/task_states/glob/1")
+    );
+    assert_eq!(
+        with(&|s| s["sources"]["task_states"]["glob"] = json!(["/a/*/S.md", 1])),
+        p("invalid_source_option", "/sources/task_states/glob/1")
+    );
+    // Templates.
+    let tpl_ptr = "/object_types/task/properties/owner_line/template";
+    assert_eq!(
+        with(&|s| {
+            let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+            prop.as_object_mut().unwrap().remove("from");
+            prop["template"] = json!("{nope}");
+        }),
+        p("unknown_template_field", tpl_ptr)
+    );
+    for bad in [
+        "{dir",
+        "{}",
+        "{dir}}",
+        "{di r}",
+        "{dir}{dir}{dir}{dir}{dir}{dir}{dir}{dir}{dir}",
+    ] {
+        assert_eq!(
+            with(&|s| {
+                let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+                prop.as_object_mut().unwrap().remove("from");
+                prop["template"] = json!(bad);
+            }),
+            p("invalid_template", tpl_ptr),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        with(&|s| {
+            let prop = &mut s["object_types"]["task"]["properties"]["owner_line"];
+            prop.as_object_mut().unwrap().remove("from");
+            prop["template"] = json!("x".repeat(257));
+        }),
+        p("invalid_template", tpl_ptr)
+    );
+    assert_eq!(
+        with(
+            &|s| s["object_types"]["task"]["properties"]["owner_line"]["template"] = json!("{dir}")
+        ),
+        p("invalid_template", tpl_ptr)
+    );
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["primary_key"] = json!({"template":"{nope}"})),
+        p(
+            "unknown_template_field",
+            "/object_types/task/primary_key/template"
+        )
+    );
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["primary_key"] =
+            json!({"from":"/dir","template":"{dir}"})),
+        p(
+            "invalid_template",
+            "/object_types/task/primary_key/template"
+        )
+    );
+    // New transforms.
+    let tr_ptr = "/object_types/task/properties/owner_line/transform";
+    for bad in [
+        json!({"segment_after": "relative/"}),
+        json!({"segment_after": "/no-trailing-slash"}),
+        json!({"segment_after": 123}),
+        json!({"segment_after": format!("/{}/", "x".repeat(1024))}),
+        json!({"replace_prefix": ["/a"]}),
+        json!({"replace_prefix": ["x".repeat(1025), ""]}),
+        json!({"replace_prefix": ["", "x"]}),
+        json!({"unknown_transform": "/a/"}),
+    ] {
+        assert_eq!(
+            with(
+                &|s| s["object_types"]["task"]["properties"]["owner_line"]["transform"] =
+                    bad.clone()
+            ),
+            p("invalid_transform", tr_ptr),
+            "{bad}"
+        );
+    }
+    // A reference property whose target type is not declared.
+    assert_eq!(
+        with(&|s| s["object_types"]["task"]["properties"]["owner_line"] =
+            json!({"type":{"ref":"nope"},"required":false,"from":"/dir"})),
+        p(
+            "unknown_type",
+            "/object_types/task/properties/owner_line/type"
+        )
+    );
+    // Valid forms are described as declared.
+    let mut good = base.clone();
+    good["object_types"]["task"]["properties"]["owner_line"]["transform"] =
+        json!({"segment_after": "/a/"});
+    good["object_types"]["task"]["properties"]["directory"]["template"] = json!("{dir}");
+    good["object_types"]["task"]["properties"]["directory"]
+        .as_object_mut()
+        .unwrap()
+        .remove("from");
+    assert!(check(&good).is_empty(), "{:?}", check(&good));
+    install(&t, &good);
+    let (_, ans) = run(&["--store", &t.store(), "describe"], b"{}");
+    let task = ans["result"]["object_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "task")
+        .unwrap()
+        .clone();
+    let props = task["properties"].as_array().unwrap();
+    let owner = props.iter().find(|x| x["name"] == "owner_line").unwrap();
+    assert_eq!(owner["transform"], json!({"segment_after": "/a/"}));
+    let dir = props.iter().find(|x| x["name"] == "directory").unwrap();
+    assert_eq!(dir["template"], "{dir}");
+}
+
+#[test]
+fn existing_example_fixture_keeps_its_pin() {
+    const EXAMPLE: &[u8] = include_bytes!("../../ont-core/tests/schema-fixtures/example.json");
+    let t = Temp::new();
+    let file = t.file("example.json", EXAMPLE);
+    let (code, ans) = run(&["--store", &t.store(), "schema", "check", &file], b"");
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["clean"], true);
+    assert_eq!(
+        ans["pin"]["sha256"],
+        "1f7c885dc163d8d6ffbaceb573f178bc239d890069effe93c8f1626ee0132ad0"
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(EXAMPLE)),
+        "1f7c885dc163d8d6ffbaceb573f178bc239d890069effe93c8f1626ee0132ad0"
+    );
+}

@@ -63,6 +63,8 @@ pub mod codes {
     pub const INVALID_TRANSFORM: &str = "invalid_transform";
     pub const SOURCE_SCOPE_KEYS_UNMAPPED: &str = "source_scope_keys_unmapped";
     pub const UNKNOWN_SOURCE_FIELD: &str = "unknown_source_field";
+    pub const UNKNOWN_TEMPLATE_FIELD: &str = "unknown_template_field";
+    pub const INVALID_TEMPLATE: &str = "invalid_template";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
         INVALID_VERSION,
@@ -116,6 +118,8 @@ pub mod codes {
         INVALID_TRANSFORM,
         SOURCE_SCOPE_KEYS_UNMAPPED,
         UNKNOWN_SOURCE_FIELD,
+        UNKNOWN_TEMPLATE_FIELD,
+        INVALID_TEMPLATE,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -198,6 +202,95 @@ pub struct ValueTypeRef {
     pub value_type: String,
 }
 
+/// A value transform: a named string transform (`first_word`,
+/// `parse_integer`) or a single-key object (`segment_after`,
+/// `replace_prefix`). Any other shape is kept as `Invalid` so that
+/// `schema check` can refuse it with `invalid_transform`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Transform {
+    Named(String),
+    SegmentAfter(String),
+    ReplacePrefix([String; 2]),
+    Invalid(Value),
+}
+impl Transform {
+    /// Whether the declared form is one of the four accepted transforms.
+    pub fn form_valid(&self) -> bool {
+        match self {
+            Self::Named(n) => TRANSFORMS.contains(&n.as_str()),
+            Self::SegmentAfter(p) => {
+                p.len() <= MAX_TRANSFORM_ARG_BYTES && p.starts_with('/') && p.ends_with('/')
+            }
+            Self::ReplacePrefix([from, to]) => {
+                !from.is_empty()
+                    && from.len() <= MAX_TRANSFORM_ARG_BYTES
+                    && to.len() <= MAX_TRANSFORM_ARG_BYTES
+            }
+            Self::Invalid(_) => false,
+        }
+    }
+    /// Whether this transform produces a string (`parse_integer` does not).
+    pub fn produces_string(&self) -> bool {
+        !matches!(self, Self::Named(n) if n == "parse_integer")
+    }
+}
+impl Serialize for Transform {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Named(n) => s.serialize_str(n),
+            Self::SegmentAfter(p) => {
+                #[derive(Serialize)]
+                struct W<'a> {
+                    segment_after: &'a str,
+                }
+                W { segment_after: p }.serialize(s)
+            }
+            Self::ReplacePrefix(pair) => {
+                #[derive(Serialize)]
+                struct W<'a> {
+                    replace_prefix: &'a [String; 2],
+                }
+                W {
+                    replace_prefix: pair,
+                }
+                .serialize(s)
+            }
+            Self::Invalid(v) => v.serialize(s),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for Transform {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        Ok(match v {
+            Value::String(n) => Self::Named(n),
+            Value::Object(ref map) if map.len() == 1 => {
+                if let Some(Value::String(p)) = map.get("segment_after") {
+                    Self::SegmentAfter(p.clone())
+                } else if let Some(Value::Array(items)) = map.get("replace_prefix")
+                    && items.len() == 2
+                    && items.iter().all(|i| i.is_string())
+                {
+                    Self::ReplacePrefix([
+                        items[0].as_str().unwrap_or_default().to_string(),
+                        items[1].as_str().unwrap_or_default().to_string(),
+                    ])
+                } else {
+                    Self::Invalid(v)
+                }
+            }
+            other => Self::Invalid(other),
+        })
+    }
+}
+
+/// Largest argument of a `segment_after` / `replace_prefix` transform.
+pub const MAX_TRANSFORM_ARG_BYTES: usize = 1_024;
+/// Longest `template` string, in bytes.
+pub const MAX_TEMPLATE_BYTES: usize = 256;
+/// Most placeholders in one `template`.
+pub const MAX_TEMPLATE_PLACEHOLDERS: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropertyDef {
@@ -207,16 +300,58 @@ pub struct PropertyDef {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// Alternative to `from`: a string with `{field}` placeholders naming
+    /// top-level record fields. Mutually exclusive with `from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
-    /// One of `TRANSFORMS`: rewrites the value `from` resolves to. Only on a
-    /// property of a source-owned type that has `from`.
+    /// Rewrites the value `from` or `template` resolves to. Only on a
+    /// property of a source-owned type that has `from` or `template`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transform: Option<String>,
+    pub transform: Option<Transform>,
 }
 
-/// The only transforms a mapping may name (applied by the indexer).
+/// The only named transforms a mapping may name (applied by the indexer).
 pub const TRANSFORMS: &[&str] = &["first_word", "parse_integer"];
+
+/// Placeholders of a template, or `invalid_template` when malformed:
+/// an unclosed or stray brace, an empty or nested placeholder, or more
+/// than `MAX_TEMPLATE_PLACEHOLDERS` placeholders.
+pub fn template_placeholders(template: &str) -> Result<Vec<String>, &'static str> {
+    if template.len() > MAX_TEMPLATE_BYTES {
+        return Err(codes::INVALID_TEMPLATE);
+    }
+    let mut names = Vec::new();
+    let mut rest = template;
+    while let Some(c) = rest.chars().next() {
+        match c {
+            '{' => {
+                let Some(end) = rest.find('}') else {
+                    return Err(codes::INVALID_TEMPLATE);
+                };
+                let name = &rest[1..end];
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                {
+                    return Err(codes::INVALID_TEMPLATE);
+                }
+                names.push(name.to_string());
+                if names.len() > MAX_TEMPLATE_PLACEHOLDERS {
+                    return Err(codes::INVALID_TEMPLATE);
+                }
+                rest = &rest[end + 1..];
+            }
+            '}' => return Err(codes::INVALID_TEMPLATE),
+            _ => {
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+    Ok(names)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -470,7 +605,8 @@ pub enum FileSourceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSourceSpec {
     pub kind: FileSourceKind,
-    /// `glob` (one entry) for `markdown_fields`; `paths` for `file_digest`.
+    /// `glob` (one string or 1 to 16 globs) for `markdown_fields`;
+    /// `paths` for `file_digest`.
     pub globs: Vec<Glob>,
     pub exclude: Vec<Glob>,
     /// Lines parsed for `fields`; `markdown_fields` only (default 40).
@@ -488,6 +624,8 @@ pub struct SourceOptionError {
 const MAX_HEAD_LINES: u64 = 10_000;
 const MAX_FRESH_FOR_S: u64 = 315_360_000;
 const MAX_GLOB_LIST: usize = 256;
+/// Most globs in the array form of a `markdown_fields` `glob` option.
+pub const MAX_SOURCE_GLOBS: usize = 16;
 
 impl FileSourceKind {
     /// The record fields (first pointer segments) this kind produces.
@@ -549,6 +687,22 @@ impl SourceDef {
             FileSourceKind::MarkdownFields => match self.options.get("glob") {
                 Some(Value::String(text)) => {
                     vec![Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, "/glob"))?]
+                }
+                Some(Value::Array(items)) => {
+                    if items.is_empty() || items.len() > MAX_SOURCE_GLOBS {
+                        return Err(err(codes::INVALID_SOURCE_OPTION, "/glob"));
+                    }
+                    let mut out = Vec::new();
+                    for (i, item) in items.iter().enumerate() {
+                        let pointer = format!("/glob/{i}");
+                        let Some(text) = item.as_str() else {
+                            return Err(err(codes::INVALID_SOURCE_OPTION, &pointer));
+                        };
+                        out.push(
+                            Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, &pointer))?,
+                        );
+                    }
+                    out
                 }
                 _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/glob")),
             },
@@ -633,10 +787,14 @@ impl<'de> Deserialize<'de> for Owner {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimaryKey {
-    pub from: String,
-    /// `first_word` only (a key is a string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transform: Option<String>,
+    pub from: Option<String>,
+    /// Alternative to `from`; mutually exclusive with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// A string-producing transform only (a key is a string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<Transform>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1132,6 +1290,32 @@ fn duplicate_key_pointer(bytes: &[u8]) -> Option<String> {
     scan.value("", 0).flatten()
 }
 
+/// Check one template: syntax and length (`invalid_template`), then each
+/// placeholder against `known` record fields when they are known
+/// (`unknown_template_field`).
+fn check_template(
+    template: &str,
+    known: Option<&[&str]>,
+    pointer: String,
+    out: &mut Vec<Violation>,
+) {
+    match template_placeholders(template) {
+        Err(code) => out.push(Violation::new(code, pointer)),
+        Ok(names) => {
+            if let Some(known) = known {
+                for name in &names {
+                    if !known.contains(&name.as_str()) {
+                        out.push(Violation::new(
+                            codes::UNKNOWN_TEMPLATE_FIELD,
+                            pointer.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Semantic checks of DESIGN section 3 "Format and checks".
 pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Violation> {
     let mut out: Vec<Violation> = Vec::new();
@@ -1259,9 +1443,16 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
-        if let Owner::Source(s) = &ty.owner
-            && let Some(Ok(Some(spec))) = schema.sources.get(s).map(SourceDef::file_spec)
-        {
+        let file_spec = match &ty.owner {
+            Owner::Source(s) => schema
+                .sources
+                .get(s)
+                .and_then(|src| src.file_spec().ok().flatten()),
+            Owner::Ontology => None,
+        };
+        let known_fields: Option<&[&str]> =
+            file_spec.as_ref().map(|spec| spec.kind.record_fields());
+        if let Some(spec) = &file_spec {
             if !schema.scope_keys.is_empty() {
                 v(
                     codes::SOURCE_SCOPE_KEYS_UNMAPPED,
@@ -1279,8 +1470,10 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 })
             };
             let known = spec.kind.record_fields();
-            let pk = &ty.primary_key.from;
-            if pk != "$action_id" && first(pk).is_some_and(|f| !known.contains(&f.as_str())) {
+            if let Some(pk) = &ty.primary_key.from
+                && pk != "$action_id"
+                && first(pk).is_some_and(|f| !known.contains(&f.as_str()))
+            {
                 v(
                     codes::UNKNOWN_SOURCE_FIELD,
                     format!("{base}/primary_key/from"),
@@ -1299,18 +1492,51 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 }
             }
         }
-        let pk = &ty.primary_key.from;
-        if pk != "$action_id" && !(pk.starts_with('/') && pk.len() > 1) {
+        let pk = &ty.primary_key;
+        match (&pk.from, &pk.template) {
+            (Some(_), Some(_)) => v(
+                codes::INVALID_TEMPLATE,
+                format!("{base}/primary_key/template"),
+                &mut out,
+            ),
+            (None, None) => v(
+                codes::INVALID_PRIMARY_KEY,
+                format!("{base}/primary_key/from"),
+                &mut out,
+            ),
+            _ => {}
+        }
+        if let Some(f) = &pk.from
+            && f != "$action_id"
+            && !(f.starts_with('/') && f.len() > 1)
+        {
             v(
                 codes::INVALID_PRIMARY_KEY,
                 format!("{base}/primary_key/from"),
                 &mut out,
             );
         }
+        if let Some(tpl) = &pk.template {
+            check_template(
+                tpl,
+                known_fields,
+                format!("{base}/primary_key/template"),
+                &mut out,
+            );
+            if matches!(ty.owner, Owner::Ontology) {
+                v(
+                    codes::INVALID_TEMPLATE,
+                    format!("{base}/primary_key/template"),
+                    &mut out,
+                );
+            }
+        }
         if let Some(t) = &ty.primary_key.transform
-            && (t != "first_word"
+            && (!t.form_valid()
+                || !t.produces_string()
                 || !matches!(ty.owner, Owner::Source(_))
-                || ty.primary_key.from == "$action_id")
+                || ty.primary_key.from.as_deref() == Some("$action_id")
+                || (ty.primary_key.from.is_none() && ty.primary_key.template.is_none()))
         {
             v(
                 codes::INVALID_TRANSFORM,
@@ -1329,22 +1555,39 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 v(codes::INVALID_NAME, pp.clone(), &mut out);
             }
             check_type(schema, &prop.ty, &format!("{pp}/type"), false, &mut out);
+            if prop.from.is_some() && prop.template.is_some() {
+                v(codes::INVALID_TEMPLATE, format!("{pp}/template"), &mut out);
+            }
+            if let Some(tpl) = &prop.template {
+                check_template(tpl, known_fields, format!("{pp}/template"), &mut out);
+            }
             if let Some(t) = &prop.transform {
-                let wanted = match t.as_str() {
-                    "first_word" => Some(ScalarType::String),
-                    "parse_integer" => Some(ScalarType::Integer),
-                    _ => None,
-                };
-                let base = match &prop.ty {
-                    PropertyType::Scalar(s) => Some(*s),
-                    PropertyType::ValueType(r) => {
-                        schema.value_types.get(&r.value_type).map(|d| d.base)
+                let integer = matches!(t, Transform::Named(n) if n == "parse_integer");
+                let compatible = match &prop.ty {
+                    PropertyType::Ref(_) => t.produces_string(),
+                    PropertyType::Scalar(s) => {
+                        if integer {
+                            *s == ScalarType::Integer
+                        } else {
+                            *s == ScalarType::String
+                        }
                     }
-                    _ => None,
+                    PropertyType::ValueType(r) => schema
+                        .value_types
+                        .get(&r.value_type)
+                        .map(|d| d.base)
+                        .is_some_and(|base| {
+                            if integer {
+                                base == ScalarType::Integer
+                            } else {
+                                base == ScalarType::String
+                            }
+                        }),
+                    _ => false,
                 };
-                if wanted.is_none()
-                    || base != wanted
-                    || prop.from.is_none()
+                if !t.form_valid()
+                    || !compatible
+                    || (prop.from.is_none() && prop.template.is_none())
                     || !matches!(ty.owner, Owner::Source(_))
                 {
                     v(
@@ -1354,16 +1597,19 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                     );
                 }
             }
-            match (&ty.owner, &prop.from) {
-                (Owner::Ontology, Some(_)) => v(
+            match (&ty.owner, &prop.from, &prop.template) {
+                (Owner::Ontology, Some(_), _) => v(
                     codes::ONTOLOGY_PROPERTY_FROM,
                     format!("{pp}/from"),
                     &mut out,
                 ),
-                (Owner::Source(_), None) if prop.required => {
+                (Owner::Ontology, None, Some(_)) => {
+                    v(codes::INVALID_TEMPLATE, format!("{pp}/template"), &mut out)
+                }
+                (Owner::Source(_), None, None) if prop.required => {
                     v(codes::REQUIRED_PROPERTY_WITHOUT_FROM, pp.clone(), &mut out)
                 }
-                (_, Some(f)) if !f.starts_with('/') => {
+                (_, Some(f), _) if !f.starts_with('/') => {
                     v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out)
                 }
                 _ => {}
@@ -1451,6 +1697,9 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
             check_type(schema, &param.ty, &format!("{pp}/type"), false, &mut out);
             if param.from.is_some() {
                 v(codes::INVALID_FROM_POINTER, format!("{pp}/from"), &mut out);
+            }
+            if param.template.is_some() {
+                v(codes::INVALID_TEMPLATE, format!("{pp}/template"), &mut out);
             }
             if param.transform.is_some() {
                 v(

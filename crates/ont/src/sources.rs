@@ -88,18 +88,24 @@ pub fn read_files(spec: &FileSourceSpec) -> Result<Listing, SourceError> {
 pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing, SourceError> {
     let mut found: BTreeSet<PathBuf> = BTreeSet::new();
     let mut symlinks: BTreeSet<PathBuf> = BTreeSet::new();
+    // The listing bound is per source run, not per glob: `visited` is
+    // carried across the globs of one source. A file matched by two globs
+    // enters `found` once, so the listing is the union.
+    let mut visited = 0usize;
     for glob in &spec.globs {
         let mut walker = Walker {
             exclude: &spec.exclude,
             found: &mut found,
             symlinks: &mut symlinks,
             roots_required: spec.complete_listing,
-            visited: 0,
+            visited,
             max_visited: bounds.max_visited,
             listed: BTreeMap::new(),
             done: BTreeSet::new(),
         };
-        walker.walk(Path::new("/"), glob.segments(), 0, true)?;
+        let result = walker.walk(Path::new("/"), glob.segments(), 0, true);
+        visited = walker.visited;
+        result?;
     }
     if found.len() > bounds.max_records {
         return Err(SourceError::new("too_many_records", spec.globs[0].as_str()));

@@ -20,7 +20,7 @@ use crate::principal::fresh_revision;
 use crate::refusal::{open_store, st, store_err};
 use crate::sources::{self, Listing, Record};
 use crate::{Answer, Context, Failure, Refusal};
-use ont_core::schema::{ObjectType, Owner, Schema};
+use ont_core::schema::{ObjectType, Owner, PropertyType, Schema, Transform};
 use ont_core::{Change, Coverage, Id, Knowledge, Lineage, Observation, Scope};
 use ont_store::Append;
 use ont_store::schema_mode::{SchemaHead, StoreRefusal};
@@ -450,10 +450,11 @@ fn map_record(
     ty: &ObjectType,
     record: &Record,
 ) -> Result<Mapped, &'static str> {
-    let key = resolve(
+    let key = resolve_mapped(
         &record.value,
-        &ty.primary_key.from,
-        ty.primary_key.transform.as_deref(),
+        ty.primary_key.from.as_deref(),
+        ty.primary_key.template.as_deref(),
+        ty.primary_key.transform.as_ref(),
     );
     let Some(Value::String(native_key)) = key else {
         return Err("key_unresolved");
@@ -469,10 +470,19 @@ fn map_record(
     let mut fields = BTreeMap::new();
     let mut coverage = Coverage::Complete;
     for (pname, prop) in &ty.properties {
-        let value = prop
-            .from
-            .as_deref()
-            .and_then(|from| resolve(&record.value, from, prop.transform.as_deref()));
+        let raw = resolve_mapped(
+            &record.value,
+            prop.from.as_deref(),
+            prop.template.as_deref(),
+            prop.transform.as_ref(),
+        );
+        // A reference property is built from the resolved string: the
+        // value the store and `get` already use for a reference is the
+        // full `Id` object (see `validate_value` in ont-core schema).
+        let value = match &prop.ty {
+            PropertyType::Ref(r) => raw.and_then(|v| reference_value(schema, &r.target, &v)),
+            _ => raw,
+        };
         match value {
             Some(v) => {
                 fields.insert(pname.clone(), Knowledge::Value(v));
@@ -496,26 +506,114 @@ fn map_record(
     })
 }
 
-/// The value a JSON pointer resolves to in `record`, after the transform.
-/// `None` when the pointer does not resolve, resolves to null, or the
-/// transform does not apply.
-fn resolve(record: &Value, pointer: &str, transform: Option<&str>) -> Option<Value> {
-    let value = record.pointer(pointer)?;
-    if value.is_null() {
-        return None;
+/// The value a mapping resolves to in `record`, after the transform.
+/// `None` when the pointer does not resolve, resolves to null, a template
+/// field is absent or not a string, or the transform does not apply.
+fn resolve_mapped(
+    record: &Value,
+    from: Option<&str>,
+    template: Option<&str>,
+    transform: Option<&Transform>,
+) -> Option<Value> {
+    let value = match (from, template) {
+        (Some(pointer), None) => {
+            let value = record.pointer(pointer)?;
+            if value.is_null() {
+                return None;
+            }
+            value.clone()
+        }
+        (None, Some(tpl)) => Value::String(resolve_template(record, tpl)?),
+        _ => return None,
+    };
+    apply_transform(&value, transform)
+}
+
+/// A template with each `{field}` replaced by the record's top-level
+/// string field of that name; `None` when a named field is absent or is
+/// not a string, or the template is malformed.
+fn resolve_template(record: &Value, template: &str) -> Option<String> {
+    let names = ont_core::schema::template_placeholders(template).ok()?;
+    let mut out = String::new();
+    let mut rest = template;
+    let mut used = 0usize;
+    while !rest.is_empty() {
+        if let Some(stripped) = rest.strip_prefix('{') {
+            let name = names.get(used)?;
+            used += 1;
+            let after = &stripped[name.len() + 1..];
+            let field = record.get(name)?.as_str()?;
+            out.push_str(field);
+            rest = after;
+        } else {
+            let c = rest.chars().next()?;
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
     }
+    Some(out)
+}
+
+fn apply_transform(value: &Value, transform: Option<&Transform>) -> Option<Value> {
     match transform {
         None => Some(value.clone()),
-        Some("first_word") => value
+        Some(Transform::Named(n)) if n == "first_word" => value
             .as_str()
             .and_then(|s| s.split_whitespace().next())
             .map(|w| json!(w)),
-        Some("parse_integer") => match value {
-            Value::Number(n) if n.is_i64() || n.is_u64() => Some(value.clone()),
+        Some(Transform::Named(n)) if n == "parse_integer" => match value {
+            Value::Number(num) if num.is_i64() || num.is_u64() => Some(value.clone()),
             Value::String(s) => s.trim().parse::<i64>().ok().map(|n| json!(n)),
             _ => None,
         },
+        Some(Transform::SegmentAfter(prefix)) => {
+            let s = value.as_str()?;
+            let rest = s.strip_prefix(prefix.as_str())?;
+            let segment = rest.split('/').next()?;
+            if segment.is_empty() {
+                None
+            } else {
+                Some(json!(segment))
+            }
+        }
+        Some(Transform::ReplacePrefix(pair)) => {
+            let s = value.as_str()?;
+            let rest = s.strip_prefix(pair[0].as_str())?;
+            Some(json!(format!("{}{rest}", pair[1])))
+        }
         Some(_) => None,
+    }
+}
+
+/// Build a reference value from a resolved string: the full `Id` object
+/// (`{"object_type":T,"namespace":{...},"native_key":K}`) that
+/// `validate_value` accepts for a `ref` property and that `get` returns.
+/// An empty string is unresolved, never a reference to an empty key; a
+/// value that is already such an `Id` object for the target is kept.
+fn reference_value(schema: &Schema, target: &str, value: &Value) -> Option<Value> {
+    match value {
+        Value::String(s) => {
+            if s.is_empty() {
+                return None;
+            }
+            let id = Id {
+                object_type: target.to_string(),
+                namespace: schema.namespace.clone(),
+                native_key: s.clone(),
+            };
+            if id.validate().is_err() {
+                return None;
+            }
+            serde_json::to_value(id).ok()
+        }
+        Value::Object(_) => {
+            let id: Id = serde_json::from_value(value.clone()).ok()?;
+            if id.object_type != target || id.validate().is_err() {
+                return None;
+            }
+            Some(value.clone())
+        }
+        _ => None,
     }
 }
 
@@ -526,18 +624,53 @@ mod tests {
 
     #[test]
     fn transforms_and_pointers() {
+        let named = |n: &str| Some(Transform::Named(n.to_string()));
         let rec = json!({"a":"  hello world ","n":"42","m":" -7 ","x":"4x","k":null,"i":5});
         assert_eq!(
-            resolve(&rec, "/a", Some("first_word")),
+            resolve_mapped(&rec, Some("/a"), None, named("first_word").as_ref()),
             Some(json!("hello"))
         );
-        assert_eq!(resolve(&rec, "/n", Some("parse_integer")), Some(json!(42)));
-        assert_eq!(resolve(&rec, "/m", Some("parse_integer")), Some(json!(-7)));
-        assert_eq!(resolve(&rec, "/x", Some("parse_integer")), None);
-        assert_eq!(resolve(&rec, "/i", Some("parse_integer")), Some(json!(5)));
-        assert_eq!(resolve(&rec, "/k", None), None);
-        assert_eq!(resolve(&rec, "/zz", None), None);
-        assert_eq!(resolve(&rec, "/a", Some("other")), None);
+        assert_eq!(
+            resolve_mapped(&rec, Some("/n"), None, named("parse_integer").as_ref()),
+            Some(json!(42))
+        );
+        assert_eq!(
+            resolve_mapped(&rec, Some("/m"), None, named("parse_integer").as_ref()),
+            Some(json!(-7))
+        );
+        assert_eq!(
+            resolve_mapped(&rec, Some("/x"), None, named("parse_integer").as_ref()),
+            None
+        );
+        assert_eq!(
+            resolve_mapped(&rec, Some("/i"), None, named("parse_integer").as_ref()),
+            Some(json!(5))
+        );
+        assert_eq!(resolve_mapped(&rec, Some("/k"), None, None), None);
+        assert_eq!(resolve_mapped(&rec, Some("/zz"), None, None), None);
+        assert_eq!(
+            resolve_mapped(&rec, Some("/a"), None, named("other").as_ref()),
+            None
+        );
+        // Templates and the two object transforms.
+        let rec = json!({"dir":"my-task","stem_id":"O5a","path":"/w/my-task/TASK-O5a.md"});
+        assert_eq!(
+            resolve_mapped(&rec, None, Some("{dir}/{stem_id}"), None),
+            Some(json!("my-task/O5a"))
+        );
+        assert_eq!(resolve_mapped(&rec, None, Some("{dir}/{nope}"), None), None);
+        let seg = Transform::SegmentAfter("/w/".to_string());
+        assert_eq!(
+            resolve_mapped(&rec, Some("/path"), None, Some(&seg)),
+            Some(json!("my-task"))
+        );
+        assert_eq!(resolve_mapped(&rec, Some("/dir"), None, Some(&seg)), None);
+        let rep = Transform::ReplacePrefix(["/w/".to_string(), String::new()]);
+        assert_eq!(
+            resolve_mapped(&rec, Some("/path"), None, Some(&rep)),
+            Some(json!("my-task/TASK-O5a.md"))
+        );
+        assert_eq!(resolve_mapped(&rec, Some("/dir"), None, Some(&rep)), None);
     }
 
     #[test]
