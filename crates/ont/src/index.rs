@@ -185,9 +185,13 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
 }
 
 /// One `index` run at a time per store: an exclusive non-blocking advisory
-/// lock on `<store>.index.lock` (mode 0600), held until the returned file is
-/// dropped. A held lock is the refusal `index_busy`.
+/// lock on `<store>.index.lock` (mode 0600, opened `O_NOFOLLOW`, so a symlink
+/// at that name is not followed), held until the returned file is dropped.
+/// A held lock is the refusal `index_busy`; a lock file that cannot be opened
+/// or created (a symlink, a directory without write permission) is the
+/// refusal `index_lock_unavailable`. The lock file is never removed.
 fn take_run_lock(store: &std::path::Path) -> Result<std::fs::File, Failure> {
+    use rustix::fs::OFlags;
     use std::os::unix::fs::OpenOptionsExt;
     let mut name = store.as_os_str().to_os_string();
     name.push(".index.lock");
@@ -196,8 +200,9 @@ fn take_run_lock(store: &std::path::Path) -> Result<std::fs::File, Failure> {
         .truncate(false)
         .write(true)
         .mode(0o600)
+        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
         .open(&name)
-        .map_err(|_| Failure::Internal(crate::internal!("index_lock_failed")))?;
+        .map_err(|_| Refusal::new("index_lock_unavailable"))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(Refusal::new("index_busy").into()),
@@ -515,6 +520,7 @@ fn resolve(record: &Value, pointer: &str, transform: Option<&str>) -> Option<Val
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -540,5 +546,54 @@ mod tests {
         assert_eq!(revision_number("r12@5"), Some(12));
         assert_eq!(revision_number("act-1#0"), None);
         assert_eq!(revision_number("r@5"), None);
+    }
+
+    /// The run-time stop `scope_keys_unmapped` is a defence behind the check
+    /// that `schema install` applies; a hand-built schema reaches it.
+    #[test]
+    fn scope_keys_unmapped_stops_a_source_at_run_time() {
+        let dir = std::env::temp_dir().join(format!("ont-index-unit-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("tasks")).unwrap();
+        let store = dir.join("store.sqlite");
+        let installed = serde_json::json!({
+            "format":"ontology-schema/v1","domain":"work","version":1,
+            "namespace":{"instance":"vps://x","account":"root"},
+            "scope_keys":[],"value_types":{},"sources":{},
+            "object_types":{},"link_types":{},"action_types":{},"functions":{},
+            "grants":[]
+        });
+        let file = dir.join("schema.json");
+        std::fs::write(&file, installed.to_string()).unwrap();
+        let args: Vec<String> = ["--store", store.to_str().unwrap(), "schema", "install"]
+            .into_iter()
+            .map(String::from)
+            .chain([file.display().to_string()])
+            .collect();
+        assert_eq!(crate::run(&args, &b""[..], 0, 0).code, 0);
+        let mut schema: Schema = serde_json::from_value(serde_json::json!({
+            "format":"ontology-schema/v1","domain":"work","version":1,
+            "namespace":{"instance":"vps://x","account":"root"},
+            "scope_keys":["project"],"value_types":{},
+            "sources":{"s":{"kind":"markdown_fields",
+                "glob":format!("{}/tasks/*/STATE.md", dir.display()),"fresh_for_s":60}},
+            "object_types":{"task":{"owner":{"source":"s"},"primary_key":{"from":"/dir"},
+                "properties":{}}},
+            "link_types":{},"action_types":{},"functions":{},"grants":[]
+        }))
+        .unwrap();
+        let mut handle = open_store(&store, true).unwrap();
+        let failed = match run_source(&mut handle, &schema, "s", 10).unwrap() {
+            Err(f) => f,
+            Ok(_) => panic!("the source ran"),
+        };
+        assert_eq!(
+            (failed.code.as_str(), failed.at.as_str()),
+            ("scope_keys_unmapped", "/scope_keys")
+        );
+        // Without scope keys the same schema runs (and indexes nothing).
+        schema.scope_keys.clear();
+        assert!(run_source(&mut handle, &schema, "s", 10).unwrap().is_ok());
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

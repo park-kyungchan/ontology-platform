@@ -29,6 +29,7 @@ pub mod cli;
 pub mod describe;
 pub mod get;
 pub mod index;
+pub mod mcp;
 pub mod principal;
 pub mod refusal;
 pub mod schema;
