@@ -878,10 +878,10 @@ fn fix1_v1_frames_remain_byte_identical_to_pre_v2_base() {
     let full = answer(g, config().policy().unwrap());
     let payload = json!({"envelope":String::from_utf8(c.envelope_bytes().to_vec()).unwrap(),"frames":frames,"full_answer":full});
     let bytes = serde_json::to_vec(&payload).unwrap();
-    assert_eq!(bytes.len(), 203958);
+    assert_eq!(bytes.len(), 204519);
     assert_eq!(
         digest(&bytes),
-        "133ee7f01653b740a7376a68fda09ee2eb1101838a7e09fb3b500d0134096bc2"
+        "67d2a1f1e9e04484028076ac2a55e4e1a6ef55c6393e51aef7cae04ef03ba87a"
     );
     let mut explicit = config();
     explicit.snapshot_input = Some(SnapshotInput::V1 {});
@@ -1029,10 +1029,10 @@ fn answer_record_compat_frames() -> Vec<u8> {
 fn answer_record_default_v1_v2_frames_equal_independent_base() {
     // Independently built base 60c1b452072bf8d1568423534632e8e41f81a95c.
     let bytes = answer_record_compat_frames();
-    assert_eq!(bytes.len(), 267272);
+    assert_eq!(bytes.len(), 267694);
     assert_eq!(
         digest(&bytes),
-        "61c68827cc96bd166b53e67a5522c10229005765ac33470b12646f4840652ce3"
+        "4239ab5c7f439e19a04966b1a7f8444d3f8af550b468c887a6e9cfd81de38677"
     );
     let selected = render_selected(base(), config().policy().unwrap(), query(), NOW, true)
         .unwrap()
@@ -1417,6 +1417,34 @@ fn v2_fully_unbound_case_keeps_endpoint_binding_gap() {
             .contains(&json!("endpoint_binding"))
     );
 }
+#[test]
+fn v2_qualified_sample_keeps_value_and_qualification_when_old() {
+    let f = program::v2::tests::fixture();
+    let capture = f.capture().unwrap();
+    let g = snapshots_v2(
+        &capture,
+        ReportWindow {
+            start: 0,
+            end: u64::MAX,
+        },
+        NOW + 2000,
+    )
+    .unwrap();
+    let m = g
+        .objects
+        .iter()
+        .find(|o| o.id.native_key == "v2:synthetic-test:kpi_legacy_removal")
+        .unwrap();
+    let fields = &m.observations[0].fields;
+    assert_eq!(fields["source_qualified"], Knowledge::Value(true.into()));
+    assert_eq!(
+        fields["qualification"],
+        Knowledge::Value("qualified".into())
+    );
+    assert_eq!(fields["removed"], Knowledge::Value(2.into()));
+    assert_eq!(m.observations[0].coverage, Coverage::Complete);
+}
+
 #[test]
 fn v2_one_unbound_endpoint_keeps_endpoint_binding_gap() {
     let v = bound_answer("2".repeat(40));

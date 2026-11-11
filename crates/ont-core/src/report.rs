@@ -81,6 +81,8 @@ pub struct MeasurementStatement {
     pub algorithm: Knowledge,
     pub fraction: Option<ExactFraction>,
     pub source_qualified: bool,
+    #[serde(default)]
+    pub stale: bool,
 }
 /// PR5's ordinary Observation interface. Values/bounds/provenance remain in basis.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,6 +185,35 @@ fn qualify(
         limitations.insert(Limitation::UnresolvedSource);
     }
     Ok(q.is_current() && !source_unqualified)
+}
+/// Qualification at observation for metric samples: stale is reported
+/// separately and never inserted as a limitation here.
+fn qualify_sample(
+    o: &Observation,
+    now: u64,
+    limitations: &mut BTreeSet<Limitation>,
+) -> Result<(bool, bool), Error> {
+    let basis = program::qualify_basis(o, now).map_err(|_| Error::InvalidEvidence)?;
+    if basis.future {
+        limitations.insert(Limitation::FutureSource);
+    }
+    if basis.partial {
+        limitations.insert(Limitation::PartialSource);
+    }
+    if basis.unresolved {
+        limitations.insert(Limitation::UnresolvedSource);
+    }
+    let source_unqualified = value(o, "source_qualified") == Some(&Value::Bool(false))
+        || value(o, "qualification")
+            .and_then(Value::as_str)
+            .is_some_and(|q| q != "qualified");
+    if source_unqualified {
+        limitations.insert(Limitation::UnresolvedSource);
+    }
+    Ok((
+        !basis.future && !basis.partial && !basis.unresolved && !source_unqualified,
+        basis.stale,
+    ))
 }
 fn fraction(o: &Observation) -> Result<Option<Fraction>, Error> {
     for (n, d) in [
@@ -321,9 +352,21 @@ impl Admission<'_> {
         let mut progress = false;
         let mut review = false;
         let mut unresolved = false;
+        let mut sample_ids = BTreeSet::new();
+        for object in selected.values().filter(|o| o.id.object_type == "metric") {
+            for id in snapshot.targets(&object.id, "has_measurement")? {
+                if selected.contains_key(&id) {
+                    sample_ids.insert(id);
+                }
+            }
+        }
         for object in selected.values() {
             let h = head(object)?;
-            let head_qualified = qualify(h, now, &mut limitations)?;
+            let head_qualified = if sample_ids.contains(&object.id) {
+                qualify_sample(h, now, &mut limitations)?.0
+            } else {
+                qualify(h, now, &mut limitations)?
+            };
             if !head_qualified {
                 unresolved = true;
             }
@@ -340,7 +383,9 @@ impl Admission<'_> {
                         continue;
                     };
                     let s = head(sample)?;
-                    let qualified = qualify(s, now, &mut limitations)?;
+                    // Samples keep qualification at observation; only the
+                    // latest sample's freshness gates the metric (below).
+                    let (qualified, stale) = qualify_sample(s, now, &mut limitations)?;
                     samples.push(MeasurementStatement {
                         id: id.clone(),
                         revision: s.revision.clone(),
@@ -352,15 +397,21 @@ impl Admission<'_> {
                         algorithm: field(s, "algorithm"),
                         fraction: fraction(s)?.map(Into::into),
                         source_qualified: qualified,
+                        stale,
                     });
                 }
                 samples.sort_by(|a, b| (a.observed_at, &a.id).cmp(&(b.observed_at, &b.id)));
+                let latest_stale = samples.last().is_some_and(|s| s.stale);
+                if latest_stale {
+                    limitations.insert(Limitation::StaleSource);
+                }
                 let mut delta = None;
                 let mut pp = None;
                 let mut qualified = head_qualified
                     && parsed.is_some()
                     && !samples.is_empty()
-                    && samples.iter().all(|s| s.source_qualified);
+                    && samples.iter().all(|s| s.source_qualified)
+                    && !latest_stale;
                 if let (Some(first), Some(last)) = (samples.first(), samples.last()) {
                     let same = |a: &Knowledge, b: &Knowledge| matches!((a,b),(Knowledge::Value(x),Knowledge::Value(y)) if x==y);
                     let comparable = samples.iter().all(|s| {

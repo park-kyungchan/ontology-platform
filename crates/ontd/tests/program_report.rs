@@ -152,7 +152,7 @@ fn full_json_contract_has_exact_fractions_pins_basis_and_scoped_assessment() {
     let mut sorted = objects.clone();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
     let basis:Vec<_>=sorted.into_iter().map(|o|json!({"id":o.id,"scope":o.scope,"head":"r1","observations":[{"revision":"r1","source_revision":"synthetic-source-v1","observed_at":o.observations[0].observed_at,"fresh_until":100,"change":"initial","supersedes":null,"coverage":"complete","fields":o.observations[0].fields,"lineage":{"artifact_sha256":"a".repeat(64),"pointer":"/record"},"stale":false}]})).collect();
-    let sample = |key, at, n| json!({"id":id("measurement",key),"revision":"r1","observed_at":at,"fresh_until":100,"source_unit":{"kind":"value","value":"fraction"},"definition_revision":{"kind":"value","value":"d1"},"manifest_sha256":{"kind":"value","value":"c".repeat(64)},"algorithm":{"kind":"value","value":"exact_utf8_paths_v1"},"fraction":{"numerator":n,"denominator":4},"source_qualified":true});
+    let sample = |key, at, n| json!({"id":id("measurement",key),"revision":"r1","observed_at":at,"fresh_until":100,"source_unit":{"kind":"value","value":"fraction"},"definition_revision":{"kind":"value","value":"d1"},"manifest_sha256":{"kind":"value","value":"c".repeat(64)},"algorithm":{"kind":"value","value":"exact_utf8_paths_v1"},"fraction":{"numerator":n,"denominator":4},"source_qualified":true,"stale":false});
     assert_eq!(
         v,
         json!({"status":"ok","authorization_revision":1,"result":{"kind":"program_report","report":{"window":{"start":10,"end":20},"assessment":"progress_observed","basis":basis,"metrics":[{"metric":id("metric","legacy"),"definition":objects[1].observations[0].fields["definition"],"samples":[sample("before",10,"1"),sample("after",20,"3")],"delta":{"numerator":"2","denominator":4},"percentage_point_delta":{"numerator":"200","denominator":4},"source_qualified":true}],"attributions":[],"guardrails":[{"id":id("guardrail","disk"),"revision":"r1","guardrail":{"kind":"value","value":"disk"},"unit":{"kind":"value","value":"bytes"},"value":{"kind":"value","value":17179869184_u64},"bound_satisfied":{"kind":"value","value":true},"source_qualified":true,"qualification":{"kind":"value","value":"qualified"}}],"guardrail_availability":{"kind":"value","value":"visible_basis_only"},"limitations":["authorized_basis_only"]}}})
@@ -347,6 +347,110 @@ fn partial_stale_future_and_missing_values_cannot_strengthen_assessment() {
     let (objects, links) = graph();
     let v = result(&objects, &links, 101);
     assert_eq!(report(&v)["assessment"], "insufficient_evidence");
+}
+
+fn samples_result(before: (u64, u64), after: Option<(u64, u64)>, now: u64) -> Value {
+    let (mut objects, mut links) = graph();
+    for o in &mut objects {
+        o.observations[0].fresh_until = 100_000;
+    }
+    let b = mutate(&mut objects, "measurement", "before");
+    b.observed_at = before.0;
+    b.fresh_until = before.1;
+    if let Some(after) = after {
+        let a = mutate(&mut objects, "measurement", "after");
+        a.observed_at = after.0;
+        a.fresh_until = after.1;
+    } else {
+        links.retain(|l| l.target != id("measurement", "after"));
+    }
+    let a = Authority::new(policy(&objects));
+    let s = a.bind_trusted("reader").unwrap();
+    let out = Service::new(store(&objects, &links), a)
+        .render(
+            &s,
+            Query::ProgramReport {
+                root: id("program", "root"),
+                window: ReportWindow {
+                    start: 0,
+                    end: 10_000,
+                },
+            },
+            now,
+        )
+        .unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+#[test]
+fn earlier_stale_sample_keeps_qualification_and_latest_fresh_qualifies_metric() {
+    // Two qualified samples 2,000 s apart; earlier stale, latest fresh at render.
+    let v = samples_result((0, 900), Some((2000, 2900)), 2000);
+    let metric = &report(&v)["metrics"][0];
+    assert_eq!(metric["source_qualified"], true);
+    assert_eq!(metric["delta"], json!({"numerator":"2","denominator":4}));
+    let samples = metric["samples"].as_array().unwrap();
+    assert_eq!(samples[0]["source_qualified"], true);
+    assert_eq!(samples[0]["stale"], true);
+    assert_eq!(samples[1]["source_qualified"], true);
+    assert_eq!(samples[1]["stale"], false);
+    assert!(
+        !report(&v)["limitations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("stale_source"))
+    );
+}
+#[test]
+fn latest_stale_sample_disqualifies_metric_and_lists_stale_source() {
+    let v = samples_result((0, 900), Some((2000, 2900)), 3000);
+    let metric = &report(&v)["metrics"][0];
+    assert_eq!(metric["source_qualified"], false);
+    assert_eq!(metric["samples"][1]["stale"], true);
+    assert!(
+        report(&v)["limitations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("stale_source"))
+    );
+}
+#[test]
+fn earlier_unqualified_sample_disqualifies_metric_whatever_its_age() {
+    let (mut objects, links) = graph();
+    for o in &mut objects {
+        o.observations[0].fresh_until = 100_000;
+    }
+    mutate(&mut objects, "measurement", "before")
+        .fields
+        .insert("source_qualified".into(), Knowledge::Value(false.into()));
+    let a = Authority::new(policy(&objects));
+    let s = a.bind_trusted("reader").unwrap();
+    let out = Service::new(store(&objects, &links), a)
+        .render(
+            &s,
+            Query::ProgramReport {
+                root: id("program", "root"),
+                window: ReportWindow {
+                    start: 0,
+                    end: 10_000,
+                },
+            },
+            50,
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
+}
+#[test]
+fn single_sample_stays_unqualified() {
+    let v = samples_result((0, 900), None, 0);
+    assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
+    assert_eq!(
+        report(&v)["metrics"][0]["samples"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
