@@ -139,9 +139,10 @@ fn pin(v: &View) -> BasisPin {
     }
 }
 fn qualified(o: &Observation, now: u64) -> bool {
-    crate::program::qualify_basis(o, now).is_ok_and(|q| q.is_current())
-        && val(o, "source_qualified") != Some(&Value::Bool(false))
-        && text(o, "qualification").is_none_or(|s| s == "qualified")
+    super::qualification_facts(o, now).is_ok_and(|f| f.current())
+}
+fn qualified_at_observation(o: &Observation, now: u64) -> bool {
+    super::qualification_facts(o, now).is_ok_and(|f| f.qualified_at_observation)
 }
 fn rational(n: i128, d: u64) -> Available<ExactFraction> {
     if d == 0 {
@@ -230,7 +231,7 @@ fn sample(v: &View, unit: &str, binding: Result<&str, Reason>, billing: bool, no
         basis: pin(v),
         value,
         source_qualified: head(v).is_some_and(|o| {
-            qualified(o, now)
+            qualified_at_observation(o, now)
                 && (!billing || val(o, "source_qualified") == Some(&Value::Bool(true)))
         }),
     }
@@ -399,7 +400,14 @@ fn metric(
         }),
         _ => Available::missing(Reason::MissingEndpoints),
     };
-    let change = if let Some(reason) = reason {
+    // No number without qualification: a stale latest sample publishes
+    // no change (and therefore no percentage-point change).
+    let latest_stale = inputs.last().is_some_and(|v| {
+        head(v).is_some_and(|o| super::qualification_facts(o, now).is_ok_and(|f| f.stale))
+    });
+    let change = if latest_stale {
+        Available::missing(Reason::MissingValue)
+    } else if let Some(reason) = reason {
         Available::missing(reason)
     } else if let (Some(a), Some(b)) = (
         samples.first().and_then(|s| s.value.get()),
@@ -437,6 +445,7 @@ fn metric(
         source_qualified: head(view).is_some_and(|o| qualified(o, now))
             && !samples.is_empty()
             && samples.iter().all(|s| s.source_qualified)
+            && !latest_stale
             && change.get().is_some(),
         samples,
         endpoints,

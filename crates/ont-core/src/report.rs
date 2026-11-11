@@ -81,7 +81,7 @@ pub struct MeasurementStatement {
     pub algorithm: Knowledge,
     pub fraction: Option<ExactFraction>,
     pub source_qualified: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
 }
 /// PR5's ordinary Observation interface. Values/bounds/provenance remain in basis.
@@ -164,27 +164,56 @@ fn qualify(
     now: u64,
     limitations: &mut BTreeSet<Limitation>,
 ) -> Result<bool, Error> {
-    let q = program::qualify_basis(o, now).map_err(|_| Error::InvalidEvidence)?;
-    if q.future {
+    // Values treated as current need both facts (qualified at observation
+    // and not stale), exactly as before.
+    let facts = qualification_facts(o, now)?;
+    if facts.future {
         limitations.insert(Limitation::FutureSource);
     }
-    if q.stale {
+    if facts.stale {
         limitations.insert(Limitation::StaleSource);
     }
-    if q.partial {
+    if facts.partial {
         limitations.insert(Limitation::PartialSource);
     }
-    if q.unresolved {
+    if facts.unresolved {
         limitations.insert(Limitation::UnresolvedSource);
     }
+    Ok(facts.current())
+}
+/// The one qualification definition: two separate facts about an
+/// observation at a render time. Consumers state which fact they need:
+/// samples use `qualified_at_observation` (the metric adds latest-sample
+/// freshness), values treated as current use both facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QualificationFacts {
+    pub qualified_at_observation: bool,
+    pub stale: bool,
+    pub future: bool,
+    pub partial: bool,
+    pub unresolved: bool,
+}
+impl QualificationFacts {
+    pub fn current(self) -> bool {
+        self.qualified_at_observation && !self.stale
+    }
+}
+pub(crate) fn qualification_facts(o: &Observation, now: u64) -> Result<QualificationFacts, Error> {
+    let basis = program::qualify_basis(o, now).map_err(|_| Error::InvalidEvidence)?;
     let source_unqualified = value(o, "source_qualified") == Some(&Value::Bool(false))
         || value(o, "qualification")
             .and_then(Value::as_str)
             .is_some_and(|q| q != "qualified");
-    if source_unqualified {
-        limitations.insert(Limitation::UnresolvedSource);
-    }
-    Ok(q.is_current() && !source_unqualified)
+    Ok(QualificationFacts {
+        qualified_at_observation: !basis.future
+            && !basis.partial
+            && !basis.unresolved
+            && !source_unqualified,
+        stale: basis.stale,
+        future: basis.future,
+        partial: basis.partial,
+        unresolved: basis.unresolved || source_unqualified,
+    })
 }
 /// Qualification at observation for metric samples: stale is reported
 /// separately and never inserted as a limitation here.
@@ -193,27 +222,17 @@ fn qualify_sample(
     now: u64,
     limitations: &mut BTreeSet<Limitation>,
 ) -> Result<(bool, bool), Error> {
-    let basis = program::qualify_basis(o, now).map_err(|_| Error::InvalidEvidence)?;
-    if basis.future {
+    let facts = qualification_facts(o, now)?;
+    if facts.future {
         limitations.insert(Limitation::FutureSource);
     }
-    if basis.partial {
+    if facts.partial {
         limitations.insert(Limitation::PartialSource);
     }
-    if basis.unresolved {
+    if facts.unresolved {
         limitations.insert(Limitation::UnresolvedSource);
     }
-    let source_unqualified = value(o, "source_qualified") == Some(&Value::Bool(false))
-        || value(o, "qualification")
-            .and_then(Value::as_str)
-            .is_some_and(|q| q != "qualified");
-    if source_unqualified {
-        limitations.insert(Limitation::UnresolvedSource);
-    }
-    Ok((
-        !basis.future && !basis.partial && !basis.unresolved && !source_unqualified,
-        basis.stale,
-    ))
+    Ok((facts.qualified_at_observation, facts.stale))
 }
 fn fraction(o: &Observation) -> Result<Option<Fraction>, Error> {
     for (n, d) in [
@@ -485,6 +504,11 @@ impl Admission<'_> {
                             limitations.insert(Limitation::IncompatibleDefinition);
                         }
                     }
+                }
+                if latest_stale {
+                    // No number without qualification for a stale latest sample.
+                    delta = None;
+                    pp = None;
                 }
                 if !qualified {
                     unresolved = true;

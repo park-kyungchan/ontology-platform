@@ -61,7 +61,7 @@ fn graph() -> (Vec<Object>, Vec<Link>) {
             "metric",
             "legacy",
             0,
-            json!({"definition": {"id":id("metric","legacy"),"revision":"d1","formula":"absent paths / adopted paths","population":"synthetic-manifest-v1","unit":"fraction","direction":"increase","role":{"kind":"kpi","strategy":{"id":id("strategy","s"),"revision":"s1"},"adoption":{"artifact_sha256":"b".repeat(64),"pointer":"/adoption"}}}}),
+            json!({"definition": {"id":id("metric","legacy"),"revision":"d1","formula":"removed / total","population":"synthetic-manifest-v1","unit":"fraction","direction":"increase","role":{"kind":"kpi","strategy":{"id":id("strategy","s"),"revision":"s1"},"adoption":{"artifact_sha256":"b".repeat(64),"pointer":"/adoption"}}}}),
         ),
         obj(
             "measurement",
@@ -152,7 +152,7 @@ fn full_json_contract_has_exact_fractions_pins_basis_and_scoped_assessment() {
     let mut sorted = objects.clone();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
     let basis:Vec<_>=sorted.into_iter().map(|o|json!({"id":o.id,"scope":o.scope,"head":"r1","observations":[{"revision":"r1","source_revision":"synthetic-source-v1","observed_at":o.observations[0].observed_at,"fresh_until":100,"change":"initial","supersedes":null,"coverage":"complete","fields":o.observations[0].fields,"lineage":{"artifact_sha256":"a".repeat(64),"pointer":"/record"},"stale":false}]})).collect();
-    let sample = |key, at, n| json!({"id":id("measurement",key),"revision":"r1","observed_at":at,"fresh_until":100,"source_unit":{"kind":"value","value":"fraction"},"definition_revision":{"kind":"value","value":"d1"},"manifest_sha256":{"kind":"value","value":"c".repeat(64)},"algorithm":{"kind":"value","value":"exact_utf8_paths_v1"},"fraction":{"numerator":n,"denominator":4},"source_qualified":true,"stale":false});
+    let sample = |key, at, n| json!({"id":id("measurement",key),"revision":"r1","observed_at":at,"fresh_until":100,"source_unit":{"kind":"value","value":"fraction"},"definition_revision":{"kind":"value","value":"d1"},"manifest_sha256":{"kind":"value","value":"c".repeat(64)},"algorithm":{"kind":"value","value":"exact_utf8_paths_v1"},"fraction":{"numerator":n,"denominator":4},"source_qualified":true});
     assert_eq!(
         v,
         json!({"status":"ok","authorization_revision":1,"result":{"kind":"program_report","report":{"window":{"start":10,"end":20},"assessment":"progress_observed","basis":basis,"metrics":[{"metric":id("metric","legacy"),"definition":objects[1].observations[0].fields["definition"],"samples":[sample("before",10,"1"),sample("after",20,"3")],"delta":{"numerator":"2","denominator":4},"percentage_point_delta":{"numerator":"200","denominator":4},"source_qualified":true}],"attributions":[],"guardrails":[{"id":id("guardrail","disk"),"revision":"r1","guardrail":{"kind":"value","value":"disk"},"unit":{"kind":"value","value":"bytes"},"value":{"kind":"value","value":17179869184_u64},"bound_satisfied":{"kind":"value","value":true},"source_qualified":true,"qualification":{"kind":"value","value":"qualified"}}],"guardrail_availability":{"kind":"value","value":"visible_basis_only"},"limitations":["authorized_basis_only"]}}})
@@ -349,7 +349,7 @@ fn partial_stale_future_and_missing_values_cannot_strengthen_assessment() {
     assert_eq!(report(&v)["assessment"], "insufficient_evidence");
 }
 
-fn samples_result(before: (u64, u64), after: Option<(u64, u64)>, now: u64) -> Value {
+fn samples_graph(before: (u64, u64), after: Option<(u64, u64)>) -> (Vec<Object>, Vec<Link>) {
     let (mut objects, mut links) = graph();
     for o in &mut objects {
         o.observations[0].fresh_until = 100_000;
@@ -364,12 +364,35 @@ fn samples_result(before: (u64, u64), after: Option<(u64, u64)>, now: u64) -> Va
     } else {
         links.retain(|l| l.target != id("measurement", "after"));
     }
+    (objects, links)
+}
+fn samples_result(before: (u64, u64), after: Option<(u64, u64)>, now: u64) -> Value {
+    let (objects, links) = samples_graph(before, after);
     let a = Authority::new(policy(&objects));
     let s = a.bind_trusted("reader").unwrap();
     let out = Service::new(store(&objects, &links), a)
         .render(
             &s,
             Query::ProgramReport {
+                root: id("program", "root"),
+                window: ReportWindow {
+                    start: 0,
+                    end: 10_000,
+                },
+            },
+            now,
+        )
+        .unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+fn derived_result(before: (u64, u64), after: Option<(u64, u64)>, now: u64) -> Value {
+    let (objects, links) = samples_graph(before, after);
+    let a = Authority::new(policy(&objects));
+    let s = a.bind_trusted("reader").unwrap();
+    let out = Service::new(store(&objects, &links), a)
+        .render(
+            &s,
+            Query::ProgramReportV2 {
                 root: id("program", "root"),
                 window: ReportWindow {
                     start: 0,
@@ -392,7 +415,7 @@ fn earlier_stale_sample_keeps_qualification_and_latest_fresh_qualifies_metric() 
     assert_eq!(samples[0]["source_qualified"], true);
     assert_eq!(samples[0]["stale"], true);
     assert_eq!(samples[1]["source_qualified"], true);
-    assert_eq!(samples[1]["stale"], false);
+    assert!(samples[1].get("stale").is_none());
     assert!(
         !report(&v)["limitations"]
             .as_array()
@@ -440,6 +463,87 @@ fn earlier_unqualified_sample_disqualifies_metric_whatever_its_age() {
     let v: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
 }
+#[test]
+fn derived_matches_admitted_for_stale_earlier_and_stale_latest() {
+    for now in [2000, 3000] {
+        let admitted = samples_result((0, 900), Some((2000, 2900)), now);
+        let derived = derived_result((0, 900), Some((2000, 2900)), now);
+        let a = &report(&admitted)["metrics"][0];
+        let d = &report(&derived)["metrics"][0];
+        assert_eq!(d["source_qualified"], a["source_qualified"], "now {now}");
+        let admitted_samples: Vec<_> = a["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["source_qualified"].clone())
+            .collect();
+        let derived_samples: Vec<_> = d["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["source_qualified"].clone())
+            .collect();
+        assert_eq!(derived_samples, admitted_samples, "now {now}");
+        assert_eq!(
+            report(&derived)["limitations"],
+            report(&admitted)["limitations"],
+            "now {now}"
+        );
+        if now == 3000 {
+            assert_eq!(a["delta"], Value::Null);
+            assert_eq!(d["change"]["status"], "not_available");
+            assert_eq!(d["percentage_point_change"]["status"], "not_available");
+        }
+    }
+}
+#[test]
+fn earlier_unqualified_and_stale_sample_disqualifies_metric() {
+    let (mut objects, links) = samples_graph((0, 900), Some((2000, 2900)));
+    mutate(&mut objects, "measurement", "before")
+        .fields
+        .insert("source_qualified".into(), Knowledge::Value(false.into()));
+    let a = Authority::new(policy(&objects));
+    let s = a.bind_trusted("reader").unwrap();
+    let out = Service::new(store(&objects, &links), a)
+        .render(
+            &s,
+            Query::ProgramReport {
+                root: id("program", "root"),
+                window: ReportWindow {
+                    start: 0,
+                    end: 10_000,
+                },
+            },
+            2000,
+        )
+        .unwrap();
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let samples = report(&v)["metrics"][0]["samples"].as_array().unwrap();
+    assert_eq!(samples[0]["source_qualified"], false);
+    assert_eq!(samples[0]["stale"], true);
+    assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
+}
+#[test]
+fn single_stale_sample_is_marked_and_stays_unqualified() {
+    let v = samples_result((0, 900), None, 1000);
+    let samples = report(&v)["metrics"][0]["samples"].as_array().unwrap();
+    assert_eq!(samples[0]["stale"], true);
+    assert_eq!(report(&v)["metrics"][0]["source_qualified"], false);
+}
+#[test]
+fn fresh_until_boundary_is_not_stale_until_the_next_second() {
+    let at_boundary = samples_result((0, 900), Some((2000, 2900)), 2900);
+    let samples = report(&at_boundary)["metrics"][0]["samples"]
+        .as_array()
+        .unwrap();
+    assert!(samples[1].get("stale").is_none());
+    let past_boundary = samples_result((0, 900), Some((2000, 2900)), 2901);
+    let samples = report(&past_boundary)["metrics"][0]["samples"]
+        .as_array()
+        .unwrap();
+    assert_eq!(samples[1]["stale"], true);
+}
+
 #[test]
 fn single_sample_stays_unqualified() {
     let v = samples_result((0, 900), None, 0);
