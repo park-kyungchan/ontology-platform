@@ -1,0 +1,201 @@
+//! `schema check` and `schema install`.
+use crate::principal::Principal;
+use crate::refusal::st;
+use crate::{Answer, Context, Failure, Refusal, TRUST_LIMIT, backup, pin_json, sha256_hex};
+use ont_core::schema::Schema;
+use ont_store::Store;
+use ont_store::schema_mode::InstallArgs;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct CheckRequest {
+    pub file: PathBuf,
+}
+#[derive(Debug, Clone)]
+pub struct InstallRequest {
+    pub file: PathBuf,
+    pub source_repository: Option<String>,
+    pub source_commit: Option<String>,
+}
+
+fn valid_slug(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+fn valid_commit(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+fn read_schema_file(file: &std::path::Path) -> Result<Vec<u8>, Failure> {
+    std::fs::read(file).map_err(|_| {
+        Refusal::new("schema_file_unreadable")
+            .with("path", json!(file.display().to_string()))
+            .into()
+    })
+}
+fn others_for(set: &ont_core::schema::SchemaSet, candidate: &str) -> BTreeSet<String> {
+    set.pins()
+        .keys()
+        .filter(|d| d.as_str() != candidate)
+        .filter_map(|d| set.schema(d))
+        .flat_map(|s| s.object_types.keys().cloned())
+        .collect()
+}
+fn candidate_domain(bytes: &[u8]) -> String {
+    Schema::parse(bytes).map(|s| s.domain).unwrap_or_default()
+}
+
+fn check_outcome(
+    bytes: &[u8],
+    others: &BTreeSet<String>,
+    checked_against: Vec<String>,
+    store_exists: bool,
+) -> Result<Answer, Failure> {
+    match Schema::check_bytes(bytes, others) {
+        Ok(checked) => {
+            let pin = checked.pin();
+            Ok(Answer::Plain(json!({
+                "status":"ok","clean":true,
+                "pin":pin_json(pin),
+                "violations":[],
+                "checked_against":checked_against,
+                "store_exists":store_exists,
+                "trust_limit":TRUST_LIMIT
+            })))
+        }
+        Err(violations) => {
+            let pin = Schema::parse(bytes)
+                .ok()
+                .map(|s| json!({"domain":s.domain,"version":s.version,"sha256":sha256_hex(bytes)}));
+            Err(Refusal::new("schema_violation")
+                .with("clean", json!(false))
+                .with("pin", pin.unwrap_or(Value::Null))
+                .with(
+                    "violations",
+                    json!(
+                        violations
+                            .iter()
+                            .map(|v| json!({"code":v.code,"pointer":v.pointer}))
+                            .collect::<Vec<_>>()
+                    ),
+                )
+                .with("checked_against", json!(checked_against))
+                .with("store_exists", json!(store_exists))
+                .into())
+        }
+    }
+}
+
+/// Check a schema file against the domains of the store (when it exists).
+/// Never creates or writes a store.
+pub fn check(ctx: &Context, req: &CheckRequest) -> Result<Answer, Failure> {
+    let bytes = read_schema_file(&req.file)?;
+    let store_exists = ctx.store.exists();
+    let (others, against) = if store_exists {
+        let mut store = st!(Store::open_schema_existing(&ctx.store));
+        let set = st!(store.schema_set()).clone();
+        (
+            others_for(&set, &candidate_domain(&bytes)),
+            set.pins().keys().cloned().collect(),
+        )
+    } else {
+        (BTreeSet::new(), Vec::new())
+    };
+    check_outcome(&bytes, &others, against, store_exists)
+}
+
+/// Install a schema file. The only operation that may create a store: the
+/// file is created with mode 0600 (`create_new`) before SQLite opens it, and
+/// only when its parent directory exists.
+pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
+    if let Some(repo) = &req.source_repository
+        && !valid_slug(repo)
+    {
+        return Err(Refusal::new("invalid_argument")
+            .with("argument", json!("--source-repository"))
+            .into());
+    }
+    if let Some(commit) = &req.source_commit
+        && !valid_commit(commit)
+    {
+        return Err(Refusal::new("invalid_argument")
+            .with("argument", json!("--source-commit"))
+            .into());
+    }
+    let bytes = read_schema_file(&req.file)?;
+    let store_exists = ctx.store.exists();
+    let mut store = if store_exists {
+        st!(Store::open_schema(&ctx.store))
+    } else {
+        // Check first; a refused check must not create a store.
+        check_outcome(&bytes, &BTreeSet::new(), Vec::new(), false)?;
+        let parent = ctx.store.parent();
+        if parent.is_some_and(|p| !p.as_os_str().is_empty() && !p.exists()) {
+            return Err(Refusal::new("store_parent_missing")
+                .with("directory", json!(parent.map(|p| p.display().to_string())))
+                .into());
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&ctx.store)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => {
+                return Err(Failure::Internal(crate::internal!("store_create_failed")));
+            }
+        }
+        st!(Store::open_schema(&ctx.store))
+    };
+    let set = st!(store.schema_set()).clone();
+    let checked = match Schema::check_bytes(&bytes, &others_for(&set, &candidate_domain(&bytes))) {
+        Ok(c) => c,
+        Err(_) => {
+            return check_outcome(
+                &bytes,
+                &others_for(&set, &candidate_domain(&bytes)),
+                set.pins().keys().cloned().collect(),
+                true,
+            );
+        }
+    };
+    let pin = checked.pin().clone();
+    let previous = st!(store.schema_pins()).get(&pin.domain).cloned();
+    let changed = previous.as_ref() != Some(&pin);
+    let mut backup_path: Option<String> = None;
+    if store_exists && changed && !st!(store.schema_pins()).is_empty() {
+        let (path, _) = backup::take(&mut store, &ctx.store, ctx.now)?;
+        backup_path = Some(path.display().to_string());
+    }
+    st!(store.install_schema(
+        &bytes,
+        InstallArgs {
+            installed_at: ctx.now,
+            source_repository: req.source_repository.clone(),
+            source_commit: req.source_commit.clone(),
+        },
+    ));
+    let set = st!(store.schema_set()).clone();
+    let principal = Principal::bind(&set)?;
+    Ok(Answer::Enveloped {
+        pins: st!(store.schema_pins()),
+        revision: principal.revision(),
+        result: json!({
+            "domain":pin.domain,
+            "previous_version":previous.map(|p| p.version),
+            "version":pin.version,
+            "pin":pin_json(&pin),
+            "changed":changed,
+            "backup":backup_path
+        }),
+    })
+}

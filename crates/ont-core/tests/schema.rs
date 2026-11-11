@@ -204,6 +204,9 @@ fn one_test_per_check_code() {
         m["grants"][0]["scope"] = json!({"bogus": "x"});
         v.push((m, vec![("unknown_scope_key", "/grants/0/scope/bogus")]));
         let mut m = base_value();
+        m["grants"][0]["scope"] = json!({"class_key": ""});
+        v.push((m, vec![("invalid_grant_scope", "/grants/0/scope")]));
+        let mut m = base_value();
         m["grants"][0]["principal"] = json!("");
         v.push((m, vec![("invalid_principal", "/grants/0/principal")]));
         let mut m = base_value();

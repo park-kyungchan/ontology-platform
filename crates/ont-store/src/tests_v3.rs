@@ -1419,3 +1419,51 @@ fn backup_to_refuses_existing_target_and_copy_opens_with_same_pins() {
     let mut copy = Store::open_schema(&target).unwrap();
     assert_eq!(copy.schema_pins().unwrap(), store.schema_pins().unwrap());
 }
+
+fn open_err(path: &std::path::Path) -> &'static str {
+    match Store::open_schema_existing(path) {
+        Ok(_) => panic!("opened"),
+        Err(e) => e.code,
+    }
+}
+
+#[test]
+fn open_schema_existing_never_creates_or_initialises() {
+    let temp = Temp::new();
+    // Missing file: refusal, nothing created.
+    let missing = temp.0.join("missing.sqlite");
+    assert_eq!(open_err(&missing), "store_not_found");
+    assert!(!missing.exists());
+    // Empty file: refusal, still zero bytes.
+    let empty = temp.0.join("empty.sqlite");
+    std::fs::write(&empty, b"").unwrap();
+    assert_eq!(open_err(&empty), "store_failure");
+    assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+    // Foreign bytes: refusal, bytes unchanged.
+    let foreign = temp.0.join("foreign.sqlite");
+    std::fs::write(&foreign, b"not a database at all, just text").unwrap();
+    assert_eq!(open_err(&foreign), "store_failure");
+    assert_eq!(
+        std::fs::read(&foreign).unwrap(),
+        b"not a database at all, just text"
+    );
+    // A real format 3 store opens and is read-only.
+    let path = temp.0.join("v3.sqlite");
+    {
+        let mut store = Store::open_schema(&path).unwrap();
+        install(&mut store, &work_bytes(1), 100);
+    }
+    let mut store = Store::open_schema_existing(&path).unwrap();
+    assert_eq!(store.schema_pins().unwrap().len(), 1);
+    assert!(
+        store
+            .install_schema(
+                &work_bytes(2),
+                InstallArgs {
+                    installed_at: 101,
+                    ..InstallArgs::default()
+                }
+            )
+            .is_err()
+    );
+}

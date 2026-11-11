@@ -90,3 +90,51 @@ fn spawned_describe_refuses_a_non_root_principal() {
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(v["code"], "principal_not_trusted");
 }
+
+#[test]
+fn version_schema_check_and_backup_do_not_wait_on_open_stdin() {
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("ont-stdin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("s.sqlite").display().to_string();
+    let schema = dir.join("example.json");
+    std::fs::write(
+        &schema,
+        include_bytes!("../../ont-core/tests/schema-fixtures/example.json"),
+    )
+    .unwrap();
+    let schema = schema.display().to_string();
+    // Create a store through the library so that `backup` has one.
+    let args: Vec<String> = ["--store", &store, "schema", "install", &schema]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let _ = ont::run(&args, &b""[..], 0, 0);
+    for argv in [
+        vec!["--version"],
+        vec!["--store", &store, "schema", "check", &schema],
+        vec!["--store", &store, "backup"],
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ont"))
+            .args(&argv)
+            .stdin(Stdio::piped()) // left open: the child must not read it
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(20) {
+                let _ = child.kill();
+                panic!("{argv:?} waited on stdin");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(status.code().is_some(), "{argv:?}");
+        drop(child.stdin.take());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

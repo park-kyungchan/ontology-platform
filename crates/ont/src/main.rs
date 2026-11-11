@@ -1,5 +1,6 @@
-//! Thin binary over the `ont` library.
-use std::io::{Read, Write};
+//! Thin binary over the `ont` library. Standard input is read by `run`, and
+//! only for the commands that take a request.
+use std::io::Write;
 
 fn uids() -> (u32, u32) {
     // /proc/self/status: "Uid: real, effective, saved, fs".
@@ -22,34 +23,13 @@ fn uids() -> (u32, u32) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut stdin = Vec::new();
-    // Only the commands that take a request read stdin (`--version`,
-    // `schema` and `backup` must not wait on it).
-    if args.iter().any(|a| a == "describe" || a == "get") {
-        let _ = std::io::stdin()
-            .take(ont::MAX_REQUEST as u64 + 65_537)
-            .read_to_end(&mut stdin);
-    }
     let (real, effective) = uids();
-    match ont::run(&args, &stdin, real, effective) {
-        Ok(outcome) => {
-            if !outcome.stdout.is_empty() {
-                let _ = write!(std::io::stdout().lock(), "{}", outcome.stdout);
-            }
-            if !outcome.stderr.is_empty() {
-                let _ = write!(std::io::stderr().lock(), "{}", outcome.stderr);
-            }
-            std::process::exit(outcome.code);
-        }
-        Err(internal) => {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "{}@{}:{}",
-                internal.0,
-                file!(),
-                line!()
-            );
-            std::process::exit(1);
-        }
+    let outcome = ont::run(&args, std::io::stdin().lock(), real, effective);
+    if !outcome.stdout.is_empty() {
+        let _ = write!(std::io::stdout().lock(), "{}", outcome.stdout);
     }
+    if !outcome.stderr.is_empty() {
+        let _ = write!(std::io::stderr().lock(), "{}", outcome.stderr);
+    }
+    std::process::exit(outcome.code);
 }
