@@ -62,7 +62,7 @@ const SPECS: &[Spec] = &[
         form: "describe",
         options: &[],
         stdin: true,
-        fields: "op?: describe|null; domain?: string|null; object_type?: string|null; lists views and args",
+        fields: "op?: describe|null; domain?: string|null; object_type?: string|null",
         example: "echo '{}' | ont describe",
     },
     Spec {
@@ -228,10 +228,14 @@ pub(crate) fn help(words: &[String]) -> Result<Value, Refusal> {
     let commands: Vec<Value> = specs
         .iter()
         .map(|s| {
-            json!({
+            let mut usage = json!({
                 "command":s.words.join(" "),"form":s.form,"options":s.options,
                 "stdin_json":s.stdin,"fields":s.fields,"example":s.example
-            })
+            });
+            if s.command == Describe {
+                usage["notes"] = json!("lists views and args for readable object types");
+            }
+            usage
         })
         .collect();
     let options: serde_json::Map<_, _> = OPTIONS
