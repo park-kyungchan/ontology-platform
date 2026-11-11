@@ -388,6 +388,96 @@ fn billing_periods_exact_values_and_zero_are_typed_without_savings_attribution()
         2
     );
 }
+fn billing_metric(stale_first_id: bool, stale_latest: bool) -> Value {
+    let (mut o, mut l) = graph(0);
+    let (stale_key, fresh_key) = if stale_first_id {
+        ("a-stale", "z-fresh")
+    } else {
+        ("z-stale", "a-fresh")
+    };
+    let samples = if stale_latest {
+        [(fresh_key, 10, 100, 302), (stale_key, 20, 25, 335)]
+    } else {
+        [(stale_key, 10, 15, 302), (fresh_key, 20, 100, 335)]
+    };
+    for (key, at, fresh, n) in samples {
+        let mut b = object(
+            "guardrail",
+            key,
+            "billing",
+            at,
+            json!({"guardrail":"billing","unit":"linux_minutes","account":"test-account","window_start":0,"window_end":100,"value":n,"source_qualified":true,"qualification":"qualified","bound_satisfied":true}),
+        );
+        b.observations[0].fresh_until = fresh;
+        l.push(edge(o[0].id.clone(), "guardrail", b.id.clone()));
+        o.push(b);
+    }
+    let r = report(&o, &l, 0, 100);
+    r["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "billing")
+        .unwrap()
+        .clone()
+}
+fn component_metric(stale_first_id: bool, stale_latest: bool) -> Value {
+    let (mut o, mut l) = graph(0);
+    o.retain(|o| o.id.object_type != "metric" && o.id.native_key != "attribution");
+    l.clear();
+    let (stale_key, fresh_key) = if stale_first_id {
+        ("a-stale", "z-fresh")
+    } else {
+        ("z-stale", "a-fresh")
+    };
+    let samples = if stale_latest {
+        [(fresh_key, 10, 100, 1), (stale_key, 20, 25, 3)]
+    } else {
+        [(stale_key, 10, 15, 1), (fresh_key, 20, 100, 3)]
+    };
+    for (key, at, fresh, n) in samples {
+        let mut m = object(
+            "measurement",
+            key,
+            "owner",
+            at,
+            json!({"removed":n,"total":4,"source_unit":"fraction","definition_revision":"d1","manifest_sha256":"m1","algorithm":"exact_utf8_paths_v1"}),
+        );
+        m.observations[0].fresh_until = fresh;
+        l.push(edge(o[0].id.clone(), "has_measurement", m.id.clone()));
+        o.push(m);
+    }
+    let r = report(&o, &l, 0, 100);
+    r["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "snapshot_component")
+        .unwrap()
+        .clone()
+}
+#[test]
+fn headless_series_take_head_condition_from_the_latest_sample_in_both_id_orders() {
+    for stale_first_id in [true, false] {
+        assert_eq!(
+            billing_metric(stale_first_id, false)["source_qualified"],
+            true
+        );
+        assert_eq!(
+            component_metric(stale_first_id, false)["source_qualified"],
+            true
+        );
+        assert_eq!(
+            billing_metric(stale_first_id, true)["source_qualified"],
+            false
+        );
+        assert_eq!(
+            component_metric(stale_first_id, true)["source_qualified"],
+            false
+        );
+    }
+}
+
 #[test]
 fn reduced_full_hidden_mutations_and_query_differencing_are_byte_invariant() {
     let (o, l) = graph(2);

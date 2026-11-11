@@ -1207,11 +1207,13 @@ impl Capture {
                 if !(window.start..=window.end).contains(&at) {
                     continue;
                 }
-                let current = q && at <= now && now - at <= budget;
+                // Qualified at observation does not decay with render age;
+                // freshness lives only in observed_at/fresh_until.
+                let qualified = q && at <= now;
                 let mut fields = BTreeMap::from([
                     (
                         "value".into(),
-                        if current {
+                        if qualified {
                             serde_json::from_value(v.clone())
                                 .map_err(|_| IntakeError::InvalidData)?
                         } else if v.get("kind").and_then(Value::as_str) == Some("not_performed") {
@@ -1220,22 +1222,21 @@ impl Capture {
                             Knowledge::Unknown
                         },
                     ),
-                    ("source_qualified".into(), Knowledge::Value(current.into())),
+                    (
+                        "source_qualified".into(),
+                        Knowledge::Value(qualified.into()),
+                    ),
                     (
                         "qualification".into(),
-                        Knowledge::Value(if q && !current {
-                            if at > now {
-                                "future_source".into()
-                            } else {
-                                "stale_source".into()
-                            }
+                        Knowledge::Value(if q && at > now {
+                            "future_source".into()
                         } else {
                             value(qualification)?
                         }),
                     ),
                     ("source_unit".into(), Knowledge::Value("fraction".into())),
                 ]);
-                if current {
+                if qualified {
                     let obj = v
                         .get("value")
                         .and_then(Value::as_object)
@@ -1292,7 +1293,7 @@ impl Capture {
                     fields,
                     (
                         at,
-                        if current {
+                        if qualified {
                             Coverage::Complete
                         } else {
                             Coverage::Partial
