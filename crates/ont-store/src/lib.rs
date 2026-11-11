@@ -8,32 +8,57 @@ use std::time::Duration;
 
 pub mod actions;
 pub mod fake;
+pub mod schema_mode;
 
 pub const SCHEMA: &str = include_str!("../schema.sql");
+pub(crate) const SCHEMA_V3: &str = include_str!("../schema-v3.sql");
 const APPLICATION_ID: i64 = 1_330_533_430;
 fn db<T>(result: rusqlite::Result<T>) -> Result<T, Error> {
     result.map_err(|_| Error::StoreFailure)
 }
+fn db_mode<T>(result: rusqlite::Result<T>, mode: StoreMode) -> Result<T, Error> {
+    result.map_err(|e| {
+        if mode == StoreMode::Schema
+            && matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ffi::ErrorCode::DatabaseBusy)
+        {
+            Error::StoreBusy
+        } else {
+            Error::StoreFailure
+        }
+    })
+}
 fn decode<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, Error> {
     serde_json::from_str(s).map_err(|_| Error::StoreFailure)
+}
+pub(crate) fn open_file(path: &Path) -> Result<Connection, Error> {
+    db(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ))
 }
 /// A store's domain and version are selected explicitly, never inferred from rows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StoreMode {
     Education,
     Program,
+    Schema,
 }
 impl StoreMode {
     fn version(self) -> i64 {
         match self {
             Self::Education => 1,
             Self::Program => 2,
+            Self::Schema => 3,
         }
     }
     fn accepts(self, scope: &Scope, namespace: &Namespace) -> bool {
         matches!(
             (self, scope),
-            (Self::Education, Scope::Education { .. }) | (Self::Program, Scope::Program { .. })
+            (Self::Education, Scope::Education { .. })
+                | (Self::Program, Scope::Program { .. })
+                | (Self::Schema, Scope::Domain { .. })
         ) && scope.validate().is_ok()
             && scope.namespace() == namespace
     }
@@ -58,6 +83,7 @@ fn decode_v1_scope(s: &str, namespace: &Namespace) -> Result<Scope, Error> {
 pub struct Store {
     connection: Connection,
     mode: StoreMode,
+    schemas: ont_core::schema::SchemaSet,
 }
 pub struct ReadSnapshot<'a> {
     connection: &'a Connection,
@@ -88,39 +114,71 @@ impl Store {
         Self::configure(db(Connection::open_in_memory())?, StoreMode::Program)
     }
     fn open_mode(path: &Path, mode: StoreMode) -> Result<Self, Error> {
-        Self::configure(
-            db(Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | OpenFlags::SQLITE_OPEN_CREATE
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            ))?,
-            mode,
-        )
+        Self::configure(open_file(path)?, mode)
     }
-    fn configure(mut connection: Connection, mode: StoreMode) -> Result<Self, Error> {
-        db(connection.busy_timeout(Duration::from_millis(250)))?;
-        let app: i64 = db(connection.query_row("PRAGMA application_id", [], |r| r.get(0)))?;
-        let version: i64 = db(connection.query_row("PRAGMA user_version", [], |r| r.get(0)))?;
-        let count: i64 = db(connection.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
-            [],
-            |r| r.get(0),
-        ))?;
+    fn configure(connection: Connection, mode: StoreMode) -> Result<Self, Error> {
+        let busy = if mode == StoreMode::Schema {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_millis(250)
+        };
+        Self::configure_with_busy(connection, mode, busy)
+    }
+    fn configure_with_busy(
+        mut connection: Connection,
+        mode: StoreMode,
+        busy: Duration,
+    ) -> Result<Self, Error> {
+        db_mode(connection.busy_timeout(busy), mode)?;
+        let app: i64 = db_mode(
+            connection.query_row("PRAGMA application_id", [], |r| r.get(0)),
+            mode,
+        )?;
+        let version: i64 = db_mode(
+            connection.query_row("PRAGMA user_version", [], |r| r.get(0)),
+            mode,
+        )?;
+        let count: i64 = db_mode(
+            connection.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |r| r.get(0),
+            ),
+            mode,
+        )?;
         if app == 0 && version == 0 && count == 0 {
-            let transaction =
-                db(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
-            db(transaction.execute_batch(SCHEMA))?;
-            db(transaction.pragma_update(None, "user_version", mode.version()))?;
-            db(transaction.commit())?;
+            let transaction = db_mode(
+                connection.transaction_with_behavior(TransactionBehavior::Immediate),
+                mode,
+            )?;
+            db_mode(
+                transaction.execute_batch(if mode == StoreMode::Schema {
+                    SCHEMA_V3
+                } else {
+                    SCHEMA
+                }),
+                mode,
+            )?;
+            db_mode(
+                transaction.pragma_update(None, "user_version", mode.version()),
+                mode,
+            )?;
+            db_mode(transaction.commit(), mode)?;
         } else if app != APPLICATION_ID || version != mode.version() {
             return Err(Error::StoreFailure);
         }
-        db(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"))?;
-        Ok(Self { connection, mode })
+        db_mode(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"), mode)?;
+        Ok(Self {
+            connection,
+            mode,
+            schemas: ont_core::schema::SchemaSet::default(),
+        })
     }
     /// Atomic graph initialization, preserving explicit observation append order.
     pub fn seed(&mut self, objects: &[Object], links: &[Link]) -> Result<(), Error> {
+        if self.mode == StoreMode::Schema {
+            return Err(Error::SchemaViolation);
+        }
         let transaction = db(self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate))?;
@@ -170,6 +228,9 @@ impl Store {
         db(transaction.commit())
     }
     pub fn append_batch(&mut self, items: &[Append]) -> Result<(), Error> {
+        if self.mode == StoreMode::Schema {
+            return Err(Error::SchemaViolation);
+        }
         let transaction = db(self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate))?;
@@ -312,3 +373,5 @@ impl Snapshot for ReadSnapshot<'_> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_v3;

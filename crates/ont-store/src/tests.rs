@@ -41,6 +41,9 @@ fn object(mode: StoreMode, key: &str) -> Object {
         scope: match mode {
             StoreMode::Education => Scope::education(namespace, "C1", "001").unwrap(),
             StoreMode::Program => Scope::program(namespace, "program-1").unwrap(),
+            StoreMode::Schema => {
+                Scope::domain(namespace, "work", std::collections::BTreeMap::new()).unwrap()
+            }
         },
         head: "r1".into(),
         observations: vec![Observation {
@@ -63,12 +66,14 @@ fn memory(mode: StoreMode) -> Store {
     match mode {
         StoreMode::Education => Store::memory().unwrap(),
         StoreMode::Program => Store::memory_program().unwrap(),
+        StoreMode::Schema => Store::memory_schema().unwrap(),
     }
 }
 fn open(path: &Path, mode: StoreMode) -> Store {
     match mode {
         StoreMode::Education => Store::open(path).unwrap(),
         StoreMode::Program => Store::open_program(path).unwrap(),
+        StoreMode::Schema => Store::open_schema(path).unwrap(),
     }
 }
 fn correction(object: &Object, revision: &str) -> Append {
@@ -132,6 +137,7 @@ fn file_modes_reopen_their_own_version_and_never_convert_each_other() {
         let wrong = match mode {
             StoreMode::Education => Store::open_program(&path),
             StoreMode::Program => Store::open(&path),
+            StoreMode::Schema => Store::open(&path),
         };
         assert!(matches!(wrong, Err(Error::StoreFailure)));
         assert_eq!(std::fs::read(&path).unwrap(), before);

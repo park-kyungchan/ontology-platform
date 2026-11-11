@@ -49,6 +49,13 @@ pub mod codes {
     pub const UNDECLARED_PROPERTY: &str = "undeclared_property";
     pub const MISSING_REQUIRED_PROPERTY: &str = "missing_required_property";
     pub const WRONG_VALUE_TYPE: &str = "wrong_value_type";
+    pub const SCOPE_DOMAIN_MISMATCH: &str = "scope_domain_mismatch";
+    pub const SCOPE_NAMESPACE_MISMATCH: &str = "scope_namespace_mismatch";
+    pub const SCOPE_KEYS_MISMATCH: &str = "scope_keys_mismatch";
+    pub const ID_NAMESPACE_MISMATCH: &str = "id_namespace_mismatch";
+    pub const REF_NAMESPACE_MISMATCH: &str = "ref_namespace_mismatch";
+    pub const INVALID_CHANGE_KIND: &str = "invalid_change_kind";
+    pub const REFRESH_FIELDS_DIFFER: &str = "refresh_fields_differ";
     pub const VALUE_CONSTRAINT_VIOLATION: &str = "value_constraint_violation";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
@@ -90,6 +97,13 @@ pub mod codes {
         MISSING_REQUIRED_PROPERTY,
         WRONG_VALUE_TYPE,
         VALUE_CONSTRAINT_VIOLATION,
+        SCOPE_DOMAIN_MISMATCH,
+        SCOPE_NAMESPACE_MISMATCH,
+        SCOPE_KEYS_MISMATCH,
+        ID_NAMESPACE_MISMATCH,
+        REF_NAMESPACE_MISMATCH,
+        INVALID_CHANGE_KIND,
+        REFRESH_FIELDS_DIFFER,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -1638,6 +1652,9 @@ impl SchemaSet {
     }
     pub fn pin(&self, domain: &str) -> Option<&SchemaPin> {
         self.pins.get(domain)
+    }
+    pub fn pins(&self) -> &BTreeMap<String, SchemaPin> {
+        &self.pins
     }
     pub fn object_type(&self, name: &str) -> Option<&ObjectType> {
         self.domains.values().find_map(|s| s.object_types.get(name))
