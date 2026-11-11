@@ -198,7 +198,7 @@ fn tools() -> Vec<Tool> {
             op: ToolOp::Validate,
             spec: json!({
                 "name":"ont_action_validate",
-                "description":"Preview an action without writing: action_type and parameter names come from ont_action_list; parameters is an object {name: value}, an object parameter's value is an objects[].id from ont_search; send the request_id you will use to apply, and optional agent/session (1-64 of A-Z a-z 0-9 . _ : -). If result.valid, call ont_action_apply with the same arguments and result.basis as expected; otherwise fix failed criteria. A refusal carries code: do not retry unchanged.",
+                "description":"Preview without writing. action_type/parameters: ont_action_list; reference values: objects[].id from ont_search. If result.valid, apply the same arguments with result.basis as expected; otherwise fix failed criteria. agent/session are optional.",
                 "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters"],
                     "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
             }),
@@ -207,7 +207,7 @@ fn tools() -> Vec<Tool> {
             op: ToolOp::Apply,
             spec: json!({
                 "name":"ont_action_apply",
-                "description":"Apply an action: action_type/parameter names from ont_action_list, ids from ont_search, expected from validate result.basis, unchanged; parameters as {name: value}; every edits_log value means the change was made. request_id: a new unique string per intended change, 1-64 of A-Z a-z 0-9 . _ - (e.g. a UUID); if you did not see an answer, send the same request_id with the same arguments, agent included: the change is then not made twice (outcome already_applied). On applied or already_applied continue; refusals carry code: do not retry unchanged.",
+                "description":"Apply action_type/parameters from ont_action_list; reference values: objects[].id from ont_search; expected: validate result.basis. Every edits_log value means the change was made. On applied or already_applied continue; on refusal fix its code.",
                 "inputSchema":{"type":"object","additionalProperties":false,"required":["action_type","parameters","request_id"],
                     "properties":{"action_type":s,"parameters":{"type":"object"},"request_id":request_id,"agent":actor,"session":actor,"expected":expected}}
             }),
