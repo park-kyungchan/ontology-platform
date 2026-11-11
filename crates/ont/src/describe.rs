@@ -94,6 +94,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                         "type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),
                         "required":p.required,
                         "from":p.from,
+                        "template":p.template,
                         "transform":p.transform,
                         "max_bytes":p.max_bytes
                     })

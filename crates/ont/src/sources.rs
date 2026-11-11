@@ -88,18 +88,24 @@ pub fn read_files(spec: &FileSourceSpec) -> Result<Listing, SourceError> {
 pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing, SourceError> {
     let mut found: BTreeSet<PathBuf> = BTreeSet::new();
     let mut symlinks: BTreeSet<PathBuf> = BTreeSet::new();
+    // The listing bound is per source run, not per glob: `visited` is
+    // carried across the globs of one source. A file matched by two globs
+    // enters `found` once, so the listing is the union.
+    let mut visited = 0usize;
     for glob in &spec.globs {
         let mut walker = Walker {
             exclude: &spec.exclude,
             found: &mut found,
             symlinks: &mut symlinks,
             roots_required: spec.complete_listing,
-            visited: 0,
+            visited,
             max_visited: bounds.max_visited,
             listed: BTreeMap::new(),
             done: BTreeSet::new(),
         };
-        walker.walk(Path::new("/"), glob.segments(), 0, true)?;
+        let result = walker.walk(Path::new("/"), glob.segments(), 0, true);
+        visited = walker.visited;
+        result?;
     }
     if found.len() > bounds.max_records {
         return Err(SourceError::new("too_many_records", spec.globs[0].as_str()));
@@ -622,6 +628,19 @@ mod tests {
             let mut listed: Vec<&str> = kind.record_fields().to_vec();
             listed.sort_unstable();
             assert_eq!(produced, listed, "{kind:?}");
+            // The string-valued keys are exactly `string_record_fields()`.
+            let mut strings: Vec<&str> = record
+                .value
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, v)| v.is_string())
+                .map(|(k, _)| k.as_str())
+                .collect();
+            strings.sort_unstable();
+            let mut want_strings: Vec<&str> = kind.string_record_fields().to_vec();
+            want_strings.sort_unstable();
+            assert_eq!(strings, want_strings, "{kind:?}");
         }
         let _ = std::fs::remove_dir_all(&d);
     }
