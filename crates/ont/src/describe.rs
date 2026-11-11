@@ -41,6 +41,7 @@ impl DescribeRequest {
 
 pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
+    let provenance = st!(store.schema_provenance());
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
     let view = principal.view();
@@ -167,7 +168,19 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
         result: json!({
             "domains":domains.iter().map(|d| {
                 let p = set.pin(d);
-                json!({"domain":d,"version":p.map(|p| p.version),"sha256":p.map(|p| p.sha256.clone())})
+                let mut domain = json!({"domain":d,"version":p.map(|p| p.version),"sha256":p.map(|p| p.sha256.clone())});
+                if let Some(prov) = provenance.get(d) {
+                    if let Some(repository) = &prov.repository {
+                        domain["repository"] = json!(repository);
+                    }
+                    if let Some(commit) = &prov.commit {
+                        domain["commit"] = json!(commit);
+                    }
+                    if let Some(path) = &prov.path {
+                        domain["path"] = json!(path);
+                    }
+                }
+                domain
             }).collect::<Vec<_>>(),
             "object_types":object_types,
             "link_types":link_types,

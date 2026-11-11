@@ -4,15 +4,17 @@ use crate::backup::{BackupRequest, backup};
 use crate::describe::{DescribeRequest, describe};
 use crate::get::{GetRequest, get};
 use crate::index::{IndexRequest, index};
-use crate::schema::{CheckRequest, InstallRequest, check, install};
+use crate::schema::{
+    CheckRequest, CommitInstallRequest, InstallRequest, check, install, install_commit,
+};
 use crate::search::{SearchRequest, search};
-use crate::{Answer, Context, Failure, MAX_REQUEST, Refusal, TRUST_LIMIT, check_uid};
+use crate::{
+    Answer, Context, DEFAULT_STORE, Failure, MAX_REQUEST, Refusal, TRUST_LIMIT, check_uid,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::io::Read;
 use std::path::PathBuf;
-
-const DEFAULT_STORE: &str = "/var/lib/ontology-platform/ont/ontology.sqlite";
 
 /// What the process prints and returns.
 #[derive(Debug)]
@@ -46,6 +48,9 @@ struct Cli {
     version: bool,
     source_repository: Option<String>,
     source_commit: Option<String>,
+    from_checkout: Option<String>,
+    from_commit: Option<String>,
+    from_path: Option<String>,
     sources: Vec<String>,
     client: Option<String>,
     command: Vec<String>,
@@ -63,6 +68,9 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
         version: false,
         source_repository: None,
         source_commit: None,
+        from_checkout: None,
+        from_commit: None,
+        from_path: None,
         sources: Vec::new(),
         client: None,
         command: Vec::new(),
@@ -91,6 +99,20 @@ fn parse_args(args: &[String]) -> Result<Cli, Refusal> {
                         .ok_or_else(|| invalid_argument("--source-commit"))?
                         .clone(),
                 );
+            }
+            "--from" => {
+                cli.from_checkout =
+                    Some(it.next().ok_or_else(|| invalid_argument("--from"))?.clone());
+            }
+            "--commit" => {
+                cli.from_commit = Some(
+                    it.next()
+                        .ok_or_else(|| invalid_argument("--commit"))?
+                        .clone(),
+                );
+            }
+            "--path" => {
+                cli.from_path = Some(it.next().ok_or_else(|| invalid_argument("--path"))?.clone());
             }
             "--source" => {
                 cli.sources.push(
@@ -157,8 +179,23 @@ pub enum Op {
 
 fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failure> {
     let cmd: Vec<&str> = cli.command.iter().map(String::as_str).collect();
-    let is_install = matches!(cmd.as_slice(), ["schema", "install", _]);
-    if !is_install && (cli.source_repository.is_some() || cli.source_commit.is_some()) {
+    let is_file_install = matches!(cmd.as_slice(), ["schema", "install", _]);
+    let is_commit_install = matches!(cmd.as_slice(), ["schema", "install"]);
+    let from_given =
+        cli.from_checkout.is_some() || cli.from_commit.is_some() || cli.from_path.is_some();
+    if !is_file_install
+        && !is_commit_install
+        && (cli.source_repository.is_some() || cli.source_commit.is_some())
+    {
+        return Err(invalid_argument("--source-*").into());
+    }
+    if !is_commit_install && from_given {
+        return Err(invalid_argument("--from").into());
+    }
+    if is_file_install && from_given {
+        return Err(invalid_argument("--from").into());
+    }
+    if is_commit_install && (cli.source_repository.is_some() || cli.source_commit.is_some()) {
         return Err(invalid_argument("--source-*").into());
     }
     if cmd.as_slice() != ["index"] && !cli.sources.is_empty() {
@@ -182,6 +219,23 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
                 source_commit: cli.source_commit.clone(),
             },
         ),
+        ["schema", "install"] => {
+            let (Some(checkout), Some(commit), Some(path)) = (
+                cli.from_checkout.clone(),
+                cli.from_commit.clone(),
+                cli.from_path.clone(),
+            ) else {
+                return Err(invalid_argument("--from").into());
+            };
+            install_commit(
+                ctx,
+                &CommitInstallRequest {
+                    checkout: PathBuf::from(checkout),
+                    commit,
+                    path,
+                },
+            )
+        }
         ["describe"] => execute(Op::Describe, &read_request(stdin)?, ctx),
         ["get"] => execute(Op::Get, &read_request(stdin)?, ctx),
         ["backup"] => backup(ctx, &BackupRequest::default()),
@@ -291,7 +345,13 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
 /// and the process's standard output (the one subcommand that writes while it
 /// runs). The client name is checked before anything is read.
 fn run_mcp(cli: &Cli, stdin: impl Read) -> Outcome {
-    if !cli.sources.is_empty() || cli.source_repository.is_some() || cli.source_commit.is_some() {
+    if !cli.sources.is_empty()
+        || cli.source_repository.is_some()
+        || cli.source_commit.is_some()
+        || cli.from_checkout.is_some()
+        || cli.from_commit.is_some()
+        || cli.from_path.is_some()
+    {
         return render(Err(invalid_argument("--source").into()), 0);
     }
     let Some(client) = cli

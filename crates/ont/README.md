@@ -2,6 +2,13 @@
 
 The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search` over a format 3 store.
 
+## schema install
+
+- `ont [--store PATH] schema install --from <repository checkout> --commit <40 lowercase hex> --path <path inside the repository>` reads the file with `git show <commit>:<path>` (`/usr/bin/git`, argv only, cleared environment, at most 16 MiB, a 10-second wait). It refuses a non-hex or uppercase commit and an absolute or `..` path with `invalid_request`, a commit that is not an ancestor of the checkout's `refs/remotes/origin/main` with `commit_not_merged`, a missing path at that commit with `schema_path_not_found`, and a missing `/usr/bin/git` with `git_unavailable`. It then does what the file form does (check, version rule, backup before install when the store already holds an install, install) and records the provenance `(repository, commit, path)`: repository is `remote.origin.url` with any userinfo removed, else the checkout path.
+- The file form `ont [--store PATH] schema install <file>` stays for temporary stores; on the default store path (`/var/lib/ontology-platform/ont/ontology.sqlite`) it is refused with `install_requires_commit`.
+- The installed schema bytes have one home: the `bytes` column of the store table `schema_installs` (with `domain`, `version`, `sha256`, `installed_at`, `source_repository`, `source_commit`, `source_path`). There is no second copy under `/opt/ontology-platform/schema/`. Drift is detected at load: the latest row's bytes are parsed and their sha256 must equal the row's `sha256` (`schema_pin_mismatch` otherwise), and the same bytes are the ones every process reads, so there is no external file that could drift from the record.
+- `describe` and the MCP `ont_describe` show, for each installed domain, `version`, `sha256` and, when recorded, `repository`, `commit` and `path`.
+
 ## index
 - `ont index [--source NAME]...` runs the sources of the installed schemas, one write transaction per source. One run at a time per store (an advisory lock on `<store>.index.lock`, opened `O_NOFOLLOW`; a held lock is `index_busy`, a lock file that cannot be opened or created is the refusal `index_lock_unavailable`). The lock file stays after the run and is never removed.
 - Source kinds `markdown_fields` (`glob`) and `file_digest` (`paths`) take `exclude`, `complete_listing`, `fresh_for_s`; `markdown_fields` also `head_lines`. Globs are absolute; `*` and `?` stay inside one segment; `**` is a whole segment (at most 8); no brace, class or escape syntax.

@@ -28,6 +28,7 @@ pub mod backup;
 pub mod cli;
 pub mod describe;
 pub mod get;
+pub mod gitread;
 pub mod index;
 pub mod mcp;
 pub mod principal;
@@ -47,6 +48,8 @@ use std::path::PathBuf;
 
 pub const TRUST_LIMIT: &str = "OS-account principal only; on this host every agent shares this UID, so the CLI does not authenticate a human.";
 pub const MAX_REQUEST: usize = 65_536;
+/// The store `ont` uses without `--store`.
+pub const DEFAULT_STORE: &str = "/var/lib/ontology-platform/ont/ontology.sqlite";
 
 /// Real = effective = 0, else `principal_not_trusted`.
 pub fn check_uid(real: u32, effective: u32) -> Result<(), &'static str> {
