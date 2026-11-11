@@ -276,6 +276,16 @@ impl SchemaWrite<'_> {
     ) -> Result<Vec<SchemaHead>, StoreRefusal> {
         scan_in(self.tx, &self.schemas, object_type, limit, None)
     }
+    /// One page of heads of one type inside this transaction, continuing
+    /// after `after` (exclusive) in primary-key order.
+    pub fn scan_heads_after(
+        &self,
+        object_type: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<SchemaHead>, StoreRefusal> {
+        scan_in(self.tx, &self.schemas, object_type, limit, after)
+    }
     /// The whole action log inside this transaction, in `seq` order.
     pub fn action_log(&self) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
         action_log_in(self.tx)

@@ -470,7 +470,14 @@ fn crash_between_commit_and_append_is_repaired_by_next_write() {
     let text = std::fs::read_to_string(t.edits()).unwrap_or_default();
     assert_eq!(text.lines().count(), 0, "append did not happen");
     drop(store);
-    // Next write repairs the file.
+    // Retrying the crashed request_id: the caller saw an internal
+    // error, the retry is already_applied and repairs the file.
+    let retried = ont::action::apply_action(&ctx, &req).unwrap();
+    let ont::Answer::Enveloped { result, .. } = retried else {
+        panic!("enveloped")
+    };
+    assert_eq!(result["outcome"], "already_applied");
+    assert_eq!(result["edits_log"], "written");
     let (code, _) = apply(
         &t,
         json!({"op":"apply_action","action_type":"record_note",
@@ -585,6 +592,7 @@ fn embedding_uses_only_public_library_items() {
             agent: None,
             session: Some("s1".into()),
             expected: None,
+            request_id: None,
         },
     )
     .unwrap();
@@ -647,4 +655,506 @@ fn embedding_uses_only_public_library_items() {
     let log = store.action_log().unwrap();
     assert_eq!(log[0].1.actor["client"], "embed-test");
     assert_eq!(log[0].1.actor["session"], "s1");
+}
+
+fn full_counts(t: &Temp) -> (usize, Vec<usize>, Vec<u8>) {
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap().len();
+    let types = ["hold", "note", "tag", "widget", "probe"];
+    let heads = types
+        .iter()
+        .map(|ty| store.scan_heads(ty, 100, None).unwrap().len())
+        .collect();
+    (log, heads, std::fs::read(t.edits()).unwrap_or_default())
+}
+fn assert_nothing_written(t: &Temp, before: &(usize, Vec<usize>, Vec<u8>)) {
+    assert_eq!(&full_counts(t), before);
+}
+fn make_note(t: &Temp, title: &str) -> (String, Value) {
+    let (code, ans) = apply(
+        t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":title,"task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    let key = ans["result"]["edits"][0]["id"]["native_key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id = id_json("note", &key);
+    (key, id)
+}
+
+#[test]
+fn b1_unwritable_log_is_pending_and_retry_already_applied() {
+    let t = setup();
+    std::fs::remove_file(t.edits()).ok();
+    std::fs::create_dir(t.edits()).unwrap();
+    let body = json!({"op":"apply_action","action_type":"record_note","request_id":"b1-1","parameters":{"title":"b1","task":task_id()}});
+    let (code, ans) = apply(&t, body.clone());
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["outcome"], "applied");
+    assert_eq!(ans["result"]["edits_log"], "pending");
+    assert_eq!(ans["result"]["actor_trust"], "self_reported");
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    assert_eq!(store.action_log().unwrap().len(), 1);
+    assert_eq!(
+        store.action_log().unwrap()[0].1.actor["actor_trust"],
+        "self_reported"
+    );
+    drop(store);
+    let (code, ans) = apply(&t, body);
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["outcome"], "already_applied");
+}
+
+#[test]
+fn b2_truncated_extra_changed_and_non_utf8_are_repaired() {
+    // Truncated mid-line.
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    let text = std::fs::read(t.edits()).unwrap();
+    std::fs::write(t.edits(), &text[..text.len() - 8]).unwrap();
+    let (_, _) = make_note(&t, "two");
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    drop(store);
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), log.len());
+    for ((seq, e), line) in log.iter().zip(text.lines()) {
+        assert_eq!(line, log_line(*seq, e));
+    }
+    let (_, _) = make_note(&t, "three");
+    assert_eq!(
+        std::fs::read_to_string(t.edits()).unwrap().lines().count(),
+        3
+    );
+    // Extra line -> diverged, rebuilt.
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    let mut bytes = std::fs::read(t.edits()).unwrap();
+    bytes.extend_from_slice(b"{\"seq\":999}\n");
+    std::fs::write(t.edits(), &bytes).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"two","task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits_log"], "rebuilt");
+    assert!(
+        std::fs::read_dir(&t.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e
+                .file_name()
+                .to_string_lossy()
+                .starts_with("edits.jsonl.diverged-"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(t.edits()).unwrap().lines().count(),
+        2
+    );
+    // Changed line -> diverged.
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    let text = std::fs::read_to_string(t.edits())
+        .unwrap()
+        .replace("one", "eno");
+    std::fs::write(t.edits(), text).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"two","task":task_id()}}),
+    );
+    assert_eq!(ans["result"]["edits_log"], "rebuilt", "{ans}");
+    assert_eq!(code, 0);
+    // Non-UTF-8 complete line -> diverged.
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    let mut bytes = std::fs::read(t.edits()).unwrap();
+    bytes.extend_from_slice(&[0xff, b'\n']);
+    std::fs::write(t.edits(), &bytes).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"two","task":task_id()}}),
+    );
+    assert_eq!(ans["result"]["edits_log"], "rebuilt", "{ans}");
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(t.edits()).unwrap().lines().count(),
+        2
+    );
+    // Wrong mode -> pending.
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(t.edits(), std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"two","task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits_log"], "pending");
+}
+
+#[test]
+fn b2_concurrent_repair_no_duplicates() {
+    let t = setup();
+    let (_, _) = make_note(&t, "one");
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    drop(store);
+    std::fs::write(t.edits(), b"").unwrap();
+    let path = t.store_path();
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let log = log.clone();
+            let path = path.clone();
+            std::thread::spawn(move || ont::action::sync_edits_file(&path, &log))
+        })
+        .collect();
+    for h in handles {
+        let _ = h.join().unwrap();
+    }
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), log.len());
+    assert_eq!(text.lines().next().unwrap(), log_line(log[0].0, &log[0].1));
+}
+
+#[test]
+fn b3_criteria_tri_state_and_literal_operands() {
+    let t = setup();
+    // Missing label property: ge, none and any are unevaluable.
+    let (_, note_id) = make_note(&t, "first");
+    for action in [
+        "check_note_label_ge",
+        "check_note_label_none",
+        "check_note_label_any",
+    ] {
+        let before = full_counts(&t);
+        let (code, ans) = apply(
+            &t,
+            json!({"op":"apply_action","action_type":action,"parameters":{"note":note_id}}),
+        );
+        assert_eq!(
+            (code, ans["code"].as_str()),
+            (2, Some("criterion_not_evaluable")),
+            "{action} {ans}"
+        );
+        assert_nothing_written(&t, &before);
+    }
+    // Retracted object: ne is unevaluable.
+    let (code, _) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"delete_note","parameters":{"note":note_id}}),
+    );
+    assert_eq!(code, 0);
+    let before = full_counts(&t);
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"check_note_ne","parameters":{"note":note_id}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("criterion_not_evaluable")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    // Reverse hazard and numeric equality on probes.
+    let t = setup();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"create_probe","parameters":{"kind":"hello","note":"hello","count":1}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    let probe_id = ans["result"]["edits"][0]["id"].clone();
+    let before = full_counts(&t);
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"check_probe_kind","parameters":{"probe":probe_id}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("submission_criteria")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"check_probe_count","parameters":{"probe":probe_id}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    // Explicit $param.property with two reference parameters.
+    let t = setup();
+    let (_, note_id) = make_note(&t, "first");
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"check_note_explicit","parameters":{"note":note_id,"task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    // Schema check refuses a bare name with two reference parameters.
+    let mut variant: Value = serde_json::from_slice(FIXTURE).unwrap();
+    variant["action_types"]["check_multi_bare"] = json!({
+        "parameters":{"note":{"type":{"ref":"note"},"required":true},"task":{"type":{"ref":"task"},"required":true}},
+        "submission_criteria":[{"code":"x","message":"x","all":[{"eq":["title","first"]}]}],
+        "rules":[{"modify_object":"note","set":{"title":"z"}}]
+    });
+    variant["grants"][0]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("check_multi_bare"));
+    let file = t.file("multi.json", &serde_json::to_vec(&variant).unwrap());
+    let (code, ans) = run(&["--store", &t.store(), "schema", "check", &file], b"");
+    assert_eq!(code, 2, "{ans}");
+}
+
+#[test]
+fn b4_pattern_optional_and_create_or_modify_pointer_key() {
+    let t = setup();
+    let before = full_counts(&t);
+    let (code, v) = run_store(
+        &t,
+        &["action", "validate"],
+        &json!({"op":"validate_action","action_type":"record_shout","parameters":{"word":"abc"}}),
+    );
+    assert_eq!(
+        (code, v["code"].as_str(), v["parameter"].as_str()),
+        (2, Some("invalid_parameter"), Some("word")),
+        "{v}"
+    );
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_shout","parameters":{"word":"abc"}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str(), ans["parameter"].as_str()),
+        (2, Some("invalid_parameter"), Some("word")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    // Absent optional parameter that would break a planned field.
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note_optlabel","parameters":{"title":"x","task":task_id()}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("invalid_parameter")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    // create_or_modify with a pointer key from a non-reference parameter.
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"first"}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits"][0]["change"], "initial");
+    assert_eq!(ans["result"]["edits"][0]["id"]["native_key"], "w1");
+    let (code, v) = run_store(
+        &t,
+        &["action", "validate"],
+        &json!({"op":"validate_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"second"}}),
+    );
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["result"]["edits"][0]["change"], "update");
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"second"}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits"][0]["change"], "update");
+}
+
+#[test]
+fn b5_same_request_id_different_agent_is_own_action() {
+    let t = setup();
+    let body_a = json!({"op":"apply_action","action_type":"record_note","agent":"agent-a","request_id":"shared-1","parameters":{"title":"once","task":task_id()}});
+    let (code, a) = apply(&t, body_a.clone());
+    assert_eq!(code, 0, "{a}");
+    let mut body_b = body_a.clone();
+    body_b["agent"] = json!("agent-b");
+    let (code, b) = apply(&t, body_b);
+    assert_eq!(code, 0, "{b}");
+    assert_eq!(b["result"]["outcome"], "applied");
+    assert_ne!(b["result"]["action_id"], a["result"]["action_id"]);
+    let (code, again) = apply(&t, body_a);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["result"]["outcome"], "already_applied");
+    assert_eq!(again["result"]["action_id"], a["result"]["action_id"]);
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    assert_eq!(store.action_log().unwrap().len(), 2);
+}
+
+#[test]
+fn refusals_write_nothing() {
+    let t = setup();
+    let (_, note_id) = make_note(&t, "first");
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!({"op":"apply_action","action_type":"no_such","parameters":{}}),
+            "unknown_action",
+        ),
+        (
+            json!({"op":"apply_action","action_type":"record_note","parameters":{"title":42,"task":task_id()}}),
+            "invalid_parameter",
+        ),
+        (
+            json!({"op":"apply_action","action_type":"check_note_ne","parameters":{"note":note_id},"expected":[{"id":note_id,"revision":"stale"}]}),
+            "revision_conflict",
+        ),
+    ];
+    for (body, want) in cases {
+        let before = full_counts(&t);
+        let (code, ans) = apply(&t, body);
+        assert_eq!((code, ans["code"].as_str()), (2, Some(want)), "{ans}");
+        assert_nothing_written(&t, &before);
+    }
+    // submission_criteria
+    let (code, _) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"set_hold","parameters":{"task":task_id(),"effect":"merge","until":"later"}}),
+    );
+    assert_eq!(code, 0);
+    let before = full_counts(&t);
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"set_hold","parameters":{"task":task_id(),"effect":"merge","until":"later"}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("submission_criteria")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    // request_id_reused (same actor, different content)
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","request_id":"reuse-1","parameters":{"title":"a","task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    let before = full_counts(&t);
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","request_id":"reuse-1","parameters":{"title":"b","task":task_id()}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("request_id_reused")),
+        "{ans}"
+    );
+    assert_nothing_written(&t, &before);
+    // action_forbidden on a limited grant store
+    let t2 = Temp::new();
+    let mut variant: Value = serde_json::from_slice(FIXTURE).unwrap();
+    variant["grants"][0]["actions"] = json!(["record_note"]);
+    install_bytes(&t2, &serde_json::to_vec(&variant).unwrap());
+    append_task(&t2);
+    let before = full_counts(&t2);
+    let (code, ans) = apply(
+        &t2,
+        json!({"op":"apply_action","action_type":"set_hold","parameters":{"task":task_id(),"effect":"merge","until":"later"}}),
+    );
+    assert_eq!(
+        (code, ans["code"].as_str()),
+        (2, Some("action_forbidden")),
+        "{ans}"
+    );
+    assert_nothing_written(&t2, &before);
+}
+
+fn refusal_code(f: &Failure) -> &'static str {
+    match f {
+        Failure::Refused(r) => r.code,
+        Failure::Internal(_) => "internal",
+    }
+}
+fn lib_apply(ctx: &Context, body: Value) -> Result<Value, Failure> {
+    let req: ont::action::ApplyActionRequest = serde_json::from_value(body).unwrap();
+    match ont::action::apply_action(ctx, &req)? {
+        ont::Answer::Enveloped { result, .. } => Ok(result),
+        _ => panic!("enveloped"),
+    }
+}
+
+#[test]
+fn b6_paged_linked_scan_still_refuses_and_snapshot_too_large() {
+    let t = setup();
+    let mut key_effect: Vec<(String, String)> = Vec::new();
+    for effect in ["merge", "freeze", "audit"] {
+        let (code, ans) = apply(
+            &t,
+            json!({"op":"apply_action","action_type":"set_hold","parameters":{"task":task_id(),"effect":effect,"until":"later"}}),
+        );
+        assert_eq!(code, 0, "{ans}");
+        key_effect.push((
+            ans["result"]["edits"][0]["id"]["native_key"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            effect.to_string(),
+        ));
+    }
+    key_effect.sort();
+    let deciding = key_effect.last().unwrap().1.clone();
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 100);
+    let err = lib_apply(
+        &ctx,
+        json!({"action_type":"set_hold","parameters":{"task":task_id(),"effect":deciding,"until":"later"}}),
+    )
+    .unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+    // Hard bound: more scanned heads than the bound refuses, writing nothing.
+    let before = full_counts(&t);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 2);
+    let err = lib_apply(
+        &ctx,
+        json!({"action_type":"set_hold","parameters":{"task":task_id(),"effect":"merge","until":"later"}}),
+    )
+    .unwrap_err();
+    assert_eq!(refusal_code(&err), "snapshot_too_large", "{err:?}");
+    assert_nothing_written(&t, &before);
+}
+
+#[test]
+fn b4_validate_with_request_id_equals_apply_and_actor_bounds() {
+    let t = setup();
+    let ctx = Context::new(t.store_path(), NOW);
+    let vreq = ont::action::ValidateActionRequest {
+        op: None,
+        action_type: "record_note".into(),
+        parameters: json!({"title":"rid","task":task_id()}),
+        agent: Some("agent-a".into()),
+        session: None,
+        expected: None,
+        request_id: Some("val-1".into()),
+    };
+    let v = ont::action::validate_action(&ctx, &vreq).unwrap();
+    let ont::Answer::Enveloped { result: vres, .. } = v else {
+        panic!("enveloped")
+    };
+    let areq = ont::action::ApplyActionRequest {
+        op: None,
+        action_type: "record_note".into(),
+        parameters: json!({"title":"rid","task":task_id()}),
+        agent: Some("agent-a".into()),
+        session: None,
+        expected: None,
+        request_id: Some("val-1".into()),
+    };
+    let a = ont::action::apply_action(&ctx, &areq).unwrap();
+    let ont::Answer::Enveloped { result: ares, .. } = a else {
+        panic!("enveloped")
+    };
+    assert_eq!(vres["edits"], ares["edits"]);
+    assert_eq!(ares["outcome"], "applied");
+    // Library-path actor bounds.
+    let mut bad_ctx = Context::new(t.store_path(), NOW);
+    bad_ctx.agent = Some("bad agent!".into());
+    let mut no_agent_req = areq.clone();
+    no_agent_req.agent = None;
+    no_agent_req.request_id = Some("val-2".into());
+    let err = ont::action::apply_action(&bad_ctx, &no_agent_req).unwrap_err();
+    assert_eq!(refusal_code(&err), "invalid_request");
+    let big = json!({"action_type":"record_note","parameters":{"title":"x".repeat(70_000),"task":task_id()}});
+    let err = lib_apply(&ctx, big).unwrap_err();
+    assert_eq!(refusal_code(&err), "invalid_request");
 }

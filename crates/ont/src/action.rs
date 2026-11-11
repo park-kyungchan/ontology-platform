@@ -14,25 +14,23 @@ use ont_store::schema_mode::{ActionLogEntry, SchemaHead};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const FRESH_UNTIL_MAX: u64 = 253402300799;
 
-#[doc(hidden)]
-pub static FAIL_AFTER_COMMIT: AtomicBool = AtomicBool::new(false);
 thread_local! {
     #[doc(hidden)]
     pub static FAIL_AFTER_COMMIT_LOCAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+/// Test seam: simulate a crash between the commit and the edits-log
+/// append. This is the one documented test seam for that step.
 #[doc(hidden)]
 pub fn __set_fail_after_commit(v: bool) {
     FAIL_AFTER_COMMIT_LOCAL.with(|c| c.set(v));
 }
 fn take_fail_after_commit() -> bool {
     FAIL_AFTER_COMMIT_LOCAL.with(|c| c.replace(false))
-        || FAIL_AFTER_COMMIT.swap(false, Ordering::SeqCst)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,6 +72,8 @@ pub struct ValidateActionRequest {
     pub session: Option<String>,
     #[serde(default)]
     pub expected: Option<Vec<ExpectedHead>>,
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 impl ValidateActionRequest {
     pub fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
@@ -145,17 +145,49 @@ fn find_action_type<'a>(set: &'a SchemaSet, name: &str) -> Option<(&'a Schema, &
     }
     None
 }
-fn actor_json(ctx: &Context, agent: &Option<String>, session: &Option<String>) -> Value {
-    let agent = agent.clone().or_else(|| ctx.agent.clone());
-    let session = session.clone().or_else(|| ctx.session.clone());
-    let client = if ctx.client.is_empty() {
+fn valid_actor_field(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+}
+fn effective_client(ctx: &Context) -> String {
+    if ctx.client.is_empty() {
         "cli".to_string()
     } else {
         ctx.client.clone()
-    };
+    }
+}
+fn check_actor_bounds(
+    ctx: &Context,
+    agent: &Option<String>,
+    session: &Option<String>,
+) -> Result<(), Failure> {
+    let client = effective_client(ctx);
+    let agent = agent.clone().or_else(|| ctx.agent.clone());
+    let session = session.clone().or_else(|| ctx.session.clone());
+    if !valid_actor_field(&client)
+        || agent.as_deref().is_some_and(|a| !valid_actor_field(a))
+        || session.as_deref().is_some_and(|s| !valid_actor_field(s))
+    {
+        return Err(Refusal::new("invalid_request").into());
+    }
+    Ok(())
+}
+fn check_parameters_size(params: &Value) -> Result<(), Failure> {
+    if serde_json::to_string(&canonical(params)).is_ok_and(|s| s.len() > crate::MAX_REQUEST) {
+        return Err(Refusal::new("invalid_request").into());
+    }
+    Ok(())
+}
+fn actor_json(ctx: &Context, agent: &Option<String>, session: &Option<String>) -> Value {
+    let agent = agent.clone().or_else(|| ctx.agent.clone());
+    let session = session.clone().or_else(|| ctx.session.clone());
+    let client = effective_client(ctx);
     let mut m = Map::new();
     m.insert("principal".into(), json!("agent"));
     m.insert("client".into(), json!(client));
+    m.insert("actor_trust".into(), json!("self_reported"));
     if let Some(a) = agent {
         m.insert("agent".into(), json!(a));
     }
@@ -164,14 +196,19 @@ fn actor_json(ctx: &Context, agent: &Option<String>, session: &Option<String>) -
     }
     Value::Object(m)
 }
+fn effective_agent(ctx: &Context, agent: &Option<String>) -> Option<String> {
+    agent.clone().or_else(|| ctx.agent.clone())
+}
 fn valid_request_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
-fn derive_request_action_id(request_id: &str) -> String {
-    let h = sha256_hex(format!("request_id:{request_id}").as_bytes());
+fn derive_request_action_id(client: &str, agent: Option<&str>, request_id: &str) -> String {
+    let h = sha256_hex(
+        format!("request_id:{}:{}:{request_id}", client, agent.unwrap_or("")).as_bytes(),
+    );
     format!("act-rq-{}", &h[..32])
 }
 fn allocate_action_id(
@@ -180,10 +217,10 @@ fn allocate_action_id(
     params: &Value,
     basis: &Value,
     log_len: usize,
-    request_id: &Option<String>,
+    request_action_id: &Option<String>,
 ) -> String {
-    if let Some(r) = request_id {
-        return derive_request_action_id(r);
+    if let Some(r) = request_action_id {
+        return r.clone();
     }
     let seed = canonical_string(&json!({
         "now":now,"action_type":action_type,"parameters":params,"basis":basis,"log_len":log_len
@@ -260,29 +297,10 @@ fn value_matches(schema: &Schema, ty: &PropertyType, v: &Value) -> bool {
                     .all(|(k, t)| map.get(k).is_some_and(|fv| value_matches(schema, t, fv)))
         }
         PropertyType::ValueType(vt) => {
-            let Some(def) = schema.value_types.get(&vt.value_type) else {
-                return false;
-            };
-            let base_ty = PropertyType::Scalar(def.base);
-            if !value_matches(schema, &base_ty, v) {
-                return false;
-            }
-            if let Some(vals) = &def.enum_values
-                && !vals.contains(v)
-            {
-                return false;
-            }
-            if let Some(min) = &def.min
-                && cmp_values(v, min) == Some(std::cmp::Ordering::Less)
-            {
-                return false;
-            }
-            if let Some(max) = &def.max
-                && cmp_values(v, max) == Some(std::cmp::Ordering::Greater)
-            {
-                return false;
-            }
-            true
+            // The core check includes the value type's pattern.
+            schema
+                .validate_value(&PropertyType::ValueType(vt.clone()), v)
+                .is_ok()
         }
     }
 }
@@ -371,6 +389,7 @@ struct Eval<'a> {
     actor: &'a Value,
     now: u64,
     basis: BTreeMap<String, Value>,
+    at: &'a ActionType,
 }
 impl Eval<'_> {
     fn note(&mut self, head: &SchemaHead) {
@@ -379,28 +398,79 @@ impl Eval<'_> {
             json!({"id":head.id,"revision":head.head.observation.revision}),
         );
     }
-    fn resolve(&self, v: &Value, ctx: Option<&SchemaHead>) -> Option<Value> {
+    fn not_evaluable() -> Failure {
+        Refusal::new("criterion_not_evaluable").into()
+    }
+    fn resolve_param_ref(&mut self, p: &str) -> Option<Value> {
+        let (name, prop) = p.split_once('.')?;
+        let v = self.params.get(name)?;
+        let id = id_from_value(v)?;
+        let head = self.snap.live(&id)?.clone();
+        self.note(&head);
+        field_value(&head, prop).cloned().filter(|v| !v.is_null())
+    }
+    fn resolve_property(&mut self, name: &str, ctx: Option<&SchemaHead>) -> Option<Value> {
+        if let Some(head) = ctx {
+            let head = head.clone();
+            self.note(&head);
+            return field_value(&head, name).cloned().filter(|v| !v.is_null());
+        }
+        // Bare name: only with exactly one reference parameter.
+        let mut refs = self
+            .at
+            .parameters
+            .iter()
+            .filter(|(_, d)| matches!(d.ty, PropertyType::Ref(_)));
+        let (pname, _) = refs.next()?;
+        if refs.next().is_some() {
+            return None;
+        }
+        let v = self.params.get(pname)?;
+        let id = id_from_value(v)?;
+        let head = self.snap.live(&id)?.clone();
+        self.note(&head);
+        field_value(&head, name).cloned().filter(|v| !v.is_null())
+    }
+    fn resolve(
+        &mut self,
+        v: &Value,
+        ctx: Option<&SchemaHead>,
+        property_position: bool,
+    ) -> Option<Value> {
         if let Value::String(s) = v {
             if let Some(p) = s.strip_prefix('$') {
+                if p.contains('.') {
+                    return self.resolve_param_ref(p);
+                }
                 return self.params.get(p).cloned();
             }
-            if let Some(head) = ctx
-                && head.head.observation.fields.contains_key(s)
-            {
-                return field_value(head, s).cloned();
-            }
-            // A bare property name at the top level names a property of
-            // an object a reference parameter points to.
-            for pv in self.params.values() {
-                if let Some(id) = id_from_value(pv)
-                    && let Some(h) = self.snap.live(&id)
-                    && h.head.observation.fields.contains_key(s)
-                {
-                    return field_value(h, s).cloned();
-                }
+            if property_position {
+                return self.resolve_property(s, ctx);
             }
         }
         Some(v.clone())
+    }
+    fn values_equal(a: &Value, b: &Value) -> Result<bool, Failure> {
+        if a == b {
+            return Ok(true);
+        }
+        if let Some(ord) = cmp_values(a, b) {
+            return Ok(ord == std::cmp::Ordering::Equal);
+        }
+        // Same JSON kind: equality is decidable; different kinds are not.
+        let same_kind = matches!(
+            (a, b),
+            (Value::String(_), Value::String(_))
+                | (Value::Bool(_), Value::Bool(_))
+                | (Value::Array(_), Value::Array(_))
+                | (Value::Object(_), Value::Object(_))
+                | (Value::Null, Value::Null)
+        );
+        if same_kind {
+            Ok(false)
+        } else {
+            Err(Self::not_evaluable())
+        }
     }
     fn eval_group(
         &mut self,
@@ -410,28 +480,25 @@ impl Eval<'_> {
         ctx: Option<&SchemaHead>,
     ) -> Result<bool, Failure> {
         if let Some(cs) = all {
+            let mut out = true;
             for c in cs {
-                if !self.eval(c, ctx)? {
-                    return Ok(false);
-                }
+                out &= self.eval(c, ctx)?;
             }
-            return Ok(true);
+            return Ok(out);
         }
         if let Some(cs) = any {
+            let mut out = false;
             for c in cs {
-                if self.eval(c, ctx)? {
-                    return Ok(true);
-                }
+                out |= self.eval(c, ctx)?;
             }
-            return Ok(false);
+            return Ok(out);
         }
         if let Some(cs) = none {
+            let mut out = true;
             for c in cs {
-                if self.eval(c, ctx)? {
-                    return Ok(false);
-                }
+                out &= !self.eval(c, ctx)?;
             }
-            return Ok(true);
+            return Ok(out);
         }
         Ok(true)
     }
@@ -439,26 +506,28 @@ impl Eval<'_> {
         match c {
             Condition::Exists(s) => Ok(self.exists_fresh(s, false)),
             Condition::Fresh(s) => Ok(self.exists_fresh(s, true)),
-            Condition::Eq(p) => Ok(self.compare(p, ctx, |o| o == std::cmp::Ordering::Equal, true)),
-            Condition::Ne(p) => Ok(!self.compare(p, ctx, |o| o == std::cmp::Ordering::Equal, true)),
+            Condition::Eq(p) => self.compare_eq(p, ctx),
+            Condition::Ne(p) => Ok(!self.compare_eq(p, ctx)?),
             Condition::In(p) => {
-                let a = self.resolve(&p[0], ctx);
-                let b = self.resolve(&p[1], ctx);
-                Ok(match (a, b) {
-                    (Some(a), Some(Value::Array(items))) => items.contains(&a),
+                let a = self
+                    .resolve(&p[0], ctx, true)
+                    .ok_or_else(Self::not_evaluable)?;
+                let b = self
+                    .resolve(&p[1], ctx, false)
+                    .ok_or_else(Self::not_evaluable)?;
+                Ok(match b {
+                    Value::Array(items) => items
+                        .iter()
+                        .any(|i| a == *i || cmp_values(&a, i) == Some(std::cmp::Ordering::Equal)),
                     _ => false,
                 })
             }
-            Condition::Lt(p) => Ok(self.compare(p, ctx, |o| o == std::cmp::Ordering::Less, false)),
-            Condition::Le(p) => {
-                Ok(self.compare(p, ctx, |o| o != std::cmp::Ordering::Greater, false))
-            }
-            Condition::Gt(p) => {
-                Ok(self.compare(p, ctx, |o| o == std::cmp::Ordering::Greater, false))
-            }
-            Condition::Ge(p) => Ok(self.compare(p, ctx, |o| o != std::cmp::Ordering::Less, false)),
+            Condition::Lt(p) => self.compare_order(p, ctx, |o| o == std::cmp::Ordering::Less),
+            Condition::Le(p) => self.compare_order(p, ctx, |o| o != std::cmp::Ordering::Greater),
+            Condition::Gt(p) => self.compare_order(p, ctx, |o| o == std::cmp::Ordering::Greater),
+            Condition::Ge(p) => self.compare_order(p, ctx, |o| o != std::cmp::Ordering::Less),
             Condition::Actor(v) => {
-                let want = self.resolve(v, ctx);
+                let want = self.resolve(v, ctx, false);
                 Ok(match want {
                     Some(Value::String(s)) => {
                         self.actor.get("agent").and_then(|x| x.as_str()) == Some(s.as_str())
@@ -474,52 +543,50 @@ impl Eval<'_> {
             }
             Condition::Linked(link) => self.linked(link),
             Condition::All(cs) => {
+                let mut out = true;
                 for x in cs {
-                    if !self.eval(x, ctx)? {
-                        return Ok(false);
-                    }
+                    out &= self.eval(x, ctx)?;
                 }
-                Ok(true)
+                Ok(out)
             }
             Condition::Any(cs) => {
+                let mut out = false;
                 for x in cs {
-                    if self.eval(x, ctx)? {
-                        return Ok(true);
-                    }
+                    out |= self.eval(x, ctx)?;
                 }
-                Ok(false)
+                Ok(out)
             }
             Condition::NoneOf(cs) => {
+                let mut out = true;
                 for x in cs {
-                    if self.eval(x, ctx)? {
-                        return Ok(false);
-                    }
+                    out &= !self.eval(x, ctx)?;
                 }
-                Ok(true)
+                Ok(out)
             }
         }
     }
-    fn compare(
-        &self,
+    fn compare_eq(&mut self, p: &[Value; 2], ctx: Option<&SchemaHead>) -> Result<bool, Failure> {
+        let a = self
+            .resolve(&p[0], ctx, true)
+            .ok_or_else(Self::not_evaluable)?;
+        let b = self
+            .resolve(&p[1], ctx, false)
+            .ok_or_else(Self::not_evaluable)?;
+        Self::values_equal(&a, &b)
+    }
+    fn compare_order(
+        &mut self,
         p: &[Value; 2],
         ctx: Option<&SchemaHead>,
         ok: impl Fn(std::cmp::Ordering) -> bool,
-        equality: bool,
-    ) -> bool {
-        let a = self.resolve(&p[0], ctx);
-        let b = self.resolve(&p[1], ctx);
-        match (a, b) {
-            (Some(a), Some(b)) => {
-                if equality && ctx.is_none() {
-                    return a == b;
-                }
-                if a == b && equality {
-                    return true;
-                }
-                cmp_values(&a, &b).is_some_and(ok)
-            }
-            _ => false,
-        }
+    ) -> Result<bool, Failure> {
+        let a = self
+            .resolve(&p[0], ctx, true)
+            .ok_or_else(Self::not_evaluable)?;
+        let b = self
+            .resolve(&p[1], ctx, false)
+            .ok_or_else(Self::not_evaluable)?;
+        cmp_values(&a, &b).map(&ok).ok_or_else(Self::not_evaluable)
     }
     fn exists_fresh(&mut self, s: &str, fresh: bool) -> bool {
         let Some(p) = s.strip_prefix('$') else {
@@ -628,6 +695,7 @@ fn eval_criteria(
         actor,
         now,
         basis: BTreeMap::new(),
+        at,
     };
     let mut results = Vec::new();
     let mut failed = Vec::new();
@@ -717,35 +785,23 @@ impl<'a> Planner<'a> {
             .object_types
             .get(object_type)
             .ok_or_else(|| Failure::from(Refusal::new("unknown_type")))?;
+        let _ = (at, set_map);
         if ty.primary_key.from.as_deref() == Some("$action_id") {
             return Ok(self.action_id.clone());
         }
-        if let Some(from) = &ty.primary_key.from {
-            if let Some(p) = from.strip_prefix('$')
-                && let Some(v) = self.params.get(p)
-                && let Some(s) = v.as_str()
-            {
-                return Ok(s.to_string());
-            }
-            if from.starts_with('/')
-                && let Some(v) = self.params.values().find_map(|pv| {
-                    pv.pointer(from)
-                        .and_then(|x| x.as_str())
-                        .map(str::to_string)
-                })
-            {
+        if let Some(from) = &ty.primary_key.from
+            && from.starts_with('/')
+        {
+            // The one pointer form `schema check` accepts for an
+            // Ontology-owned key: a pointer into a parameter value.
+            if let Some(v) = self.params.values().find_map(|pv| {
+                pv.pointer(from)
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+            }) {
                 return Ok(v);
             }
-        }
-        if let Some(id) = self.ref_target_typed(at, object_type) {
-            return Ok(id.native_key);
-        }
-        if let Some(k) = set_map
-            .get("native_key")
-            .or_else(|| set_map.get("key"))
-            .and_then(|v| v.as_str())
-        {
-            return Ok(k.to_string());
+            return Err(invalid_parameter("key"));
         }
         Ok(self.action_id.clone())
     }
@@ -879,19 +935,16 @@ impl<'a> Planner<'a> {
         };
         if let Some((fields, head, retracted, scope)) = self.state(&id)
             && !retracted
-            && !or_modify
         {
             let _ = (fields, head, scope);
+            if or_modify {
+                // The key (from a parameter or a pointer) names an
+                // existing object: plan a modification, as in validate.
+                return self.do_modify(t, set_map, Some(id));
+            }
             return Err(revision_conflict(&id));
         }
-        if let Some((cur, head, retracted, scope)) = self.state(&id)
-            && !retracted
-            && or_modify
-            && self.ref_target_typed(at, t).is_some()
-        {
-            let _ = (cur, head.clone(), scope.clone());
-            return self.do_modify(t, set_map, Some(id));
-        }
+        let _ = at;
         let scope = self.scope_for_create(at, t);
         let fields: BTreeMap<String, Knowledge> = set_map
             .iter()
@@ -975,6 +1028,29 @@ impl<'a> Planner<'a> {
             .find_map(|v| id_from_value(v).filter(|i| i.object_type == object_type))
     }
 }
+/// The one field check shared by validate and apply: every planned
+/// object (except a retraction, whose fields are empty by definition)
+/// must satisfy the store's field validation before anything is written.
+fn check_planned(set: &SchemaSet, planner: &Planner<'_>) -> Result<(), Failure> {
+    for p in &planner.planned {
+        if p.change == Change::Retraction {
+            continue;
+        }
+        if let Err(v) = set.validate_fields(&p.id.object_type, &p.fields) {
+            let prop = v
+                .pointer
+                .strip_prefix("/fields/")
+                .unwrap_or(&v.pointer)
+                .replace("~1", "/")
+                .replace("~0", "~");
+            return Err(Refusal::new("invalid_parameter")
+                .with("parameter", json!(prop.clone()))
+                .with("property", json!(prop))
+                .into());
+        }
+    }
+    Ok(())
+}
 fn revision_conflict(id: &Id) -> Failure {
     Refusal::new("revision_conflict")
         .with("id", serde_json::to_value(id).unwrap_or(Value::Null))
@@ -991,47 +1067,190 @@ pub fn log_line(seq: i64, e: &ActionLogEntry) -> String {
     canonical_string(&json!({
         "seq":seq,"action_id":e.action_id,"action_type":e.action_type,"domain":e.domain,
         "schema_domain":e.schema_domain,"schema_version":e.schema_version,"actor":e.actor,
-        "submitted_at":e.submitted_at,"parameters":e.parameters,"basis":e.basis,"edits":e.edits,"outcome":e.outcome
+        "submitted_at":e.submitted_at,"parameters":e.parameters,"basis":e.basis,"edits":e.edits,"outcome":e.outcome,"actor_trust":"self_reported"
     }))
+}
+/// Whether the edits log is in step with the action log table after a
+/// write: `written`, `pending` (the committed action stands; the next
+/// write repairs the file), or `rebuilt` (a diverged file was kept aside
+/// and rewritten from the table, which always wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditsLogStatus {
+    Written,
+    Pending,
+    Rebuilt,
+}
+impl EditsLogStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Written => "written",
+            Self::Pending => "pending",
+            Self::Rebuilt => "rebuilt",
+        }
+    }
+}
+fn utc_stamp_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let tod = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+fn fsync_dir(dir: &std::path::Path) {
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
 }
 pub fn sync_edits_file(
     store_path: &std::path::Path,
     log: &[(i64, ActionLogEntry)],
-) -> Result<(), Failure> {
-    use std::os::unix::fs::OpenOptionsExt;
+) -> EditsLogStatus {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let path = edits_path(store_path);
-    let mut present: BTreeSet<i64> = BTreeSet::new();
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        for line in text.lines() {
-            if let Ok(v) = serde_json::from_str::<Value>(line)
-                && let Some(s) = v.get("seq").and_then(|x| x.as_i64())
-            {
-                present.insert(s);
-            }
-        }
-    }
-    let missing: Vec<String> = log
-        .iter()
-        .filter(|(seq, _)| !present.contains(seq))
-        .map(|(seq, e)| log_line(*seq, e))
-        .collect();
-    if missing.is_empty() && path.exists() {
-        return Ok(());
-    }
-    let mut file = std::fs::OpenOptions::new()
+    let dir = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let lock_path = dir.join("edits.jsonl.lock");
+    let lock = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
         .mode(0o600)
         .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32)
-        .open(&path)
-        .map_err(|_| Failure::Internal(internal!("edits_log_unavailable")))?;
-    for line in &missing {
-        writeln!(file, "{line}")
-            .map_err(|_| Failure::Internal(internal!("edits_log_unavailable")))?;
+        .open(&lock_path);
+    let Ok(lock) = lock else {
+        return EditsLogStatus::Pending;
+    };
+    if rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).is_err() {
+        return EditsLogStatus::Pending;
     }
-    file.sync_all()
-        .map_err(|_| Failure::Internal(internal!("edits_log_unavailable")))?;
-    Ok(())
+    let expected: Vec<String> = log.iter().map(|(seq, e)| log_line(*seq, e)).collect();
+    let pending = EditsLogStatus::Pending;
+    if path.symlink_metadata().is_err() {
+        let created = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32,
+            )
+            .open(&path);
+        let Ok(mut f) = created else { return pending };
+        for line in &expected {
+            if f.write_all(format!("{line}\n").as_bytes()).is_err() {
+                return pending;
+            }
+        }
+        if f.sync_all().is_err() {
+            return pending;
+        }
+        fsync_dir(&dir);
+        return EditsLogStatus::Written;
+    }
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32)
+        .open(&path);
+    let Ok(mut file) = opened else { return pending };
+    let Ok(meta) = file.metadata() else {
+        return pending;
+    };
+    let caller_uid = std::fs::metadata("/proc/self")
+        .map(|m| m.uid())
+        .unwrap_or(u32::MAX);
+    if meta.permissions().mode() & 0o777 != 0o600 || meta.uid() != caller_uid {
+        eprintln!(
+            "warning: edits_log_pending@crates/ont/src/action.rs:{} edits.jsonl is not 0600 owned by the caller",
+            line!()
+        );
+        return pending;
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return pending;
+    }
+    let complete_len = if bytes.ends_with(b"\n") || bytes.is_empty() {
+        bytes.len()
+    } else {
+        bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1)
+    };
+    let make_fresh = |expected: &Vec<String>| -> EditsLogStatus {
+        let created = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32,
+            )
+            .open(&path);
+        let Ok(mut f) = created else {
+            return EditsLogStatus::Pending;
+        };
+        for line in expected {
+            if f.write_all(format!("{line}\n").as_bytes()).is_err() {
+                return EditsLogStatus::Pending;
+            }
+        }
+        if f.sync_all().is_err() {
+            return EditsLogStatus::Pending;
+        }
+        fsync_dir(&dir);
+        EditsLogStatus::Rebuilt
+    };
+    let Ok(complete_text) = std::str::from_utf8(&bytes[..complete_len]) else {
+        let aside = dir.join(format!("edits.jsonl.diverged-{}", utc_stamp_now()));
+        if std::fs::rename(&path, &aside).is_err() {
+            return pending;
+        }
+        return make_fresh(&expected);
+    };
+    let lines: Vec<&str> = if complete_text.is_empty() {
+        Vec::new()
+    } else {
+        complete_text[..complete_text.len() - 1]
+            .split('\n')
+            .collect()
+    };
+    if lines.len() > expected.len() || lines.iter().enumerate().any(|(i, l)| *l != expected[i]) {
+        let aside = dir.join(format!("edits.jsonl.diverged-{}", utc_stamp_now()));
+        if std::fs::rename(&path, &aside).is_err() {
+            return pending;
+        }
+        return make_fresh(&expected);
+    }
+    if complete_len < bytes.len() && file.set_len(complete_len as u64).is_err() {
+        return pending;
+    }
+    if file.seek(SeekFrom::End(0)).is_err() {
+        return pending;
+    }
+    for line in &expected[lines.len()..] {
+        if file.write_all(format!("{line}\n").as_bytes()).is_err() {
+            return pending;
+        }
+    }
+    if file.sync_all().is_err() {
+        return pending;
+    }
+    EditsLogStatus::Written
 }
 fn pins_for(set: &SchemaSet, domain: &str) -> BTreeMap<String, ont_core::schema::SchemaPin> {
     set.pin(domain)
@@ -1056,24 +1275,176 @@ fn check_expected(
     }
     Ok(basis)
 }
-fn load_snapshot_read(store: &mut ont_store::Store, set: &SchemaSet) -> Result<Snapshot, Failure> {
+fn insert_snap(snap: &mut Snapshot, h: SchemaHead, max: usize) -> Result<(), Failure> {
+    let is_new = snap.head(&h.id).is_none();
+    snap.insert(h);
+    if is_new && snap.heads.len() > max {
+        return Err(Refusal::new("snapshot_too_large").into());
+    }
+    Ok(())
+}
+fn collect_linked_scans(set: &SchemaSet, c: &Condition, out: &mut BTreeSet<String>) {
+    match c {
+        Condition::Linked(link) => {
+            for schema in set.pins().keys().filter_map(|d| set.schema(d)) {
+                for lt in schema.link_types.values() {
+                    if lt.names.reverse == link.link {
+                        out.insert(lt.from.clone());
+                    }
+                }
+            }
+            if let Some(g) = &link.condition {
+                for cs in [&g.all, &g.any, &g.none].into_iter().flatten() {
+                    for x in cs {
+                        collect_linked_scans(set, x, out);
+                    }
+                }
+            }
+        }
+        Condition::All(cs) | Condition::Any(cs) | Condition::NoneOf(cs) => {
+            for x in cs {
+                collect_linked_scans(set, x, out);
+            }
+        }
+        _ => {}
+    }
+}
+trait SnapshotSource {
+    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure>;
+    fn fetch_scan(
+        &mut self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<SchemaHead>, Failure>;
+}
+impl SnapshotSource for ont_store::Store {
+    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
+        self.head(id).map_err(store_err)
+    }
+    fn fetch_scan(
+        &mut self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<SchemaHead>, Failure> {
+        self.scan_heads(ty, limit, after).map_err(store_err)
+    }
+}
+impl SnapshotSource for ont_store::schema_mode::SchemaWrite<'_> {
+    fn fetch_head(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
+        self.head(id).map_err(store_err)
+    }
+    fn fetch_scan(
+        &mut self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<SchemaHead>, Failure> {
+        self.scan_heads_after(ty, limit, after).map_err(store_err)
+    }
+}
+fn load_snapshot(
+    ctx: &Context,
+    set: &SchemaSet,
+    at: &ActionType,
+    params: &BTreeMap<String, Value>,
+    expected: &Option<Vec<ExpectedHead>>,
+    source: &mut dyn SnapshotSource,
+) -> Result<Snapshot, Failure> {
+    let max = ctx.snapshot_max_heads;
+    let page = ctx.snapshot_page_size.max(1);
     let mut snap = Snapshot::default();
-    let types: BTreeSet<String> = set
-        .pins()
-        .keys()
-        .filter_map(|d| set.schema(d))
-        .flat_map(|s| s.object_types.keys().cloned())
-        .collect();
-    for t in types {
-        // Include retracted check via head per scanned? scan hides retracted;
-        // retracted objects are loaded on demand by callers through head.
-        for h in st!(store.scan_heads(&t, 10_000, None)) {
-            snap.insert(h);
+    let mut ids: Vec<Id> = Vec::new();
+    for v in params.values() {
+        ids.extend(ids_from_value(v));
+    }
+    if let Some(list) = expected {
+        for e in list {
+            ids.push(e.id.clone());
+        }
+    }
+    for id in &ids {
+        if let Some(h) = source.fetch_head(id)? {
+            insert_snap(&mut snap, h, max)?;
+        }
+    }
+    // One hop: objects referenced by the heads just loaded (linked
+    // forward targets and reference fields).
+    let mut hop: Vec<Id> = Vec::new();
+    for h in snap.heads.values() {
+        for v in h.head.observation.fields.values() {
+            if let Knowledge::Value(v) = v {
+                hop.extend(ids_from_value(v));
+            }
+        }
+    }
+    for id in &hop {
+        if snap.head(id).is_none()
+            && let Some(h) = source.fetch_head(id)?
+        {
+            insert_snap(&mut snap, h, max)?;
+        }
+    }
+    // Reverse `linked` conditions scan by type, paged until exhausted.
+    let mut scan_types = BTreeSet::new();
+    for crit in &at.submission_criteria {
+        for cs in [&crit.all, &crit.any, &crit.none].into_iter().flatten() {
+            for c in cs {
+                collect_linked_scans(set, c, &mut scan_types);
+            }
+        }
+    }
+    for ty in &scan_types {
+        let mut after: Option<Id> = None;
+        loop {
+            let heads = source.fetch_scan(ty, page, after.as_ref())?;
+            let full = heads.len() == page;
+            after = heads.last().map(|h| h.id.clone());
+            for h in heads {
+                insert_snap(&mut snap, h, max)?;
+            }
+            if !full {
+                break;
+            }
         }
     }
     Ok(snap)
 }
-
+fn augment_planner(
+    planner: &mut Planner<'_>,
+    at: &ActionType,
+    max: usize,
+    source: &mut dyn SnapshotSource,
+) -> Result<(), Failure> {
+    let mut targets: Vec<(String, String)> = Vec::new();
+    for rule in &at.rules {
+        for t in [
+            rule.create_object.clone(),
+            rule.create_or_modify_object.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Ok(key) = planner.create_key(at, &t, &BTreeMap::new()) {
+                targets.push((t, key));
+            }
+        }
+    }
+    for (t, key) in targets {
+        let id = Id {
+            object_type: t,
+            namespace: planner.schema.namespace.clone(),
+            native_key: key,
+        };
+        if planner.snap.head(&id).is_none()
+            && let Some(h) = source.fetch_head(&id)?
+        {
+            insert_snap(&mut planner.snap, h, max)?;
+        }
+    }
+    Ok(())
+}
 pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
@@ -1159,27 +1530,19 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     {
         return Err(Refusal::new("action_forbidden").into());
     }
+    check_actor_bounds(ctx, &req.agent, &req.session)?;
+    check_parameters_size(&req.parameters)?;
+    if let Some(r) = &req.request_id
+        && !valid_request_id(r)
+    {
+        return Err(Refusal::new("invalid_request").into());
+    }
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
     ));
     let actor = actor_json(ctx, &req.agent, &req.session);
-    let mut snap = load_snapshot_read(&mut store, &set)?;
-    // Retracted / expected heads on demand.
-    if let Some(list) = &req.expected {
-        for e in list {
-            if let Some(h) = st!(store.head(&e.id)) {
-                snap.insert(h);
-            }
-        }
-    }
-    for v in params.values() {
-        if let Some(id) = id_from_value(v)
-            && let Some(h) = st!(store.head(&id))
-        {
-            snap.insert(h);
-        }
-    }
+    let snap = load_snapshot(ctx, &set, &at, &params, &req.expected, &mut store)?;
     let expected_basis = check_expected(&snap, &req.expected)?;
     let (criteria, basis_map, failed) = eval_criteria(&set, &snap, &at, &params, &actor, ctx.now)?;
     let mut basis: Vec<Value> = basis_map.values().cloned().collect();
@@ -1193,13 +1556,20 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     if valid {
         let log_len = st!(store.action_log()).len();
         let basis_json = Value::Array(basis.clone());
+        let request_action_id = req.request_id.as_ref().map(|r| {
+            derive_request_action_id(
+                &effective_client(ctx),
+                effective_agent(ctx, &req.agent).as_deref(),
+                r,
+            )
+        });
         let action_id = allocate_action_id(
             ctx.now,
             &req.action_type,
             &params_canon,
             &basis_json,
             log_len,
-            &None,
+            &request_action_id,
         );
         let mut planner = Planner {
             schema: &schema,
@@ -1211,7 +1581,9 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
             planned: Vec::new(),
             overlay: BTreeMap::new(),
         };
+        augment_planner(&mut planner, &at, ctx.snapshot_max_heads, &mut store)?;
         edits = planner.plan(&at)?;
+        check_planned(&set, &planner)?;
     }
     Ok(Answer::Enveloped {
         pins: pins_for(&set, &schema.domain),
@@ -1231,10 +1603,9 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     {
         return Err(Refusal::new("invalid_request").into());
     }
+    check_actor_bounds(ctx, &req.agent, &req.session)?;
+    check_parameters_size(&req.parameters)?;
     let mut store = open_store(&ctx.store, true)?;
-    // Repair first: the database wins over edits.jsonl.
-    let pre_log = st!(store.action_log());
-    sync_edits_file(&ctx.store, &pre_log)?;
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
     let revision = principal.revision()?;
@@ -1268,7 +1639,11 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             let tparams = validate_parameters(&tschema, &tat, &req.parameters)?;
             // Idempotent retry inside the transaction.
             if let Some(rid) = &req.request_id {
-                let derived = derive_request_action_id(rid);
+                let derived = derive_request_action_id(
+                    &effective_client(ctx),
+                    effective_agent(ctx, &req.agent).as_deref(),
+                    rid,
+                );
                 if let Some((_, entry)) = tx.find_action(&derived).map_err(store_err)? {
                     if entry.action_type == req.action_type && canonical(&entry.parameters) == params_canon {
                         return Ok(ApplyOutcome::Already { action_id: derived, edits: entry.edits.clone() });
@@ -1276,21 +1651,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
                     return Err(Refusal::new("request_id_reused").into());
                 }
             }
-            let mut snap = Snapshot::default();
-            let types: BTreeSet<String> = tx_set.pins().keys().filter_map(|d| tx_set.schema(d))
-                .flat_map(|s| s.object_types.keys().cloned()).collect();
-            for t in types {
-                for h in tx.scan_heads(&t, 10_000).map_err(store_err)? { snap.insert(h); }
-            }
-            if let Some(list) = &req.expected {
-                for e in list {
-                    if let Some(h) = tx.head(&e.id).map_err(store_err)? { snap.insert(h); }
-                }
-            }
-            for v in tparams.values() {
-                if let Some(id) = id_from_value(v)
-                    && let Some(h) = tx.head(&id).map_err(store_err)? { snap.insert(h); }
-            }
+            let snap = load_snapshot(ctx, &tx_set, &tat, &tparams, &req.expected, tx)?;
             let expected_basis = check_expected(&snap, &req.expected)?;
             let (criteria, basis_map, failed) = eval_criteria(&tx_set, &snap, &tat, &tparams, &actor, ctx.now)?;
             let _ = criteria;
@@ -1305,9 +1666,18 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             for b in expected_basis { if !basis.contains(&b) { basis.push(b); } }
             let basis_json = Value::Array(basis.clone());
             let log_len = tx.action_log().map_err(store_err)?.len();
-            let action_id = allocate_action_id(ctx.now, &req.action_type, &params_canon, &basis_json, log_len, &req.request_id);
+            let request_action_id = req.request_id.as_ref().map(|r| {
+                derive_request_action_id(
+                    &effective_client(ctx),
+                    effective_agent(ctx, &req.agent).as_deref(),
+                    r,
+                )
+            });
+            let action_id = allocate_action_id(ctx.now, &req.action_type, &params_canon, &basis_json, log_len, &request_action_id);
             let mut planner = Planner { schema: &tschema, set: &tx_set, snap: snap.clone(), params: &tparams, action_id: action_id.clone(), edit_index: 0, planned: Vec::new(), overlay: BTreeMap::new() };
+            augment_planner(&mut planner, &tat, ctx.snapshot_max_heads, tx)?;
             let edits = planner.plan(&tat)?;
+            check_planned(&tx_set, &planner)?;
             let edits_json = Value::Array(edits.clone());
             let pin_version = tx_set.pin(&tschema.domain).map(|p| p.version).unwrap_or(0);
             let record = json!({"action_id":action_id,"action_type":req.action_type,"domain":tschema.domain,"schema_domain":tschema.domain,"schema_version":pin_version,"actor":actor,"submitted_at":ctx.now,"parameters":params_canon,"basis":basis_json,"edits":edits_json,"outcome":"applied"});
@@ -1333,21 +1703,31 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
         return Err(store_err(e));
     }
     match outcome {
-        Some(ApplyOutcome::Already { action_id, edits }) => Ok(Answer::Enveloped {
-            pins: pins_for(&set, &schema.domain),
-            revision,
-            result: json!({"outcome":"already_applied","action_id":action_id,"edits":edits,"action_type":req.action_type}),
-        }),
+        Some(ApplyOutcome::Already { action_id, edits }) => {
+            let edits_log = match store.action_log() {
+                Ok(log) => sync_edits_file(&ctx.store, &log),
+                Err(_) => EditsLogStatus::Pending,
+            };
+            Ok(Answer::Enveloped {
+                pins: pins_for(&set, &schema.domain),
+                revision,
+                result: json!({"outcome":"already_applied","action_id":action_id,"edits":edits,"action_type":req.action_type,"edits_log":edits_log.as_str(),"actor_trust":"self_reported"}),
+            })
+        }
         Some(ApplyOutcome::Applied { action_id, edits }) => {
             if take_fail_after_commit() {
                 return Err(Failure::Internal(internal!("crash_after_commit")));
             }
-            let log = st!(store.action_log());
-            sync_edits_file(&ctx.store, &log)?;
+            // After the commit the action stands whatever happens to
+            // the file: a failed append is reported, never an error.
+            let edits_log = match store.action_log() {
+                Ok(log) => sync_edits_file(&ctx.store, &log),
+                Err(_) => EditsLogStatus::Pending,
+            };
             Ok(Answer::Enveloped {
                 pins: pins_for(&set, &schema.domain),
                 revision,
-                result: json!({"outcome":"applied","action_id":action_id,"edits":edits,"action_type":req.action_type}),
+                result: json!({"outcome":"applied","action_id":action_id,"edits":edits,"action_type":req.action_type,"edits_log":edits_log.as_str(),"actor_trust":"self_reported"}),
             })
         }
         None => Err(Failure::Internal(internal!("authority_failure"))),

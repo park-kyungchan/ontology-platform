@@ -363,13 +363,9 @@ pub fn run(args: &[String], stdin: impl Read, real_uid: u32, effective_uid: u32)
     } else {
         "cli".to_string()
     };
-    let ctx = Context {
-        store: cli.store.clone(),
-        now,
-        client,
-        agent: std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty()),
-        session: None,
-    };
+    let mut ctx = Context::new(cli.store.clone(), now);
+    ctx.client = client;
+    ctx.agent = std::env::var("ONT_AGENT").ok().filter(|s| !s.is_empty());
     render(dispatch(&cli, stdin, &ctx), now)
 }
 

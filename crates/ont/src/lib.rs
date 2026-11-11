@@ -72,6 +72,11 @@ pub struct Context {
     pub client: String,
     pub agent: Option<String>,
     pub session: Option<String>,
+    /// Snapshot paging for action evaluation (test-only tuning via
+    /// [`Context::with_snapshot_bounds`]); `Context::new` is the supported
+    /// constructor.
+    pub snapshot_page_size: usize,
+    pub snapshot_max_heads: usize,
 }
 impl Context {
     pub fn new(store: PathBuf, now: u64) -> Self {
@@ -81,7 +86,22 @@ impl Context {
             client: "cli".to_string(),
             agent: None,
             session: None,
+            snapshot_page_size: 500,
+            snapshot_max_heads: 100_000,
         }
+    }
+    /// Test-only constructor: a small snapshot page size (and hard head
+    /// bound) without a global.
+    pub fn with_snapshot_bounds(
+        store: PathBuf,
+        now: u64,
+        page_size: usize,
+        max_heads: usize,
+    ) -> Self {
+        let mut ctx = Self::new(store, now);
+        ctx.snapshot_page_size = page_size.max(1);
+        ctx.snapshot_max_heads = max_heads.max(1);
+        ctx
     }
 }
 
