@@ -2122,6 +2122,8 @@ fn skipped_reverse_link_scans_still_count_toward_snapshot_bound() {
 fn snapshot_admission_parity_at_default_and_minimal_bounds_cli_and_mcp() {
     for mcp in [false, true] {
         for case in [
+            "present_parameter",
+            "present_property",
             "exists",
             "fresh",
             "property",
@@ -2146,6 +2148,8 @@ fn snapshot_admission_parity_at_default_and_minimal_bounds_cli_and_mcp() {
                         let note = json!({"object_type":"note","namespace":task()["namespace"],"native_key":"target"});
                         let mut parameters = json!({"note":note});
                         let condition = match case {
+                            "present_parameter" => Some(json!({"present":"$note"})),
+                            "present_property" => Some(json!({"present":"$note.task"})),
                             "exists" => Some(json!({"exists":"$note"})),
                             "fresh" => Some(json!({"fresh":"$note"})),
                             "property" => Some(json!({"eq":["title","source"]})),
@@ -2237,6 +2241,15 @@ fn snapshot_admission_parity_at_default_and_minimal_bounds_cli_and_mcp() {
                             "{case} {op} {bound}: {line}"
                         );
                         match case {
+                            "present_property" => {
+                                assert_eq!(answer["code"], "rule_reference_unavailable", "{answer}")
+                            }
+                            "present_parameter" if op == "validate" => {
+                                assert_eq!(answer["result"]["valid"], true, "{answer}")
+                            }
+                            "present_parameter" => {
+                                assert_eq!(answer["result"]["outcome"], "applied", "{answer}")
+                            }
                             "property" => {
                                 assert_eq!(answer["code"], "criterion_not_evaluable", "{answer}")
                             }
@@ -2343,6 +2356,419 @@ fn unreadable_creation_occupancy_exception_survives_minimal_bound_cli_and_mcp() 
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn present_parameter_presence_and_discovery_cli_and_mcp() {
+    for mcp in [false, true] {
+        for required in [false, true] {
+            let t = Temp::new();
+            let mut s = scoped_action_schema();
+            s["action_types"]["probe_present"] = json!({
+                "parameters":{"note":{"type":{"ref":"note"},"required":required}},
+                "submission_criteria":[{"code":"supply_note","message":"Supply note.","all":[{"present":"$note"}]}]
+            });
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("probe_present"));
+            t.install(s.clone());
+            let note =
+                json!({"object_type":"note","namespace":task()["namespace"],"native_key":"target"});
+            for state in [
+                "omitted",
+                "null",
+                "live",
+                "missing",
+                "retracted",
+                "unreadable",
+            ] {
+                if required && matches!(state, "omitted" | "null") {
+                    continue;
+                }
+                let mut id = note.clone();
+                id["native_key"] = json!(state);
+                if matches!(state, "live" | "retracted" | "unreadable") {
+                    put(
+                        &t,
+                        id.clone(),
+                        &[(
+                            "tenant",
+                            if state == "unreadable" {
+                                "blocked"
+                            } else {
+                                "allowed"
+                            },
+                        )],
+                        json!({"title":"source","task":task()}),
+                        NOW + 10,
+                        false,
+                    );
+                    if state == "retracted" {
+                        put(
+                            &t,
+                            id.clone(),
+                            &[("tenant", "allowed")],
+                            json!({}),
+                            NOW + 11,
+                            true,
+                        );
+                    }
+                }
+                let params = match state {
+                    "omitted" => json!({}),
+                    "null" => json!({"note":null}),
+                    _ => json!({"note":id}),
+                };
+                let req =
+                    json!({"action_type":"probe_present","parameters":params,"request_id":state});
+                let before = t.logs().len();
+                let preview =
+                    ont::__with_snapshot_bounds(1, 1, || t.call(mcp, "validate", req.clone(), NOW));
+                assert_eq!(
+                    preview["result"]["valid"],
+                    !matches!(state, "omitted" | "null"),
+                    "{preview}"
+                );
+                assert_eq!(preview["result"]["basis"], json!([]));
+                let applied = ont::__with_snapshot_bounds(1, 1, || t.call(mcp, "apply", req, NOW));
+                if matches!(state, "omitted" | "null") {
+                    assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                    assert_eq!(applied["failed"], json!(["supply_note"]));
+                    assert_eq!(t.logs().len(), before);
+                } else {
+                    assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                }
+            }
+            let listed = t.call(mcp, "list", json!({}), NOW);
+            let described = t.cli(&["describe"], json!({}), NOW);
+            for actions in [
+                &listed["result"]["actions"],
+                &described["result"]["action_types"],
+            ] {
+                let a = actions
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|a| a["name"] == "probe_present")
+                    .unwrap();
+                assert_eq!(
+                    a["criteria"],
+                    s["action_types"]["probe_present"]["submission_criteria"]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn present_predecessor_self_reference_validate_apply_cli_and_mcp() {
+    for mcp in [false, true] {
+        for state in ["omitted", "new_self", "existing_self", "another"] {
+            let t = Temp::new();
+            let mut s = schema();
+            s["object_types"]["note"]["primary_key"] = json!({"from":"/native_key"});
+            s["action_types"]["record_memory"] = json!({
+                "parameters":{"record":{"type":{"ref":"note"},"required":true},"supersedes":{"type":{"ref":"note"}}},
+                "submission_criteria":[{"code":"self_predecessor","message":"Choose another predecessor.","none":[{"all":[{"present":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}],
+                "rules":[{"create_or_modify_object":"note","set":{"title":"recorded"}}]
+            });
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("record_memory"));
+            t.install(s);
+            let record =
+                json!({"object_type":"note","namespace":task()["namespace"],"native_key":"record"});
+            if state == "existing_self" {
+                put(
+                    &t,
+                    record.clone(),
+                    &[],
+                    json!({"title":"existing"}),
+                    NOW + 10,
+                    false,
+                );
+            }
+            let mut params = json!({"record":record});
+            if state != "omitted" {
+                let mut predecessor = record.clone();
+                if state == "another" {
+                    predecessor["native_key"] = json!("another");
+                }
+                params["supersedes"] = predecessor;
+            }
+            let req = json!({"action_type":"record_memory","parameters":params,"request_id":state});
+            let before = std::fs::read(t.store()).unwrap();
+            let preview = t.call(mcp, "validate", req.clone(), NOW);
+            let valid = matches!(state, "omitted" | "another");
+            assert_eq!(preview["result"]["valid"], valid, "{state}: {preview}");
+            assert_eq!(preview["result"]["criteria"][0]["passed"], valid);
+            assert_eq!(std::fs::read(t.store()).unwrap(), before);
+            let applied = t.call(mcp, "apply", req, NOW);
+            if valid {
+                assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                assert_eq!(applied["result"]["edits"][0]["id"], record);
+                assert_eq!(t.fields(&record)["title"]["value"], "recorded");
+            } else {
+                assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                assert_eq!(applied["failed"], json!(["self_predecessor"]));
+                assert_eq!(std::fs::read(t.store()).unwrap(), before);
+                assert!(t.logs().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn present_property_value_states_and_ordered_guard_cli_and_mcp() {
+    use ont_core::{Change, Knowledge};
+    for mcp in [false, true] {
+        for state in [
+            "omitted",
+            "absent",
+            "value",
+            "missing",
+            "null",
+            "blank",
+            "unknown",
+            "not_performed",
+        ] {
+            let t = Temp::new();
+            let mut s = scoped_action_schema();
+            s["action_types"]["property_present"] = json!({
+                "parameters":{"note":{"type":{"ref":"note"}}},
+                "submission_criteria":[{"code":"task_value","message":"Supply task value.","all":[{"present":"$note.task"},{"eq":["$note.task",task()]}]}]
+            });
+            s["grants"][0]["actions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("property_present"));
+            t.install(s);
+            let id =
+                json!({"object_type":"note","namespace":task()["namespace"],"native_key":"target"});
+            if state != "omitted" {
+                put(
+                    &t,
+                    id.clone(),
+                    &[("tenant", "allowed")],
+                    json!({"title":"source"}),
+                    NOW + 10,
+                    false,
+                );
+                if state != "absent" {
+                    let mut store =
+                        ont_store::Store::open_schema_existing_writable(&t.store()).unwrap();
+                    let old = store
+                        .head(&serde_json::from_value(id.clone()).unwrap())
+                        .unwrap()
+                        .unwrap();
+                    let mut observation = old.head.observation;
+                    observation.supersedes = Some(observation.revision.clone());
+                    observation.revision.push_str("-state");
+                    observation.change = Change::Update;
+                    observation.fields.insert(
+                        "task".into(),
+                        match state {
+                            "value" => Knowledge::Value(task()),
+                            "missing" => Knowledge::Missing,
+                            "null" => Knowledge::Null,
+                            "blank" => Knowledge::Blank,
+                            "unknown" => Knowledge::Unknown,
+                            "not_performed" => Knowledge::NotPerformed,
+                            _ => unreachable!(),
+                        },
+                    );
+                    store
+                        .append_schema(
+                            &[ont_store::Append {
+                                id: old.id,
+                                scope: old.scope,
+                                observation,
+                            }],
+                            NOW,
+                        )
+                        .unwrap();
+                }
+            }
+            let params = if state == "omitted" {
+                json!({})
+            } else {
+                json!({"note":id})
+            };
+            let req =
+                json!({"action_type":"property_present","parameters":params,"request_id":state});
+            let preview = t.call(mcp, "validate", req.clone(), NOW);
+            assert_eq!(
+                preview["result"]["valid"],
+                state == "value",
+                "{state}: {preview}"
+            );
+            let applied = t.call(mcp, "apply", req, NOW);
+            if state == "value" {
+                assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+            } else {
+                assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                assert_eq!(applied["failed"], json!(["task_value"]));
+            }
+        }
+    }
+}
+
+#[test]
+fn present_schema_operands_and_unsupported_positions_are_located_invalid_rule() {
+    let t = Temp::new();
+    for operand in [
+        json!("$missing"),
+        json!("$source.missing"),
+        json!("$label.title"),
+        json!("source"),
+        json!("$now"),
+        json!(42),
+    ] {
+        let mut s = schema();
+        s["action_types"]["copy_note"]["submission_criteria"] =
+            json!([{"code":"present","message":"Present.","all":[{"present":operand}]}]);
+        t.refuses_schema(
+            s,
+            "invalid_rule",
+            "/action_types/copy_note/submission_criteria/0/all/0/present",
+        );
+    }
+    for pointer in [
+        "/action_types/copy_note/rules/0/present",
+        "/action_types/copy_note/submission_criteria/0/present",
+    ] {
+        let mut s = schema();
+        s["action_types"]["copy_note"]["submission_criteria"] =
+            json!([{"code":"present","message":"Present.","all":[]}]);
+        let (parent, _) = pointer.rsplit_once('/').unwrap();
+        s.pointer_mut(parent).unwrap()["present"] = json!("$source");
+        t.refuses_schema(s, "invalid_rule", pointer);
+    }
+    // A property form still requires the same grant as every other explicit read.
+    let mut s = schema();
+    s["action_types"]["copy_note"]["submission_criteria"] =
+        json!([{"code":"present","message":"Present.","all":[{"present":"$source.title"}]}]);
+    s["grants"][0]["read"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| v != "note");
+    t.refuses_schema(
+        s,
+        "reference_read_forbidden",
+        "/action_types/copy_note/submission_criteria/0/all/0/present",
+    );
+}
+
+#[test]
+fn present_nested_groups_and_linked_where_cli_and_mcp() {
+    for mcp in [false, true] {
+        for outer in ["all", "any", "none"] {
+            for inner in ["all", "any", "none"] {
+                for supplied in [false, true] {
+                    let t = Temp::new();
+                    let mut s = schema();
+                    s["action_types"]["nested_present"] = json!({
+                        "parameters":{"task":{"type":{"ref":"task"},"required":true},"note":{"type":{"ref":"note"}},"guard":{"type":"string"}},
+                        "submission_criteria":[{"code":"nested","message":"Nested presence.",outer:[{"linked":{"from":"$task","link":"notes","where":{inner:[{"none":[{"none":[{"all":[{"present":"$guard"},{"present":"$note.task"},{"eq":["title","source"]}]}]}]}]}}}]}]
+                    });
+                    s["grants"][0]["actions"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!("nested_present"));
+                    t.install(s);
+                    put(
+                        &t,
+                        task(),
+                        &[],
+                        json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+                        NOW + 10,
+                        false,
+                    );
+                    let note = json!({"object_type":"note","namespace":task()["namespace"],"native_key":"candidate"});
+                    put(
+                        &t,
+                        note.clone(),
+                        &[],
+                        json!({"title":"source","task":task()}),
+                        NOW + 10,
+                        false,
+                    );
+                    let mut params = json!({"task":task()});
+                    if supplied {
+                        params["note"] = note;
+                        params["guard"] = json!("");
+                    }
+                    let req = json!({"action_type":"nested_present","parameters":params,"request_id":"nested"});
+                    let valid = supplied ^ (inner == "none") ^ (outer == "none");
+                    let preview = t.call(mcp, "validate", req.clone(), NOW);
+                    assert_eq!(
+                        preview["result"]["valid"], valid,
+                        "{outer} {inner} {supplied}: {preview}"
+                    );
+                    let applied = t.call(mcp, "apply", req, NOW);
+                    if valid {
+                        assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
+                    } else {
+                        assert_eq!(applied["code"], "submission_criteria", "{applied}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn present_keeps_unrelated_rule_free_of_parameter_reads_and_checks_stale_value_state() {
+    for mcp in [false, true] {
+        let t = Temp::new();
+        let mut s = schema();
+        s["action_types"]["bare_present_create"] = json!({
+            "parameters":{"note":{"type":{"ref":"note"},"required":true}},
+            "submission_criteria":[{"code":"present","message":"Supply note.","all":[{"present":"$note"}]}],
+            "rules":[{"create_object":"tag","set":{"label":"created"}}]
+        });
+        s["action_types"]["stale_present"] = json!({
+            "parameters":{"note":{"type":{"ref":"note"},"required":true}},
+            "submission_criteria":[{"code":"present","message":"Supply task.","all":[{"present":"$note.task"}]}]
+        });
+        s["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .extend([json!("bare_present_create"), json!("stale_present")]);
+        t.install(s);
+        put(
+            &t,
+            task(),
+            &[],
+            json!({"directory":"/synthetic/task","state_sha256":"abc","checkpoint_line":"synthetic"}),
+            NOW + 10,
+            false,
+        );
+        let note =
+            json!({"object_type":"note","namespace":task()["namespace"],"native_key":"source"});
+        put(
+            &t,
+            note.clone(),
+            &[],
+            json!({"title":"source","task":task()}),
+            NOW - 1,
+            false,
+        );
+        for (action, bound) in [("bare_present_create", 1), ("stale_present", 2)] {
+            let req = json!({"action_type":action,"parameters":{"note":note},"request_id":action});
+            let preview =
+                ont::__with_snapshot_bounds(1, bound, || t.call(mcp, "validate", req.clone(), NOW));
+            assert_eq!(preview["result"]["valid"], true, "{preview}");
+            assert_eq!(
+                preview["result"]["basis"].as_array().unwrap().len(),
+                usize::from(action == "stale_present")
+            );
+            let applied = ont::__with_snapshot_bounds(1, bound, || t.call(mcp, "apply", req, NOW));
+            assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
         }
     }
 }

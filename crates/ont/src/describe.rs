@@ -149,6 +149,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                         "max_bytes":p.max_bytes
                     })
                 }).collect::<Vec<_>>(),
+                "criteria":at.submission_criteria,
                 "criterion_codes":at.submission_criteria.iter().map(|c| c.code.clone()).collect::<Vec<_>>()
             }));
         }

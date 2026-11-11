@@ -780,6 +780,26 @@ impl Eval<'_> {
     }
     fn eval(&mut self, c: &Condition, ctx: Option<&SchemaHead>) -> Result<bool, Failure> {
         match c {
+            Condition::Present(s) => {
+                let Some(p) = s.strip_prefix('$') else {
+                    return Ok(false);
+                };
+                if let Some((name, prop)) = p.split_once('.') {
+                    let Some(value) = self.params.get(name) else {
+                        return Ok(false);
+                    };
+                    let id = id_from_value(value).ok_or_else(|| {
+                        invalid_parameter(
+                            &parameter_field(name),
+                            "an object id of the parameter target type",
+                        )
+                    })?;
+                    let head = reference_head(self.snap, &id, self.principal, self.now)?.clone();
+                    self.note(&head);
+                    return Ok(field_value(&head, prop).is_some());
+                }
+                Ok(self.params.contains_key(p))
+            }
             Condition::Exists(s) => self.exists_fresh(s, false),
             Condition::Fresh(s) => self.exists_fresh(s, true),
             Condition::Eq(p) => self.compare_eq(p, ctx),
@@ -1961,6 +1981,134 @@ fn load_creation_target(
     }
     Ok(())
 }
+// Preserve existing eager loads except for parameters used only by bare
+// present. Rule planning also reads parameter heads implicitly (targets and
+// inherited scope), so those dependencies are retained too.
+fn presence_only_parameters(
+    at: &ActionType,
+    set: &SchemaSet,
+    params: &BTreeMap<String, Value>,
+) -> BTreeSet<String> {
+    fn references(value: &Value, reads: &mut BTreeSet<String>) {
+        match value {
+            Value::String(s) => {
+                if let Some(p) = s.strip_prefix('$') {
+                    reads.insert(p.split_once('.').map_or(p, |(name, _)| name).into());
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    references(value, reads);
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    references(value, reads);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn condition(
+        c: &Condition,
+        at: &ActionType,
+        linked_context: bool,
+        only: &mut BTreeSet<String>,
+        reads: &mut BTreeSet<String>,
+    ) {
+        match c {
+            Condition::Present(s) if !s.contains('.') => {
+                if let Some(p) = s.strip_prefix('$') {
+                    only.insert(p.into());
+                }
+            }
+            Condition::All(cs) | Condition::Any(cs) | Condition::NoneOf(cs) => {
+                for c in cs {
+                    condition(c, at, linked_context, only, reads);
+                }
+            }
+            Condition::Linked(link) => {
+                references(&json!(link.from), reads);
+                if let Some(g) = &link.condition {
+                    for cs in [&g.all, &g.any, &g.none].into_iter().flatten() {
+                        for c in cs {
+                            condition(c, at, true, only, reads);
+                        }
+                    }
+                }
+            }
+            _ => {
+                references(&serde_json::to_value(c).unwrap_or(Value::Null), reads);
+                // Legacy bare-property comparisons implicitly read the action's
+                // reference parameter. Retain that dependency as well.
+                if let Condition::Eq(p)
+                | Condition::Ne(p)
+                | Condition::In(p)
+                | Condition::Lt(p)
+                | Condition::Le(p)
+                | Condition::Gt(p)
+                | Condition::Ge(p) = c
+                    && !linked_context
+                    && p[0].as_str().is_some_and(|s| !s.starts_with('$'))
+                {
+                    reads.extend(
+                        at.parameters
+                            .iter()
+                            .filter(|(_, p)| matches!(p.ty, PropertyType::Ref(_)))
+                            .map(|(name, _)| name.clone()),
+                    );
+                }
+            }
+        }
+    }
+    let mut only = BTreeSet::new();
+    let mut reads = BTreeSet::new();
+    for c in &at.submission_criteria {
+        for cs in [&c.all, &c.any, &c.none].into_iter().flatten() {
+            for c in cs {
+                condition(c, at, false, &mut only, &mut reads);
+            }
+        }
+    }
+    for rule in &at.rules {
+        references(
+            &serde_json::to_value(rule).unwrap_or(Value::Null),
+            &mut reads,
+        );
+        // Target operations select a supplied reference by its declared type.
+        let targets = [
+            rule.modify_object.as_deref(),
+            rule.delete_object.as_deref(),
+            rule.create_or_modify_object.as_deref(),
+            rule.set_reference.as_ref().map(|r| r.object_type.as_str()),
+            rule.clear_reference
+                .as_ref()
+                .map(|r| r.object_type.as_str()),
+        ];
+        for (name, p) in &at.parameters {
+            if matches!(&p.ty, PropertyType::Ref(r) if targets.contains(&Some(r.target.as_str())))
+                || params
+                    .get(name)
+                    .and_then(id_from_value)
+                    .is_some_and(|id| targets.contains(&Some(id.object_type.as_str())))
+            {
+                reads.insert(name.clone());
+            }
+        }
+        if rule
+            .create_object
+            .as_deref()
+            .or(rule.create_or_modify_object.as_deref())
+            .and_then(|t| set.schema_of(t))
+            .is_some_and(|s| !s.scope_keys.is_empty())
+        {
+            // Creation can inherit scope from any supplied reference parameter.
+            reads.extend(params.keys().cloned());
+        }
+    }
+    only.retain(|name| !reads.contains(name));
+    only
+}
 fn load_snapshot(
     ctx: &Context,
     set: &SchemaSet,
@@ -1974,8 +2122,11 @@ fn load_snapshot(
     let page = ctx.snapshot_page_size.max(1);
     let mut snap = Snapshot::default();
     let mut ids: Vec<Id> = Vec::new();
-    for v in params.values() {
-        ids.extend(ids_from_value(v));
+    let presence_only = presence_only_parameters(at, set, params);
+    for (name, v) in params {
+        if !presence_only.contains(name) {
+            ids.extend(ids_from_value(v));
+        }
     }
     if let Some(list) = expected {
         for e in list {
@@ -2129,7 +2280,7 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
                     };
                     json!({"name":pname,"type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),"required":p.required,"description":p.description,"allowed_values":allowed,"max_bytes":p.max_bytes})
                 }).collect::<Vec<_>>(),
-                "criteria":at.submission_criteria.iter().map(|c| json!({"code":c.code,"message":c.message})).collect::<Vec<_>>(),
+                "criteria":at.submission_criteria,
                 "criterion_codes":at.submission_criteria.iter().map(|c| c.code.clone()).collect::<Vec<_>>(),
                 "edits_object_types":edit_types
             }));
@@ -2457,31 +2608,34 @@ mod tests {
     use super::*;
     use ont_core::schema::{ActionRule, Schema};
 
+    struct CountingSource {
+        access: Option<HeadAccess>,
+        payload_reads: usize,
+        access_reads: usize,
+        scans: usize,
+    }
+    impl SnapshotSource for CountingSource {
+        fn fetch_access(&mut self, _: &Id) -> Result<Option<HeadAccess>, Failure> {
+            self.access_reads += 1;
+            Ok(self.access.clone())
+        }
+        fn fetch_head(&mut self, _: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
+            self.payload_reads += 1;
+            panic!("unadmitted payload read")
+        }
+        fn fetch_scan(
+            &mut self,
+            _: &str,
+            _: usize,
+            _: Option<&Id>,
+        ) -> Result<Vec<HeadAccess>, Failure> {
+            self.scans += 1;
+            panic!("scan from unadmitted source")
+        }
+    }
+
     #[test]
     fn unreadable_named_heads_fetch_no_payload_and_start_no_scan() {
-        struct CountingSource {
-            access: Option<HeadAccess>,
-            payload_reads: usize,
-            scans: usize,
-        }
-        impl SnapshotSource for CountingSource {
-            fn fetch_access(&mut self, _: &Id) -> Result<Option<HeadAccess>, Failure> {
-                Ok(self.access.clone())
-            }
-            fn fetch_head(&mut self, _: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
-                self.payload_reads += 1;
-                panic!("unadmitted payload read")
-            }
-            fn fetch_scan(
-                &mut self,
-                _: &str,
-                _: usize,
-                _: Option<&Id>,
-            ) -> Result<Vec<HeadAccess>, Failure> {
-                self.scans += 1;
-                panic!("scan from unadmitted source")
-            }
-        }
         let mut wire: Value =
             serde_json::from_slice(include_bytes!("../tests/fixtures/action-work.json")).unwrap();
         wire["scope_keys"] = json!(["tenant"]);
@@ -2520,6 +2674,7 @@ mod tests {
                     retracted: false,
                 }),
                 payload_reads: 0,
+                access_reads: 0,
                 scans: 0,
             };
             let snap =
@@ -2528,6 +2683,118 @@ mod tests {
             assert!(snap.unreadable_occupied.is_empty());
             assert_eq!(source.payload_reads, 0);
             assert_eq!(source.scans, 0);
+        }
+    }
+
+    #[test]
+    fn present_parameter_fetches_no_metadata_payload_or_scans() {
+        let mut wire: Value =
+            serde_json::from_slice(include_bytes!("../tests/fixtures/action-work.json")).unwrap();
+        wire["scope_keys"] = json!(["tenant"]);
+        wire["grants"][0]["scope"] = json!({"tenant":"allowed"});
+        wire["object_types"]["task"]["owner"] = json!("ontology");
+        wire["object_types"]["task"]["primary_key"] = json!({"from":"$action_id"});
+        for prop in wire["object_types"]["task"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            prop.as_object_mut().unwrap().remove("from");
+        }
+        wire["action_types"]["probe_presence"] = json!({
+            "parameters":{"task":{"type":{"ref":"task"}}},
+            "submission_criteria":[{"code":"present","message":"Supply task.","all":[{"present":"$task"}]}]
+        });
+        wire["grants"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("probe_presence"));
+        let checked =
+            Schema::check_bytes(&serde_json::to_vec(&wire).unwrap(), &BTreeSet::new()).unwrap();
+        let at = checked.schema().action_types["probe_presence"].clone();
+        let set = SchemaSet::new(vec![checked]).unwrap();
+        let principal = Principal::bind(&set).unwrap();
+        let id = Id {
+            object_type: "task".into(),
+            namespace: set.schema("work").unwrap().namespace.clone(),
+            native_key: "target".into(),
+        };
+        let ctx = Context::with_snapshot_bounds(PathBuf::new(), 1000, 1, 1);
+        // A live readable target must also avoid the payload fetch that would
+        // panic in this source. A dangling target therefore behaves identically.
+        for state in ["omitted", "live", "missing", "retracted", "unreadable"] {
+            let params = if state == "omitted" {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("task".into(), json!(id))])
+            };
+            let mut source = CountingSource {
+                access: (!matches!(state, "omitted" | "missing")).then(|| HeadAccess {
+                    id: id.clone(),
+                    scope: Scope::domain(
+                        id.namespace.clone(),
+                        "work",
+                        BTreeMap::from([(
+                            "tenant".into(),
+                            if state == "unreadable" {
+                                "blocked"
+                            } else {
+                                "allowed"
+                            }
+                            .into(),
+                        )]),
+                    )
+                    .unwrap(),
+                    retracted: state == "retracted",
+                }),
+                payload_reads: 0,
+                scans: 0,
+                access_reads: 0,
+            };
+            let snap =
+                load_snapshot(&ctx, &set, &principal, &at, &params, &None, &mut source).unwrap();
+            let (results, basis, failed) =
+                eval_criteria(&principal, &set, &snap, &at, &params, &json!({}), 1000).unwrap();
+            assert_eq!(results[0]["passed"], state != "omitted", "{state}");
+            assert_eq!(failed.is_empty(), state != "omitted");
+            assert!(basis.is_empty());
+            assert!(snap.heads.is_empty());
+            assert_eq!(
+                (source.access_reads, source.payload_reads, source.scans),
+                (0, 0, 0),
+                "{state}"
+            );
+            if state == "omitted" {
+                let mut property_at = at.clone();
+                property_at.submission_criteria[0].all =
+                    Some(vec![Condition::Present("$task.directory".into())]);
+                let snap = load_snapshot(
+                    &ctx,
+                    &set,
+                    &principal,
+                    &property_at,
+                    &params,
+                    &None,
+                    &mut source,
+                )
+                .unwrap();
+                let (results, basis, _) = eval_criteria(
+                    &principal,
+                    &set,
+                    &snap,
+                    &property_at,
+                    &params,
+                    &json!({}),
+                    1000,
+                )
+                .unwrap();
+                assert_eq!(results[0]["passed"], false);
+                assert!(basis.is_empty());
+                assert_eq!(
+                    (source.access_reads, source.payload_reads, source.scans),
+                    (0, 0, 0)
+                );
+            }
         }
     }
 
