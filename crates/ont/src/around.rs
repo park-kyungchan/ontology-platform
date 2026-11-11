@@ -6,12 +6,15 @@ use crate::search::{self, DEFAULT_LIMIT, Filter, MAX_LIMIT, SCAN_LIMIT, Tri};
 use crate::{Answer, Context, Failure, Refusal, internal};
 use ont_core::schema::{LinkType, Owner, SchemaSet};
 use ont_core::{Admission, Id, Knowledge, Object, Query, Response, Scope};
-use ont_store::schema_mode::{HeadAccess, SchemaHead, SchemaRead};
+use ont_store::schema_mode::{HeadAccess, SchemaHead, SchemaRead, StoreRefusal};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub const MAX_HOPS: usize = 3;
+/// Reference entries charged across all hops, including repeated/missing IDs.
+pub const MAX_REFERENCE_ENTRIES: usize = 10_000;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FromSet {
@@ -36,7 +39,7 @@ impl AroundRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "around accepts search_around; use search for search and aggregate for aggregate",
+                "around accepts search_around; use search for search",
             ));
         }
         Ok(req)
@@ -113,11 +116,41 @@ struct Basis {
     used_unresolved: bool,
     stale_sources: BTreeSet<String>,
 }
+trait AroundSource {
+    fn schema_set(&self) -> &SchemaSet;
+    fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal>;
+    fn scan_head_access(
+        &self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, StoreRefusal>;
+    fn head_after_access(&self, access: &HeadAccess) -> Result<Option<SchemaHead>, StoreRefusal>;
+}
+impl AroundSource for SchemaRead<'_> {
+    fn schema_set(&self) -> &SchemaSet {
+        self.schema_set()
+    }
+    fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
+        self.head_access(id)
+    }
+    fn scan_head_access(
+        &self,
+        ty: &str,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        self.scan_head_access(ty, limit, after)
+    }
+    fn head_after_access(&self, access: &HeadAccess) -> Result<Option<SchemaHead>, StoreRefusal> {
+        self.head_after_access(access)
+    }
+}
 struct Reader<'a, 'b> {
-    tx: &'a SchemaRead<'b>,
+    tx: &'a dyn AroundSource,
     admission: &'a Admission<'b>,
     now: u64,
-    loaded: BTreeMap<Id, SchemaHead>,
+    loaded: BTreeMap<Id, Arc<SchemaHead>>,
     counts: BTreeMap<String, usize>,
     basis: Basis,
 }
@@ -139,7 +172,7 @@ impl Reader<'_, '_> {
             _ => Err(internal!("authority_failure").into()),
         }
     }
-    fn load(&mut self, access: HeadAccess) -> Result<Option<SchemaHead>, Failure> {
+    fn load(&mut self, access: HeadAccess) -> Result<Option<Arc<SchemaHead>>, Failure> {
         if access.retracted || !self.allowed(&access.id, &access.scope)? {
             return Ok(None);
         }
@@ -172,10 +205,13 @@ impl Reader<'_, '_> {
         if obs.coverage == ont_core::Coverage::Partial {
             self.basis.partial += 1;
         }
+        // Share loaded heads: copying a head here would clone its reference
+        // arrays before the traversal has checked their entry budget.
+        let head = Arc::new(head);
         self.loaded.insert(head.id.clone(), head.clone());
         Ok(Some(head))
     }
-    fn named(&mut self, id: &Id) -> Result<Option<SchemaHead>, Failure> {
+    fn named(&mut self, id: &Id) -> Result<Option<Arc<SchemaHead>>, Failure> {
         if let Some(head) = self.loaded.get(id) {
             return Ok(Some(head.clone()));
         }
@@ -184,7 +220,7 @@ impl Reader<'_, '_> {
             None => Ok(None),
         }
     }
-    fn scan(&mut self, ty: &str) -> Result<Vec<SchemaHead>, Failure> {
+    fn scan(&mut self, ty: &str) -> Result<Vec<Arc<SchemaHead>>, Failure> {
         let mut after = None;
         let mut heads = Vec::new();
         loop {
@@ -202,21 +238,34 @@ impl Reader<'_, '_> {
         Ok(heads)
     }
 }
-fn refs(head: &SchemaHead, via: &str) -> Option<Vec<Id>> {
-    match head.head.observation.fields.get(via) {
-        Some(Knowledge::Value(value)) => {
-            let values = value
-                .as_array()
-                .map_or_else(|| vec![value.clone()], Clone::clone);
-            Some(
-                values
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect(),
-            )
-        }
-        _ => None,
+fn refs<'a>(
+    head: &'a SchemaHead,
+    via: &str,
+    examined: &mut usize,
+) -> Result<Option<impl Iterator<Item = Id> + 'a>, Failure> {
+    let Some(Knowledge::Value(value)) = head.head.observation.fields.get(via) else {
+        return Ok(None);
+    };
+    let values = value
+        .as_array()
+        .map_or(std::slice::from_ref(value), Vec::as_slice);
+    // Reserve the complete array before iteration/deserialization or lookups,
+    // including reverse scans that may find a match before its final entry.
+    if values.len() > MAX_REFERENCE_ENTRIES - *examined {
+        return Err(Refusal::input(
+            "result_too_large",
+            "/path",
+            "at most 10000 reference entries across all hops",
+        )
+        .with("max_reference_entries", json!(MAX_REFERENCE_ENTRIES))
+        .into());
     }
+    *examined += values.len();
+    Ok(Some(
+        values
+            .iter()
+            .filter_map(|value| Id::deserialize(value).ok()),
+    ))
 }
 
 // Qualification requires value states even for an explicit unresolved predicate.
@@ -258,73 +307,153 @@ pub fn around(ctx: &Context, req: &AroundRequest) -> Result<Answer, Failure> {
         .into());
     }
     let mut store = open_store(&ctx.store, false)?;
-    st!(store.read_schema(|tx| {
-        let set = tx.schema_set();
-        let principal = Principal::bind(set)?;
-        let schema = set.schema_of(&req.from.object_type).ok_or_else(|| Refusal::new("unavailable"))?;
-        if !principal.view().read_types(&schema.domain).contains(&req.from.object_type) { return Err(Refusal::new("unavailable").into()); }
-        let hops = plan(set, &req.from.object_type, &req.path)?;
-        let mut used = search::check_filter(set, &req.from.object_type, req.from.filter.as_ref()).map_err(|mut e| {
-            if let Failure::Refused(r) = &mut e && let Some(field) = r.extra.get("field").and_then(serde_json::Value::as_str) {
-                r.extra.insert("field".into(), json!(format!("/from{field}")));
+    st!(store.read_schema(|tx| read_around(ctx, req, tx)))
+}
+
+fn read_around(
+    ctx: &Context,
+    req: &AroundRequest,
+    tx: &dyn AroundSource,
+) -> Result<Answer, Failure> {
+    let set = tx.schema_set();
+    let principal = Principal::bind(set)?;
+    let schema = set
+        .schema_of(&req.from.object_type)
+        .ok_or_else(|| Refusal::new("unavailable"))?;
+    if !principal
+        .view()
+        .read_types(&schema.domain)
+        .contains(&req.from.object_type)
+    {
+        return Err(Refusal::new("unavailable").into());
+    }
+    let hops = plan(set, &req.from.object_type, &req.path)?;
+    let mut used = search::check_filter(set, &req.from.object_type, req.from.filter.as_ref())
+        .map_err(|mut e| {
+            if let Failure::Refused(r) = &mut e
+                && let Some(field) = r.extra.get("field").and_then(serde_json::Value::as_str)
+            {
+                r.extra
+                    .insert("field".into(), json!(format!("/from{field}")));
             }
             e
         })?;
-        if let Some(f) = &req.from.filter { unresolved_properties(f, &mut used); }
-        let revision = principal.revision()?;
-        let admission = principal.authority().admit(principal.session()).map_err(|_| internal!("authority_failure"))?;
-        let mut reader = Reader {tx, admission:&admission, now:ctx.now, loaded:BTreeMap::new(), counts:BTreeMap::new(), basis:Basis::default()};
-        let mut current = BTreeMap::new();
-        for head in reader.scan(&req.from.object_type)? {
-            let fields = &head.head.observation.fields;
-            if used.iter().any(|p| !matches!(fields.get(p), Some(Knowledge::Value(_)))) { reader.basis.used_unresolved = true; }
-            match req.from.filter.as_ref().map_or(Tri::True, |f| search::eval(f, fields)) {
-                Tri::True => { current.insert(head.id.clone(), head); }
-                Tri::Unknown => reader.basis.unresolved_excluded += 1,
-                Tri::False => {}
-            }
+    if let Some(f) = &req.from.filter {
+        unresolved_properties(f, &mut used);
+    }
+    let revision = principal.revision()?;
+    let admission = principal
+        .authority()
+        .admit(principal.session())
+        .map_err(|_| internal!("authority_failure"))?;
+    let mut reader = Reader {
+        tx,
+        admission: &admission,
+        now: ctx.now,
+        loaded: BTreeMap::new(),
+        counts: BTreeMap::new(),
+        basis: Basis::default(),
+    };
+    let mut current = BTreeMap::new();
+    for head in reader.scan(&req.from.object_type)? {
+        let fields = &head.head.observation.fields;
+        if used
+            .iter()
+            .any(|p| !matches!(fields.get(p), Some(Knowledge::Value(_))))
+        {
+            reader.basis.used_unresolved = true;
         }
-        let mut domains = BTreeSet::from([schema.domain.clone()]);
-        for hop in &hops {
-            let target_type = if hop.reverse { &hop.link.from } else { &hop.link.to };
-            if let Some(s) = set.schema_of(target_type) { domains.insert(s.domain.clone()); }
-            let mut next = BTreeMap::new();
-            if hop.reverse {
-                if !current.is_empty() {
-                    for head in reader.scan(target_type)? {
-                        match refs(&head, &hop.link.via) {
-                            Some(ids) if ids.iter().any(|id| current.contains_key(id)) => { next.insert(head.id.clone(), head); }
-                            None => reader.basis.used_unresolved = true,
-                            _ => {}
+        match req
+            .from
+            .filter
+            .as_ref()
+            .map_or(Tri::True, |f| search::eval(f, fields))
+        {
+            Tri::True => {
+                current.insert(head.id.clone(), head);
+            }
+            Tri::Unknown => reader.basis.unresolved_excluded += 1,
+            Tri::False => {}
+        }
+    }
+    let mut domains = BTreeSet::from([schema.domain.clone()]);
+    let mut examined = 0;
+    for hop in &hops {
+        let target_type = if hop.reverse {
+            &hop.link.from
+        } else {
+            &hop.link.to
+        };
+        if let Some(s) = set.schema_of(target_type) {
+            domains.insert(s.domain.clone());
+        }
+        let mut next = BTreeMap::new();
+        if hop.reverse {
+            if !current.is_empty() {
+                for head in reader.scan(target_type)? {
+                    match refs(&head, &hop.link.via, &mut examined)? {
+                        Some(mut ids) => {
+                            if ids.any(|id| current.contains_key(&id)) {
+                                next.insert(head.id.clone(), head.clone());
+                            }
                         }
+                        None => reader.basis.used_unresolved = true,
                     }
                 }
-            } else {
-                for head in current.values() {
-                    match refs(head, &hop.link.via) {
-                        None => reader.basis.used_unresolved = true,
-                        Some(ids) => for id in ids {
+            }
+        } else {
+            for head in current.values() {
+                match refs(head, &hop.link.via, &mut examined)? {
+                    None => reader.basis.used_unresolved = true,
+                    Some(ids) => {
+                        for id in ids {
                             match reader.named(&id)? {
-                                Some(target) => { next.insert(id, target); }
+                                Some(target) => {
+                                    next.insert(id, target);
+                                }
                                 None => reader.basis.dangling += 1,
                             }
                         }
                     }
                 }
             }
-            current = next;
         }
-        let matched = current.len();
-        let objects: Vec<_> = current.values().take(limit as usize).map(|head| {
-            let ty = set.schema_of(&head.id.object_type).and_then(|s| s.object_types.get(&head.id.object_type));
-            let observed = ont_core::Observed {observation:head.head.observation.clone(), stale:ctx.now > head.head.observation.fresh_until};
+        current = next;
+    }
+    let matched = current.len();
+    let objects: Vec<_> = current
+        .values()
+        .take(req.limit.unwrap_or(DEFAULT_LIMIT) as usize)
+        .map(|head| {
+            let ty = set
+                .schema_of(&head.id.object_type)
+                .and_then(|s| s.object_types.get(&head.id.object_type));
+            let observed = ont_core::Observed {
+                observation: head.head.observation.clone(),
+                stale: ctx.now > head.head.observation.fresh_until,
+            };
             search::object_json(head, ty, &observed)
-        }).collect();
-        let b = reader.basis;
-        let qualified = b.stale == 0 && b.partial == 0 && b.unresolved_excluded == 0 && !b.used_unresolved && b.dangling == 0;
-        let pins = domains.into_iter().filter_map(|d| set.pin(&d).map(|p| (d, p.clone()))).collect();
-        Ok(Answer::Enveloped {pins, revision, result:json!({"kind":"object_set","objects":objects,"continuation":null,
+        })
+        .collect();
+    let b = reader.basis;
+    let qualified = b.stale == 0
+        && b.partial == 0
+        && b.unresolved_excluded == 0
+        && !b.used_unresolved
+        && b.dangling == 0;
+    let pins = domains
+        .into_iter()
+        .filter_map(|d| set.pin(&d).map(|p| (d, p.clone())))
+        .collect();
+    Ok(Answer::Enveloped {
+        pins,
+        revision,
+        result: json!({"kind":"object_set","objects":objects,"continuation":null,
             "basis":{"hops":hops.len(),"scanned":b.scanned,"matched":matched,"dangling":b.dangling,"stale":b.stale,"partial":b.partial,
-                "unresolved_excluded":b.unresolved_excluded,"qualified":qualified,"stale_sources":b.stale_sources}})})
-    }))
+                "unresolved_excluded":b.unresolved_excluded,"qualified":qualified,"stale_sources":b.stale_sources}}),
+    })
 }
+
+#[cfg(test)]
+#[path = "around_tests.rs"]
+mod tests;

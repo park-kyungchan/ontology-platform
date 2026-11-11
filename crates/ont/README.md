@@ -392,3 +392,10 @@ forward lookups. Unresolved filter comparisons contribute `unresolved_excluded`;
 unresolved used filter/link properties also prevent qualification. `qualified`
 requires no stale, partial, unresolved-used/excluded or dangling input. Stale
 source entries name the `ont index --source NAME` refresh command.
+
+Traversal charges at most 10,000 reference entries across all hops, including
+repeated IDs and missing targets. Each admitted source's entire reference array
+is charged before iteration or target lookups, also in reverse scans; hidden
+source heads consume no entries. Exceeding `MAX_REFERENCE_ENTRIES` refuses
+`result_too_large` with `max_reference_entries: 10000`. Loaded heads are shared
+without copying their reference arrays before this check.

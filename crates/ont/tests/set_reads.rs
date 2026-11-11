@@ -329,3 +329,149 @@ fn around_single_reference_forward_and_reverse() {
     assert_eq!(keys(&a), ["a"]);
     assert_eq!(a["result"]["basis"]["qualified"], true);
 }
+
+#[test]
+fn around_reference_entries_at_and_above_bound_forward_and_reverse() {
+    let bound = ont::around::MAX_REFERENCE_ENTRIES;
+    for reverse in [false, true] {
+        for missing in [false, true] {
+            for count in [bound, bound + 1] {
+                let t = Temp::new();
+                let targets = vec![
+                    if missing {
+                        "z"
+                    } else if reverse {
+                        "a"
+                    } else {
+                        "b"
+                    };
+                    count
+                ];
+                if reverse {
+                    t.put("a", &[], false);
+                    t.put("b", &targets, false);
+                } else {
+                    t.put("a", &targets, false);
+                    t.put("b", &[], false);
+                }
+                let request = req("a", &[if reverse { "previous" } else { "next" }]);
+                // Reverse success returns the large array: above the MCP cap.
+                let answer = if reverse && !missing && count == bound {
+                    serde_json::from_str(&t.cli("around", &request)).unwrap()
+                } else {
+                    t.both(request)
+                };
+                if count > bound {
+                    assert_eq!(answer["code"], "result_too_large", "{answer}");
+                    assert_eq!(answer["max_reference_entries"], bound);
+                    assert!(
+                        answer["rule"]
+                            .as_str()
+                            .unwrap()
+                            .contains(&bound.to_string())
+                    );
+                } else {
+                    assert_eq!(answer["status"], "ok", "{answer}");
+                    assert_eq!(keys(&answer), if missing { vec![] } else { vec!["b"] });
+                    assert_eq!(
+                        answer["result"]["basis"]["dangling"],
+                        if missing && !reverse { bound } else { 0 }
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn around_reference_budget_is_shared_across_hops_and_heads() {
+    let bound = ont::around::MAX_REFERENCE_ENTRIES;
+    for reverse in [false, true] {
+        for extra in [0, 1] {
+            let t = Temp::new();
+            if reverse {
+                t.put("a", &vec!["a"; bound / 2 + extra], false);
+            } else {
+                t.put("a", &vec!["b"; bound / 2], false);
+                t.put("b", &vec!["z"; bound / 2 + extra], false);
+            }
+            let hop = if reverse { "previous" } else { "next" };
+            let request = req("a", &[hop, hop]);
+            let answer = if reverse && extra == 0 {
+                serde_json::from_str(&t.cli("around", &request)).unwrap()
+            } else {
+                t.both(request)
+            };
+            assert_eq!(
+                answer["status"],
+                if extra == 0 { "ok" } else { "refused" },
+                "{answer}"
+            );
+            if extra != 0 {
+                assert_eq!(answer["max_reference_entries"], bound);
+            }
+        }
+    }
+}
+
+#[test]
+fn around_reference_bound_hidden_missing_parity_ignores_hidden_source_entries() {
+    let bound = ont::around::MAX_REFERENCE_ENTRIES;
+    for reverse in [false, true] {
+        let missing = Temp::new();
+        let hidden = Temp::new();
+        for t in [&missing, &hidden] {
+            if reverse {
+                t.put("a", &[], false);
+                t.put("b", &vec!["z"; bound], false);
+            } else {
+                t.put("a", &vec!["z"; bound], false);
+            }
+        }
+        hidden.put("z", &vec!["a"; bound + 1], true);
+        let request = req("a", &[if reverse { "previous" } else { "next" }]);
+        let a = missing.cli("around", &request);
+        assert_eq!(a, hidden.cli("around", &request));
+        assert_eq!(hidden.both(request)["status"], "ok");
+    }
+}
+
+#[test]
+fn around_reverse_scan_bound_on_type_different_from_start() {
+    let t = Temp::new();
+    let mut leaf = row("start", &[], false);
+    leaf.id.object_type = "leaf".into();
+    leaf.observation.fields.clear();
+    let mut rows = vec![leaf];
+    rows.extend((0..ont::search::SCAN_LIMIT).map(|i| row(&format!("n{i:05}"), &[], false)));
+    t.append(rows);
+    let request = json!({"op":"search_around","from":{"object_type":"leaf"},"path":["parents"]});
+    let a = t.both(request.clone());
+    assert_eq!(a["status"], "ok", "{a}");
+    assert_eq!(a["result"]["basis"]["scanned"], ont::search::SCAN_LIMIT + 1);
+    t.put("one_above", &[], false);
+    let a = t.both(request);
+    assert_eq!(a["code"], "result_too_large");
+    assert!(
+        a.get("max_reference_entries").is_none(),
+        "must hit the head bound, not the reference budget: {a}"
+    );
+}
+
+#[test]
+fn around_wrong_op_hints_only_name_existing_subcommands() {
+    let t = Temp::new();
+    for (command, request) in [
+        ("search", json!({"op":"aggregate","object_type":"node"})),
+        (
+            "around",
+            json!({"op":"aggregate","from":{"object_type":"node"},"path":["next"]}),
+        ),
+    ] {
+        let answer: Value = serde_json::from_str(&t.cli(command, &request)).unwrap();
+        assert_eq!(answer["code"], "invalid_request");
+        let rule = answer["rule"].as_str().unwrap();
+        assert!(!rule.contains("aggregate"), "{answer}");
+        assert!(rule.contains("search"), "{answer}");
+    }
+}
