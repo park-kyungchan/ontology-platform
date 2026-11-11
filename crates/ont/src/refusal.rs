@@ -74,7 +74,7 @@ pub fn store_err(e: StoreRefusal) -> Failure {
     }
     let mut refusal = Refusal::new(e.code);
     if let Some(v) = &e.violation {
-        refusal = refusal.with("violation", json!({"code":v.code,"pointer":v.pointer}));
+        refusal = refusal.with("violation", json!(v));
     }
     Failure::Refused(refusal)
 }
