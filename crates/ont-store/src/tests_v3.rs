@@ -1467,3 +1467,49 @@ fn open_schema_existing_never_creates_or_initialises() {
             .is_err()
     );
 }
+
+#[test]
+fn open_schema_existing_writable_writes_but_never_creates_or_initialises() {
+    let temp = Temp::new();
+    let missing = temp.0.join("missing.sqlite");
+    assert_eq!(
+        Store::open_schema_existing_writable(&missing)
+            .err()
+            .unwrap()
+            .code,
+        "store_not_found"
+    );
+    assert!(!missing.exists());
+    let empty = temp.0.join("empty.sqlite");
+    std::fs::write(&empty, b"").unwrap();
+    assert_eq!(
+        Store::open_schema_existing_writable(&empty)
+            .err()
+            .unwrap()
+            .code,
+        "store_failure"
+    );
+    assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+    let foreign = temp.0.join("foreign.sqlite");
+    std::fs::write(&foreign, b"not a database at all, just text").unwrap();
+    assert_eq!(
+        Store::open_schema_existing_writable(&foreign)
+            .err()
+            .unwrap()
+            .code,
+        "store_failure"
+    );
+    assert_eq!(
+        std::fs::read(&foreign).unwrap(),
+        b"not a database at all, just text"
+    );
+    // On a real store it may write (an install is a write).
+    let path = temp.0.join("v3.sqlite");
+    {
+        let mut store = Store::open_schema(&path).unwrap();
+        install(&mut store, &work_bytes(1), 100);
+    }
+    let mut store = Store::open_schema_existing_writable(&path).unwrap();
+    install(&mut store, &work_bytes(2), 101);
+    assert_eq!(store.schema_pins().unwrap()["work"].version, 2);
+}

@@ -1,6 +1,8 @@
 //! Refusals (exit 2) and internal errors (exit 1) of the operations.
+use ont_store::Store;
 use ont_store::schema_mode::StoreRefusal;
 use serde_json::{Map, Value, json};
+use std::path::Path;
 
 /// An internal error: `code@file:line` of the place that raised it.
 #[derive(Debug)]
@@ -75,6 +77,31 @@ pub fn store_err(e: StoreRefusal) -> Failure {
         refusal = refusal.with("violation", json!({"code":v.code,"pointer":v.pointer}));
     }
     Failure::Refused(refusal)
+}
+
+/// Open an existing format 3 store without creating or initialising it
+/// (read-only, or writable for `index`). A missing store is
+/// `store_not_found` and carries the `path`.
+#[track_caller]
+pub fn open_store(path: &Path, writable: bool) -> Result<Store, Failure> {
+    let opened = if writable {
+        Store::open_schema_existing_writable(path)
+    } else {
+        Store::open_schema_existing(path)
+    };
+    match opened {
+        Ok(store) => Ok(store),
+        Err(e) => {
+            let missing = e.code == "store_not_found";
+            let failure = store_err(e);
+            match failure {
+                Failure::Refused(r) if missing => Err(Failure::Refused(
+                    r.with("path", json!(path.display().to_string())),
+                )),
+                other => Err(other),
+            }
+        }
+    }
 }
 
 /// `match` a store result, returning the located failure from the caller.

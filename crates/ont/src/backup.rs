@@ -1,6 +1,6 @@
 //! `backup`: one verified copy of the store, newest three kept.
-use crate::principal::Principal;
-use crate::refusal::{io, st};
+use crate::principal::fresh_revision;
+use crate::refusal::{io, open_store, st, store_err};
 use crate::{Answer, Context, Failure, Refusal, sha256_hex};
 use ont_store::Store;
 use serde_json::json;
@@ -12,17 +12,30 @@ pub struct BackupRequest {}
 
 const KEEP: usize = 3;
 
-/// Back up an existing store (opened read-only, never created).
+/// A finished backup. `retention_failure` is `code@file:line` when the
+/// copy is good but removing an older copy failed.
+#[derive(Debug)]
+pub(crate) struct Taken {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub retention_failure: Option<String>,
+}
+
+/// Back up an existing store (opened read-only, never created). No principal
+/// is bound: a backup needs no grant.
 pub fn backup(ctx: &Context, _req: &BackupRequest) -> Result<Answer, Failure> {
-    let mut store = st!(Store::open_schema_existing(&ctx.store));
-    let set = st!(store.schema_set()).clone();
-    let principal = Principal::bind(&set)?;
+    let mut store = open_store(&ctx.store, false)?;
+    let revision = fresh_revision()?;
     let pins = st!(store.schema_pins());
-    let (path, sha) = take(&mut store, &ctx.store, ctx.now)?;
+    let taken = take(&mut store, &ctx.store, ctx.now)?;
     Ok(Answer::Enveloped {
         pins,
-        revision: principal.revision(),
-        result: json!({"path":path.display().to_string(),"sha256":sha}),
+        revision,
+        result: json!({
+            "path":taken.path.display().to_string(),
+            "sha256":taken.sha256,
+            "retention_failure":taken.retention_failure
+        }),
     })
 }
 
@@ -111,12 +124,10 @@ fn backup_dir(store_path: &Path) -> Result<PathBuf, Failure> {
 /// One backup of `store` into `<store dir>/backup/`: `VACUUM INTO` inside the
 /// 0700 directory, then mode 0600 before anything is answered, then a
 /// readback in mode `Schema` that compares pins (a copy that fails is
-/// removed). Keeps the newest three of the names this command writes.
-pub(crate) fn take(
-    store: &mut Store,
-    store_path: &Path,
-    now: u64,
-) -> Result<(PathBuf, String), Failure> {
+/// removed). A failed `VACUUM INTO` removes its partial target. Keeps the
+/// newest three of the names this command writes; a failure of that step is
+/// reported in `retention_failure` and does not fail the backup.
+pub(crate) fn take(store: &mut Store, store_path: &Path, now: u64) -> Result<Taken, Failure> {
     let dir = backup_dir(store_path)?;
     let stamp = utc_stamp(now);
     let mut target = dir.join(format!("ontology-{stamp}.sqlite"));
@@ -126,7 +137,14 @@ pub(crate) fn take(
         n += 1;
     }
     let before = st!(store.schema_pins());
-    st!(store.backup_to(&target));
+    if let Err(e) = store.backup_to(&target) {
+        // `backup_to` refuses an existing target before it writes, so any
+        // other failure may have left a partial file of ours.
+        if e.code != "backup_target_exists" {
+            let _ = std::fs::remove_file(&target);
+        }
+        return Err(store_err(e));
+    }
     let verified = (|| -> Result<(), Failure> {
         set_mode(&target, 0o600)?;
         let mut copy = st!(Store::open_schema_existing(&target));
@@ -140,8 +158,16 @@ pub(crate) fn take(
         return Err(e);
     }
     let bytes = io!(std::fs::read(&target), "backup_read_failed");
-    retain(&dir, &target)?;
-    Ok((target, sha256_hex(&bytes)))
+    let retention_failure = match retain(&dir, &target) {
+        Ok(()) => None,
+        Err(Failure::Internal(i)) => Some(format!("{}@{}:{}", i.code, i.file, i.line)),
+        Err(Failure::Refused(r)) => Some(r.code.to_string()),
+    };
+    Ok(Taken {
+        path: target,
+        sha256: sha256_hex(&bytes),
+        retention_failure,
+    })
 }
 
 /// Keep the newest `KEEP` backups by (name timestamp, suffix); consider only

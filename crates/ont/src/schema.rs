@@ -1,6 +1,6 @@
 //! `schema check` and `schema install`.
-use crate::principal::Principal;
-use crate::refusal::st;
+use crate::principal::fresh_revision;
+use crate::refusal::{open_store, st};
 use crate::{Answer, Context, Failure, Refusal, TRUST_LIMIT, backup, pin_json, sha256_hex};
 use ont_core::schema::Schema;
 use ont_store::Store;
@@ -99,7 +99,7 @@ pub fn check(ctx: &Context, req: &CheckRequest) -> Result<Answer, Failure> {
     let bytes = read_schema_file(&req.file)?;
     let store_exists = ctx.store.exists();
     let (others, against) = if store_exists {
-        let mut store = st!(Store::open_schema_existing(&ctx.store));
+        let mut store = open_store(&ctx.store, false)?;
         let set = st!(store.schema_set()).clone();
         (
             others_for(&set, &candidate_domain(&bytes)),
@@ -171,10 +171,15 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
     let pin = checked.pin().clone();
     let previous = st!(store.schema_pins()).get(&pin.domain).cloned();
     let changed = previous.as_ref() != Some(&pin);
+    // Taken before the commit: nothing after `install_schema` can fail the
+    // answer of a committed install.
+    let revision = fresh_revision()?;
     let mut backup_path: Option<String> = None;
+    let mut backup_retention_failure: Option<String> = None;
     if store_exists && changed && !st!(store.schema_pins()).is_empty() {
-        let (path, _) = backup::take(&mut store, &ctx.store, ctx.now)?;
-        backup_path = Some(path.display().to_string());
+        let taken = backup::take(&mut store, &ctx.store, ctx.now)?;
+        backup_path = Some(taken.path.display().to_string());
+        backup_retention_failure = taken.retention_failure;
     }
     st!(store.install_schema(
         &bytes,
@@ -184,18 +189,17 @@ pub fn install(ctx: &Context, req: &InstallRequest) -> Result<Answer, Failure> {
             source_commit: req.source_commit.clone(),
         },
     ));
-    let set = st!(store.schema_set()).clone();
-    let principal = Principal::bind(&set)?;
     Ok(Answer::Enveloped {
         pins: st!(store.schema_pins()),
-        revision: principal.revision(),
+        revision,
         result: json!({
             "domain":pin.domain,
             "previous_version":previous.map(|p| p.version),
             "version":pin.version,
             "pin":pin_json(&pin),
             "changed":changed,
-            "backup":backup_path
+            "backup":backup_path,
+            "backup_retention_failure":backup_retention_failure
         }),
     })
 }

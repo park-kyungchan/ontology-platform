@@ -10,10 +10,9 @@
 //! source only when an admitted object type names it as owner; the
 //! functions of a listed domain (no function grant exists yet).
 use crate::principal::Principal;
-use crate::refusal::st;
+use crate::refusal::{open_store, st};
 use crate::{Answer, Context, Failure, Refusal};
 use ont_core::schema::Owner;
-use ont_store::Store;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,7 +40,7 @@ impl DescribeRequest {
 }
 
 pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure> {
-    let mut store = st!(Store::open_schema_existing(&ctx.store));
+    let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
     let principal = Principal::bind(&set)?;
     let view = principal.view();
@@ -95,6 +94,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                         "type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),
                         "required":p.required,
                         "from":p.from,
+                        "transform":p.transform,
                         "max_bytes":p.max_bytes
                     })
                 }).collect::<Vec<_>>()
@@ -145,7 +145,12 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
         }
         for (name, src) in &schema.sources {
             if owning_sources.contains(name) {
-                sources.push(json!({"domain":domain,"name":name,"kind":src.kind}));
+                sources.push(json!({
+                    "domain":domain,
+                    "name":name,
+                    "kind":src.kind,
+                    "options":src.options
+                }));
             }
         }
     }
@@ -154,7 +159,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
         .filter_map(|d| set.pin(d).map(|p| (d.clone(), p.clone())))
         .collect();
     Ok(Answer::Enveloped {
-        revision: principal.revision(),
+        revision: principal.revision()?,
         result: json!({
             "domains":domains.iter().map(|d| {
                 let p = set.pin(d);

@@ -38,6 +38,14 @@ pub(crate) fn open_file(path: &Path) -> Result<Connection, Error> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ))
 }
+/// Open an existing file read-write without the create flag: a missing path
+/// fails and an empty file is never initialised by this open.
+pub(crate) fn open_file_no_create(path: &Path) -> Result<Connection, Error> {
+    db(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ))
+}
 /// Open an existing file read-only: no create flag, no write.
 pub(crate) fn open_file_read_only(path: &Path) -> Result<Connection, Error> {
     db(Connection::open_with_flags(
