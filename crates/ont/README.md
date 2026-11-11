@@ -12,6 +12,77 @@ The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`,
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
 - Snapshot: apply and validate read only the heads the request needs (the parameter objects, the objects a rule edits, and a paged scan by type for a reverse `linked` condition); any scan pages until exhausted, and reaching the hard head bound refuses with `snapshot_too_large` and writes nothing.
 
+## Action values and parameter descriptions
+
+A rule's `set` value or `set_reference.value` may use `$parameter.property`
+when `parameter` is a reference. For example,
+`"set":{"task":"$decision.task","topic":"$decision.topic"}` copies the
+reference and topic from the decision. Only one property level is supported;
+unknown properties, non-reference parameters and incompatible destination
+property types refuse at `schema check`. The value comes from the original
+snapshot, even when an earlier rule in the same action modifies that object.
+The referenced head and revision are included in `validate`'s `basis` and the
+applied action's log. Pass that `basis` as `expected` to apply: any intervening
+change refuses with `revision_conflict`. Without `expected`, apply reads the
+current value inside its transaction and logs that application basis. A copied
+value needs a fresh, readable source: every grant listing the action must include
+the referenced type in `read` (`reference_read_forbidden` at the expression's
+schema pointer otherwise). At runtime the native read admission policy also
+checks the object's grant scope. Missing, retracted and inadmissible sources all
+refuse `rule_reference_unavailable` with the same detail-free answer. Availability
+of all referenced inputs is checked before staleness or expected revisions. A
+present object whose requested property has no value refuses `rule_value_unavailable`. A source past `fresh_until` refuses
+`rule_value_stale`; `validate` returns `valid:false`, no edits and a failed
+`preconditions` entry with that code, while retaining the criteria results and
+computed basis. A criterion that needs a stale property is marked `passed:false`
+with `precondition:rule_value_stale`; independent criteria are still evaluated.
+The freshness boundary is inclusive; Ontology-owned objects retain their existing
+indefinite freshness.
+
+`"set":{"closed_at":"$now"}` writes the trusted application time as a UTC
+string such as `"2026-11-12T00:00:00Z"`. It uses the same time as the existing
+log's `submitted_at` and the observations' `observed_at`; no log or store format
+changes. Validation returns `"application_time":"set_at_application"` and does
+not fix that time. A retry with the same `request_id` returns the original edits
+and leaves the original value and time intact. `$now` requires a string or
+string-based value-type destination, is only a rule value (not a criterion),
+and reserves the parameter name `now`. Times beyond year 9999 refuse with
+`application_time_out_of_range`. For a patterned string value type, schema
+checking accepts the canonical UTC shape
+`[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z` (also with `\d`,
+optional `^`/`$`), or `.*`. Other patterns refuse `invalid_rule` at the `$now`
+expression: arbitrary regex/time-language intersection is not supported.
+The actual applied value must still satisfy the value type's other constraints.
+
+A parameter declared `"required":false` accepts omission or JSON null. A rule
+value using that absent parameter leaves its destination unset on create and
+unchanged on modify; if nested in an array or struct, the entire destination
+property is skipped. A nonempty rule set whose values are all skipped produces
+no edit or object revision. A create rule whose inputs are all absent creates no
+object. Modify and reference rules still resolve their targets before skipping:
+a missing or retracted target refuses just as it would with supplied inputs.
+An action whose rules all skip still records one action-log entry with `edits:[]` for idempotency, with no per-object observation;
+its retry returns `already_applied` with the same empty edits. An optional
+parameter feeding a required property on create refuses `invalid_rule` at its
+expression during schema checking. Required destination properties also undergo
+the ordinary field check. Omission and null have the same canonical request content for
+idempotency. Criteria use the existing `{"exists":"$label"}` form to test a
+scalar or array parameter's presence (empty strings and empty arrays are present;
+array elements are not tested for liveness). For a single reference, `exists`
+checks that the referenced object exists and is live. An absent optional reference
+therefore fails `exists`. Comparisons with an absent parameter remain unevaluable
+and refuse. "If present then equal" cannot be written: `all`, `any` and `none`
+evaluate every condition, so a presence branch cannot guard a comparison that
+would be unevaluable. Ordinary properties cannot be cleared by a `set` value:
+absent/null parameters mean skip, not clear, and no scalar clear rule exists.
+Reference properties can still use the existing explicit `clear_reference` rule.
+
+Object properties and action parameters accept an optional `description` string
+of at most 300 UTF-8 bytes, for example
+`"reason":{"type":"string","required":false,"description":"Why the hold ended."}`.
+`describe` shows both; `action list` and `ont_action_list` show parameter
+descriptions. The existing MCP response and tool-list bounds still apply.
+
 ## How a criterion names a property
 In a comparison (`eq`, `ne`, `in`, `lt`, `le`, `gt`, `ge`) only the first operand is the property reference; the second operand is a literal (or a `$parameter`), and a literal is never replaced by a property value. A bare property name in the first operand resolves against the object of the action's reference parameter, and only when the action type has exactly one reference parameter; with more than one, the explicit form `$<parameter>.<property>` is required, a bare name is `criterion_not_evaluable` at evaluation, and `schema check` refuses such a schema where it can know. Inside a `linked` condition's `where`, a bare name names a property of the linked candidate object. A property reference that does not resolve (missing property, null, a retracted or absent object, or a type mismatch that cannot be ordered) is unevaluable: comparison is tri-state (true, false, unevaluable), and an unevaluable condition anywhere under `all`, `any`, `none` or a negation refuses with `criterion_not_evaluable` and never passes. Numbers are compared numerically with and without a candidate context, so 1 equals 1.0 in both.
 - `get` and `search` on an Ontology-owned type return what actions wrote, with `basis` and history as for indexed types, and `describe` lists action types.
@@ -162,7 +233,15 @@ In a `render_drift` entry, `refusal_code` is present when rendering was refused
 has no `refusal_code`. Argument placeholders are accepted only as complete
 string comparison values on string properties (including string-based value
 types), or individual elements of `in` on those properties; no coercion or
-placeholders inside arrays/structs are supported.
+placeholders inside arrays/structs are supported. An `eq` filter on a single
+reference property also accepts an argument, for example
+`"filter":{"eq":["task","$task"]},"args":["task"]`. Its argument is the
+referenced object's native key (such as `/synthetic/task-1`), recorded unchanged
+in the generated block's opening line. Rendering builds the full reference Id
+for search; no copied key property is needed and the target need not exist.
+Reference arguments support `eq` only. Their characters follow the same ASCII
+argument rules above; an unrepresentable key refuses at render time with
+`reference_argument_unrepresentable`.
 Unresolved sort values compare as JSON null; nonscalar values compare by compact
 JSON text. In ascending boolean order, this places `false`, unresolved, `true`;
 other mixed comparisons follow JSON text order. Order ties use the key.

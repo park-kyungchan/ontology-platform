@@ -743,7 +743,7 @@ fn conflicting_preimage_crlf_and_eof_without_newline() {
 
 #[test]
 fn schema_argument_type_refusals_name_the_filter_pointer() {
-    for property in ["rank", "flag", "ref", "tags", "meta"] {
+    for property in ["rank", "flag", "tags", "meta"] {
         for filter in [
             json!({"eq":[property,"$title"]}),
             json!({"in":[property,["$title"]]}),
@@ -862,4 +862,57 @@ fn real_block_after_correctly_closed_fence_is_checked_and_written() {
         t.run(&["render", "--check", &file], json!({})),
         (0, json!({"status":"ok","blocks":1,"drift":[]}))
     );
+}
+
+#[test]
+fn reference_view_argument_native_key_without_mirror_and_unsafe_key_refusal() {
+    let t = Temp::new();
+    let mut s = schema();
+    s["views"]["named_items"]["filter"] = json!({"all":[{"eq":["ref","$title"]}]});
+    t.install(s);
+    let key = "/synthetic/task-1";
+    let mut matching = fields("matched", 1);
+    matching.insert("ref".into(), Knowledge::Value(json!(id(key))));
+    append(&t, "match", matching, Change::Initial, 2000);
+    let mut other = fields("other", 2);
+    other.insert("ref".into(), Knowledge::Value(json!(id("other-task"))));
+    append(&t, "other", other, Change::Initial, 2000);
+    let (code, answer) = t.render("named_items", json!({"title":key}));
+    assert_eq!(code, 0, "{answer}");
+    assert_eq!(answer["rows"], 1);
+    let markdown = answer["markdown"].as_str().unwrap();
+    assert!(
+        markdown
+            .starts_with("<!-- ont:render named_items title=/synthetic/task-1 schema=board@1 -->")
+    );
+    assert!(markdown.contains("| match | matched | 1 |"));
+    assert!(!markdown.contains("| other |"));
+    for key in ["bad key", "bad=key", "é", "", "bad\nkey"] {
+        let (code, answer) = t.render("named_items", json!({"title":key}));
+        assert_eq!(code, 2, "{answer}");
+        assert_eq!(answer["code"], "reference_argument_unrepresentable");
+    }
+    // The bounded addition is eq on a single reference, not in/ne/prefix,
+    // reference arrays, nested placeholders or ordered reference comparisons.
+    for filter in [
+        json!({"in":["ref",["$title"]]}),
+        json!({"ne":["ref","$title"]}),
+        json!({"prefix":["ref","$title"]}),
+        json!({"lt":["ref","$title"]}),
+        json!({"eq":["ref",{"native_key":"$title"}]}),
+    ] {
+        let mut bad = schema();
+        bad["views"]["named_items"]["filter"] = filter;
+        let file = t.file("bad-ref.json", &serde_json::to_vec(&bad).unwrap());
+        let (code, answer) = t.run(&["schema", "check", &file], json!({}));
+        assert_eq!(code, 2, "{answer}");
+        assert_eq!(answer["code"], "schema_violation");
+        assert!(
+            answer["violations"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"code":"invalid_schema","pointer":"/views/named_items/filter"})),
+            "{answer}"
+        );
+    }
 }

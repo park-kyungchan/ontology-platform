@@ -92,6 +92,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                 "properties":ty.properties.iter().map(|(pname,p)| {
                     json!({
                         "name":pname,
+                        "description":p.description,
                         "type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),
                         "required":p.required,
                         "from":p.from,
@@ -134,6 +135,7 @@ pub fn describe(ctx: &Context, req: &DescribeRequest) -> Result<Answer, Failure>
                 "parameters":at.parameters.iter().map(|(pname,p)| {
                     json!({
                         "name":pname,
+                        "description":p.description,
                         "type":serde_json::to_value(&p.ty).unwrap_or(Value::Null),
                         "required":p.required,
                         "max_bytes":p.max_bytes
