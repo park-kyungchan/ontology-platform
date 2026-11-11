@@ -289,11 +289,13 @@ pub(crate) fn schema_input_refusal(
     violations: &[ont_core::schema::Violation],
 ) -> Refusal {
     if let Err(e) = ont_core::input::parse_json::<Schema>(bytes) {
-        if matches!(
-            e.field.split('/').collect::<Vec<_>>().as_slice(),
-            ["", "object_types", _, "properties", _, "type"]
-                | ["", "action_types", _, "parameters", _, "type"]
-        ) {
+        if e.rule != "required field"
+            && matches!(
+                e.field.split('/').collect::<Vec<_>>().as_slice(),
+                ["", "object_types", _, "properties", _, "type"]
+                    | ["", "action_types", _, "parameters", _, "type"]
+            )
+        {
             return Refusal::input(
                 "schema_violation",
                 &e.field,
@@ -305,9 +307,110 @@ pub(crate) fn schema_input_refusal(
     let Some(v) = violations.first() else {
         return Refusal::input("schema_violation", "", "a valid ontology-schema/v1 schema");
     };
+    let parts: Vec<_> = v.pointer.split('/').collect();
+    let parameter = matches!(
+        parts.as_slice(),
+        ["", "action_types", _, "parameters", _, ..]
+    );
+    let primary_key = matches!(parts.as_slice(), ["", "object_types", _, "primary_key", _]);
+    let last = parts.last().copied().unwrap_or("");
     let rule = match v.code {
         "invalid_format" => "must be ontology-schema/v1",
         "invalid_version" => "positive unsigned version integer",
+        "invalid_namespace" => {
+            "namespace component must be a nonempty string of at most 512 UTF-8 bytes"
+        }
+        "duplicate_link_name" => "forward and reverse link names must be unique across this schema",
+        "invalid_value_type_definition" => match last {
+            "enum" => "enum must be nonempty and every value must match the declared scalar base",
+            "pattern" => {
+                "pattern requires string base and a compilable whole-value regular expression"
+            }
+            "min" => {
+                "bound must match the non-boolean scalar base (decimal/date use their valid string forms)"
+            }
+            _ => {
+                "bound must match the non-boolean scalar base; when min and max are valid, max must be at least min"
+            }
+        },
+        "invalid_from_pointer" if parameter => "from is forbidden on action parameters",
+        "invalid_from_pointer" => "property from must start with /",
+        "invalid_template" if parameter => "template is forbidden on action parameters",
+        "invalid_template" if primary_key => {
+            "primary-key template requires source ownership and no from; at most 256 UTF-8 bytes and 8 placeholders; placeholders contain nonempty ASCII letters, digits or underscore with balanced braces"
+        }
+        "invalid_template" => {
+            "property template requires source ownership and no from; at most 256 UTF-8 bytes and 8 placeholders; placeholders contain nonempty ASCII letters, digits or underscore with balanced braces"
+        }
+        "struct_in_struct" => "a struct cannot contain another struct, including through an array",
+        "reference_array_from_source_unsupported" => {
+            "source-owned arrays of references cannot use from or template"
+        }
+        "invalid_link_backing" if last == "cardinality" => {
+            "ref backing requires many_to_one; array-of-ref backing requires many_to_many"
+        }
+        "invalid_link_backing" => {
+            "link backing must be a ref or array of refs whose target equals link to"
+        }
+        "invalid_reference_property" => "reference rule property must be a ref or array of refs",
+        "action_edits_source_owned" => "action rules may edit only ontology-owned object types",
+        "reference_read_forbidden" => {
+            "every grant allowing this action must also read the target type of a dereferenced parameter"
+        }
+        "wrong_value_type" if v.pointer.is_empty() => "value must satisfy the supplied schema type",
+        "wrong_value_type" => "value must satisfy the declared property type",
+        "value_constraint_violation" if v.pointer.is_empty() => {
+            "value must satisfy the declared value-type enum/pattern/min/max constraints"
+        }
+        "value_constraint_violation" => {
+            "value must satisfy the declared value-type enum/pattern/min/max and property max_bytes constraints"
+        }
+        "invalid_rule" if matches!(parts.as_slice(), ["", "action_types", _, "rules", _]) => {
+            "rule must select exactly one of create_object, modify_object, create_or_modify_object, delete_object, set_reference or clear_reference"
+        }
+        "invalid_rule"
+            if matches!(
+                parts.as_slice(),
+                [
+                    "",
+                    "action_types",
+                    _,
+                    "rules",
+                    _,
+                    "clear_reference",
+                    "value"
+                ]
+            ) =>
+        {
+            "clear_reference must not supply value"
+        }
+        "invalid_rule" => {
+            "rule value using $now requires string base and an unrestricted or canonical UTC pattern; a referenced parameter property must have a compatible declared type/base; required properties on create/create_or_modify must not depend on optional parameters"
+        }
+        "invalid_criterion"
+            if last == "where"
+                || matches!(
+                    parts.as_slice(),
+                    ["", "action_types", _, "submission_criteria", _]
+                ) =>
+        {
+            "criterion group must contain exactly one of all, any or none"
+        }
+        "invalid_criterion" => {
+            "non-in comparison using builtin $now requires string-typed operands and $-prefixed declared parameter references; a bare property comparison without a linked context requires exactly one reference parameter"
+        }
+        "invalid_schema" if last == "description" => "description must be at most 300 UTF-8 bytes",
+        "invalid_schema" if parts.get(1) == Some(&"views") => match last {
+            "args" => {
+                "view args must be distinct names of 1 to 64 ASCII characters, lowercase letter first then lowercase letters, digits or underscore"
+            }
+            "limit" => "view limit must be an integer from 1 to 1000",
+            "order" => "view order must contain at least one entry",
+            "columns" => "view columns must be nonempty and each header must exclude |, CR and LF",
+            _ => {
+                "view filter must use declared properties/args and supported operators/types, depth at most 8 (root 0), at most 64 leaves and at most 100 in values"
+            }
+        },
         "invalid_name"
             if matches!(
                 v.pointer.split('/').collect::<Vec<_>>().as_slice(),
@@ -325,6 +428,10 @@ pub(crate) fn schema_input_refusal(
         }
         "invalid_source_option" => {
             "markdown_fields allows only glob, exclude, head_lines, complete_listing, fresh_for_s; file_digest allows only paths, exclude, complete_listing, fresh_for_s. glob: required string or 1 to 16 strings; paths: required 1 to 256 strings; exclude: optional 0 to 256 strings; head_lines: optional integer 1 to 10000; complete_listing: optional boolean; fresh_for_s: required integer 1 to 315360000"
+        }
+        "invalid_transform" if parameter => "transform is forbidden on action parameters",
+        "invalid_transform" if primary_key => {
+            "primary-key transform must be a supported string-producing form: first_word, {segment_after:string} or {replace_prefix:[from,to]}; parse_integer is forbidden. Requires source ownership, from or template, and from must not be $action_id; segment_after at most 1024 UTF-8 bytes starting and ending with /; replace_prefix nonempty from, both strings at most 1024 UTF-8 bytes"
         }
         "invalid_transform" => {
             "transform must be first_word, parse_integer, {segment_after:string} or {replace_prefix:[from,to]}; segment_after: at most 1024 UTF-8 bytes, starting and ending with '/'; replace_prefix: nonempty from, each string at most 1024 UTF-8 bytes. Requires a source-owned property with from or template; parse_integer requires integer base, other transforms require string base or ref"
@@ -358,6 +465,10 @@ pub(crate) fn schema_input_refusal(
     };
     Refusal::input("schema_violation", &v.pointer, rule)
 }
+
+#[cfg(test)]
+#[path = "schema_diagnostics_tests.rs"]
+mod diagnostics_tests;
 
 #[cfg(test)]
 mod tests {

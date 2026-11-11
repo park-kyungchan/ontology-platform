@@ -428,6 +428,15 @@ fn action_parameter_now_is_reserved_but_ordinary_name_is_valid() {
             assert_eq!(answer["violations"], json!([]));
         }
     }
+    let mut schema: Value =
+        serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
+    schema["domain"] = json!("Bad");
+    let file = t.0.join("candidate.json");
+    std::fs::write(&file, schema.to_string()).unwrap();
+    let (exit, answer) = t.cli(&["schema", "check", file.to_str().unwrap()], json!({}));
+    assert_eq!(exit, 2);
+    diagnostic(&answer, "schema_violation", "/domain");
+    assert!(!answer["rule"].as_str().unwrap().contains("reserved"));
 }
 
 #[test]
