@@ -10,7 +10,7 @@ pub struct CandidateCondition {
 }
 pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='head_candidates')",
+        "SELECT (SELECT user_version FROM pragma_user_version)=4 AND EXISTS(SELECT 1 FROM sqlite_master WHERE name='head_candidates')",
         [],
         |r| r.get(0),
     ))
@@ -26,6 +26,30 @@ pub(super) fn project(
         return Ok(());
     }
     let obs = &head.head.observation;
+    let schema = set
+        .schema_of(&id.object_type)
+        .ok_or_else(StoreRefusal::store_failure)?;
+    // Materialize each matching read-scope predicate as an indexed partition.
+    // This includes namespace/domain and every required scope key; omitted
+    // grant keys keep native wildcard semantics. Schema installs rebuild it.
+    let mut visibility = BTreeSet::new();
+    for grant in &schema.grants {
+        let scope = Scope::domain(
+            schema.namespace.clone(),
+            schema.domain.clone(),
+            grant.scope.clone(),
+        )
+        .map_err(StoreRefusal::from)?;
+        if grant.read.contains(&id.object_type) && scope.matches(&head.scope) {
+            visibility
+                .insert(serde_json::to_string(&scope).map_err(|_| StoreRefusal::store_failure())?);
+        }
+    }
+    let scope_keys = match &head.scope {
+        Scope::Domain { keys, .. } => json_text(keys)?,
+        _ => return Err(StoreRefusal::store_failure()),
+    };
+    let mut postings = vec![(String::new(), String::new())];
     if let Some(props) = set.properties(&id.object_type) {
         for p in props.keys() {
             let value = match obs.fields.get(p) {
@@ -33,22 +57,33 @@ pub(super) fn project(
                     if obs.coverage == ont_core::Coverage::Complete
                         && set.pin(&head.schema_pin.domain) == Some(&head.schema_pin) =>
                 {
-                    Some(v.to_string())
+                    format!("v{v}")
                 }
-                _ => None,
+                _ => "?".into(),
             };
-            map_db(c.execute(
-                "INSERT INTO head_candidates VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![
-                    id.object_type,
-                    id.namespace.instance,
-                    id.namespace.account,
-                    id.native_key,
-                    p,
-                    value,
-                    format!("{:020}", obs.fresh_until)
-                ],
-            ))?;
+            postings.push((p.clone(), value));
+        }
+    }
+    // Sixteen radix prefixes per expiry permit an ordered range to be read
+    // as <=240 disjoint equality streams, each already in object-key order.
+    let expiry = format!("{:016x}", obs.fresh_until);
+    for n in 1..=16 {
+        postings.push(("$stale".into(), expiry[..n].into()));
+    }
+    let mut insert =
+        map_db(c.prepare_cached("INSERT INTO head_candidates VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"))?;
+    for scope in visibility {
+        for (p, v) in &postings {
+            map_db(insert.execute(params![
+                id.object_type,
+                scope,
+                p,
+                v,
+                id.namespace.instance,
+                id.namespace.account,
+                id.native_key,
+                scope_keys
+            ]))?;
         }
     }
     Ok(())
@@ -78,19 +113,32 @@ pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRef
     }
     let tx = map_db(c.transaction_with_behavior(TransactionBehavior::Immediate))?;
     if !exists(&tx)? {
-        map_db(tx.execute_batch("CREATE TABLE head_candidates (
-            object_type TEXT NOT NULL, instance TEXT NOT NULL, account TEXT NOT NULL,
-            native_key TEXT NOT NULL, property TEXT NOT NULL, value TEXT, fresh_until TEXT NOT NULL,
-            PRIMARY KEY(object_type,instance,account,native_key,property)) WITHOUT ROWID;
-            CREATE INDEX candidates_value ON head_candidates(object_type,property,value,instance,account,native_key);
-            CREATE INDEX candidates_fresh ON head_candidates(object_type,property,fresh_until,instance,account,native_key);"))?;
+        map_db(tx.execute_batch("DROP TABLE IF EXISTS head_candidates;
+            CREATE TABLE head_candidates (
+            object_type TEXT NOT NULL, visibility TEXT NOT NULL,
+            property TEXT NOT NULL, value TEXT NOT NULL, instance TEXT NOT NULL,
+            account TEXT NOT NULL, native_key TEXT NOT NULL, scope_keys TEXT NOT NULL,
+            PRIMARY KEY(object_type,visibility,property,value,instance,account,native_key)) WITHOUT ROWID;
+            CREATE INDEX candidates_head ON head_candidates(object_type,instance,account,native_key);"))?;
         rebuild(&tx, &refreshed_set(set, &tx)?)?;
+        map_db(tx.pragma_update(None, "user_version", 4))?;
     }
     map_db(tx.commit())
 }
+fn json_text(value: &impl serde::Serialize) -> Result<String, StoreRefusal> {
+    serde_json::to_string(value).map_err(|_| StoreRefusal::store_failure())
+}
+const POSTING_SQL: &str = "SELECT instance,account,native_key,scope_keys FROM head_candidates
+    WHERE object_type=?1 AND visibility=?2 AND property=?3 AND value=?4
+    AND (instance,account,native_key)>(?5,?6,?7)
+    ORDER BY instance,account,native_key LIMIT ?8";
+#[cfg(test)]
+thread_local! { static STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
 impl SchemaRead<'_> {
-    /// Page candidate metadata in identity order. No observation payload is
-    /// touched; the caller must admit each result before head_after_access.
+    /// Read bounded, visible posting streams and merge their first `limit`
+    /// keys. The merge retains <=limit metadata rows; no payloads are read.
+    /// Current native read admission is fully represented by these scopes;
+    /// the caller still rechecks Authority/session admission before payloads.
     pub fn candidate_access(
         &self,
         ty: &str,
@@ -98,38 +146,37 @@ impl SchemaRead<'_> {
         now: u64,
         limit: usize,
         after: Option<&Id>,
+        scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
-        let Some(condition) = condition else {
-            return self.scan_head_access(ty, limit, after);
-        };
-        let mut args: Vec<rusqlite::types::Value> = vec![ty.to_string().into()];
-        let mut branches = Vec::new();
-        let mut add = |p: &str, predicate: &str, value: Option<String>| {
-            args.push(p.to_string().into());
-            let prop = args.len();
-            let expr = if let Some(v) = value {
-                args.push(v.into());
-                format!("{predicate} ?{}", args.len())
-            } else {
-                predicate.to_string()
-            };
-            branches.push(format!("SELECT instance,account,native_key FROM head_candidates WHERE object_type=?1 AND property=?{prop} AND {expr}"));
-        };
-        for v in &condition.values {
-            add(&condition.property, "value =", Some(v.to_string()));
+        let schema = self
+            .schemas
+            .schema_of(ty)
+            .ok_or_else(StoreRefusal::store_failure)?;
+        let mut streams = BTreeSet::new();
+        if let Some(condition) = condition {
+            for value in &condition.values {
+                streams.insert((condition.property.clone(), format!("v{value}")));
+            }
+            for p in condition
+                .used
+                .iter()
+                .chain(std::iter::once(&condition.property))
+            {
+                streams.insert((p.clone(), "?".into()));
+            }
+            let clock = format!("{now:016x}");
+            for (i, digit) in clock.bytes().enumerate() {
+                let digit = (digit as char)
+                    .to_digit(16)
+                    .ok_or_else(StoreRefusal::store_failure)?;
+                for n in 0..digit {
+                    streams.insert(("$stale".into(), format!("{}{:x}", &clock[..i], n)));
+                }
+            }
+        } else {
+            streams.insert((String::new(), String::new()));
         }
-        for p in condition
-            .used
-            .iter()
-            .chain(std::iter::once(&condition.property))
-        {
-            add(p, "value IS NULL", None);
-        }
-        add(
-            &condition.property,
-            "fresh_until <",
-            Some(format!("{now:020}")),
-        );
+        let visibility: BTreeSet<_> = scopes.iter().map(json_text).collect::<Result<_, _>>()?;
         let cursor = after
             .map(|id| {
                 (
@@ -139,43 +186,63 @@ impl SchemaRead<'_> {
                 )
             })
             .unwrap_or(("", "", ""));
-        let n = args.len();
-        args.extend([
-            cursor.0.to_string().into(),
-            cursor.1.to_string().into(),
-            cursor.2.to_string().into(),
-            to_i64(limit as u64)?.into(),
-        ]);
-        let sql = format!(
-            "SELECT o.instance,o.account,o.native_key,o.scope FROM ({}) c JOIN objects o ON o.object_type=?1 AND (o.instance,o.account,o.native_key)=(c.instance,c.account,c.native_key) WHERE (c.instance,c.account,c.native_key)>(?{},?{},?{}) ORDER BY c.instance,c.account,c.native_key LIMIT ?{}",
-            branches.join(" UNION "),
-            n + 1,
-            n + 2,
-            n + 3,
-            n + 4
-        );
-        let mut stmt = map_db(self.tx.prepare(&sql))?;
-        let rows = map_db(stmt.query_map(rusqlite::params_from_iter(args), |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        }))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (instance, account, native_key, scope) = map_db(row)?;
-            out.push(HeadAccess {
-                id: Id {
-                    object_type: ty.into(),
-                    namespace: ont_core::Namespace { instance, account },
-                    native_key,
-                },
-                scope: decode_scope(&scope)?,
-                retracted: false,
-            });
+        let mut out = BTreeMap::new();
+        for scope in visibility {
+            for (p, v) in &streams {
+                let mut stmt = map_db(self.tx.prepare_cached(POSTING_SQL))?;
+                let rows = map_db(stmt.query_map(
+                    params![
+                        ty,
+                        scope,
+                        p,
+                        v,
+                        cursor.0,
+                        cursor.1,
+                        cursor.2,
+                        to_i64(limit as u64)?
+                    ],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                        ))
+                    },
+                ))?;
+                for row in rows {
+                    let (instance, account, native_key, keys) = map_db(row)?;
+                    let id = Id {
+                        object_type: ty.into(),
+                        namespace: ont_core::Namespace { instance, account },
+                        native_key,
+                    };
+                    let scope = Scope::domain(
+                        schema.namespace.clone(),
+                        schema.domain.clone(),
+                        decode(&keys).map_err(StoreRefusal::from)?,
+                    )
+                    .map_err(StoreRefusal::from)?;
+                    out.entry(id.clone()).or_insert(HeadAccess {
+                        id,
+                        scope,
+                        retracted: false,
+                    });
+                    if out.len() > limit {
+                        out.pop_last();
+                    }
+                }
+                #[cfg(test)]
+                {
+                    assert_eq!(stmt.get_status(rusqlite::StatementStatus::Sort), 0);
+                    STEPS.set(STEPS.get() + stmt.reset_status(rusqlite::StatementStatus::VmStep));
+                }
+            }
         }
-        Ok(out)
+        Ok(out.into_values().collect())
     }
 }
+
+#[cfg(test)]
+#[path = "candidates_tests.rs"]
+mod tests;

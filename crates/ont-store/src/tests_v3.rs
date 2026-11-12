@@ -148,7 +148,7 @@ fn store_with_work() -> Store {
 }
 
 #[test]
-fn format3_refuses_old_files_and_old_modes_refuse_format3() {
+fn format4_refuses_old_files_and_old_modes_refuse_format4() {
     let temp = Temp::new();
     let v1 = temp.0.join("v1.sqlite");
     drop(Store::open(&v1).unwrap());
@@ -160,18 +160,18 @@ fn format3_refuses_old_files_and_old_modes_refuse_format3() {
     let before = std::fs::read(&v2).unwrap();
     assert_eq!(Store::open_schema(&v2).err().unwrap().code, "store_failure");
     assert_eq!(std::fs::read(&v2).unwrap(), before);
-    let v3 = temp.0.join("v3.sqlite");
-    drop(Store::open_schema(&v3).unwrap());
-    let before = std::fs::read(&v3).unwrap();
-    assert!(matches!(Store::open(&v3), Err(Error::StoreFailure)));
-    assert!(matches!(Store::open_program(&v3), Err(Error::StoreFailure)));
-    assert_eq!(std::fs::read(&v3).unwrap(), before);
-    let store = Store::open_schema(&v3).unwrap();
+    let v4 = temp.0.join("v4.sqlite");
+    drop(Store::open_schema(&v4).unwrap());
+    let before = std::fs::read(&v4).unwrap();
+    assert!(matches!(Store::open(&v4), Err(Error::StoreFailure)));
+    assert!(matches!(Store::open_program(&v4), Err(Error::StoreFailure)));
+    assert_eq!(std::fs::read(&v4).unwrap(), before);
+    let store = Store::open_schema(&v4).unwrap();
     let version: i64 = store
         .connection
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }
 
 #[test]

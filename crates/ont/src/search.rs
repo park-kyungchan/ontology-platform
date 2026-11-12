@@ -459,6 +459,13 @@ fn read_search(
     });
     let mut basis = Basis::default();
     let mut objects: Vec<Value> = Vec::new();
+    let scopes: Vec<_> = principal
+        .view()
+        .entries
+        .iter()
+        .filter(|e| e.read.contains(&req.object_type))
+        .map(|e| e.scope.clone())
+        .collect();
     let mut cursor = after;
     let mut continuation = None;
     'pages: loop {
@@ -467,7 +474,8 @@ fn read_search(
             condition.as_ref(),
             ctx.now,
             256,
-            cursor.as_ref()
+            cursor.as_ref(),
+            &scopes
         ));
         if page.is_empty() {
             break;

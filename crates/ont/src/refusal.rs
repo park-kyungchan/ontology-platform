@@ -93,8 +93,9 @@ pub fn store_err(e: StoreRefusal) -> Failure {
     Failure::Refused(refusal)
 }
 
-/// Open an existing format 3 store without creating or initialising it
-/// (read-only, or writable for `index`). A missing store is
+/// Open an existing schema store; format 3 migrates once to format 4.
+/// Reads reopen read-only after migration; `index` keeps a writable handle.
+/// A missing store is
 /// `store_not_found` and carries the `path`.
 #[track_caller]
 pub fn open_store(path: &Path, writable: bool) -> Result<Store, Failure> {

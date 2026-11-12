@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 3 store.
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 migrates on open).
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -238,22 +238,40 @@ still has its raw-head preflight. Limits for `search`:
 - Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
   bounded as documented above. No payload is loaded before metadata admission.
 
-The store maintains `head_candidates` in the append/schema-install transaction:
-one row per declared property of each live head, canonical JSON equality values
-and a NULL bucket for uncertain values. Indexes on type/property/value and
-type/property/freshness select postings before payload loading. With 100,000
-fresh, complete, current-schema superseded heads and 201 ready heads, a ready
-read seeks the ready/uncertain/stale postings and loads 201 payloads. SQL merges
-candidate identities in order; it can examine/sort all selected posting metadata
-per page (including hidden candidates), but never reads excluded payloads.
+The store maintains a format-4 `head_candidates` projection transactionally.
+`visibility` stores each matching grant's canonical namespace/domain/scope-key
+predicate; `scope_keys` stores the actual object's key/value map. Omitted grant
+keys keep native wildcard semantics. The primary key is
+`(object_type,visibility,property,value,instance,account,native_key)`.
+Current read admission (type, namespace, domain and scope-key equality) is fully
+represented by these partitions; Authority/session checks still run before
+payload loading. No inaccessible head needs a residual per-head work budget.
 
-Existing format-3 stores acquire the index atomically on first open, using a
-validated writable connection for migration, then reopen read-only for reads.
-Migration and schema upgrades rebuild the projection in 256-head pages; they
-read every live payload once and require writable storage. Repeated opens do
-not rewrite an existing index. Normal appends replace that head's projection in
-the same transaction; backfills do not replace it. Use the upgraded writer after
-migration; previous builds do not maintain this adjunct index.
+Equality/uncertain postings and 16 hexadecimal expiry prefixes per live head
+permit at most 240 stale equality streams per readable scope. Every stream uses
+an indexed keyset seek after the previous object key and returns at most 256
+metadata rows. A bounded merge retains only the first 256 unique keys. There is
+no UNION materialization or SQL sort; work is bounded by stream count times
+admitted candidates plus fixed seek overhead, independently of hidden heads.
+With 100,000 fresh superseded and 201 current heads, only current/uncertain/stale
+postings are read and 201 payloads are loaded. Unsupported filter forms also use
+the visibility-aware admission/lookahead loop: intentionally, hidden tails no
+longer create continuations or consume the old raw-head allowance.
+
+A nominally read-only open of format 3 performs a one-time writable migration,
+then reopens read-only. This preserves automatic upgrade for existing callers;
+unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
+atomically; two openers serialize. Backfill/schema upgrades read live payloads
+in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
+that head's postings in the write transaction; backfills do not replace them.
+
+Older binaries reject format 4 on both read-only and writable opens. Before
+migration, quiesce old writers and keep a consistent store copy and its matching
+binary. Binary rollback requires restoring that pre-migration store copy, with
+any subsequent edits handled by the operator; binary-only rollback cannot open
+format 4. No db56e16 projection was installed outside disposable tests, so there
+is one migration path from format 3; disposable predecessor projections rebuild
+in that same migration. Do not manually lower the format marker.
 
 ## mcp
 `ont [--store PATH] mcp [--client NAME]` is a Model Context Protocol server over stdio: newline-delimited JSON-RPC 2.0, one request per line on stdin, one JSON line per response on stdout, nothing else on stdout; no listener, no threads. `--client`, when given, matches `^[a-z0-9][a-z0-9-]{0,31}$` (else the refusal `invalid_request`, before stdin is read); when `--client` is absent, `initialize` supplies `clientInfo.name` only when `valid_client` accepts it; absent, empty or invalid names use `mcp`. An explicit `--client` wins, except the reserved name `cli` also maps to `mcp`, so MCP writes never share the CLI action namespace. Actions record this client, the per-call `agent` (falling back to nonempty `ONT_AGENT`) and optional `session` through `Context`, subject to the library actor bounds. The uid check is that of the other subcommands.

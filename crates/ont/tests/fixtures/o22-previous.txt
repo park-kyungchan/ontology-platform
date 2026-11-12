@@ -5,3 +5,5 @@ action apply with status ready/request_id old-ready and status superseded/reques
 All commands use --store <scratch>/previous-actions.sqlite --now 1.
 Answer: search --now 10, {"object_type":"record","where":{"eq":["status","ready"]},"limit":1000}.
 No live data or raw SQL writes. The fixture contains no candidate index.
+Reproduce with: python3 reproduce-o22-previous.py --old-binary <pinned-ont> --directory <new-scratch-directory>.
+The script pins exact schema/request bytes, clock and environment, and asserts per-table logical hashes.

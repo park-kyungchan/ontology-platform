@@ -1,4 +1,4 @@
-//! Store mode `Schema` (format 3): schema installs, typed ingest,
+//! Store mode `Schema` (format 4; upgrades format 3 on open): schema installs, typed ingest,
 //! retraction-aware reads and the action log. Library only; packet O3 adds
 //! the binary that calls this.
 //!
@@ -427,8 +427,9 @@ impl Store {
         candidates::ensure(&mut store.connection, &store.schemas)?;
         Ok(store)
     }
-    /// Open a store that must already exist and already be a format 3
-    /// store. The connection is read-only, there is no create flag, and an
+    /// Open an existing format 4 store read-only. A format 3 store is
+    /// migrated once through a writable connection before reopening read-only.
+    /// No create flag is used, and an
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
     pub fn open_schema_existing(path: &Path) -> Result<Self, StoreRefusal> {

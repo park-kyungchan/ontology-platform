@@ -187,6 +187,9 @@ fn unresolved_stale_partial_and_historical_heads_remain_candidates() {
         row("d-partial", status("superseded"), false, false),
     ]);
     rows.last_mut().unwrap().observation.coverage = Coverage::Partial;
+    let mut boundary = row("e-fresh-boundary", status("superseded"), false, false);
+    boundary.observation.fresh_until = 10;
+    rows.push(boundary);
     f.append(rows);
     let ans = f.search(json!({"eq":["status","ready"]}), Value::Null);
     assert_eq!(ans["status"], "ok", "{ans}");
@@ -267,4 +270,75 @@ fn previous_binary_store_migrates_once_and_complete_answer_is_unchanged() {
     let old: Value =
         serde_json::from_str(include_str!("fixtures/o22-previous-answer.json")).unwrap();
     assert_eq!(answer.to_string(), old.to_string());
+}
+
+#[test]
+fn hidden_population_has_byte_equal_search_answers() {
+    let clean = Fixture::new();
+    clean.append(vec![row("visible", status("ready"), false, false)]);
+    let expected = clean.search(current(), Value::Null).to_string();
+    for count in [512, 1024, 2048] {
+        let f = Fixture::new();
+        let mut rows = vec![row("visible", status("ready"), false, false)];
+        rows.extend(
+            (0..count).map(|i| row(&format!("hidden-{i:05}"), status("ready"), true, true)),
+        );
+        f.append(rows);
+        rusqlite::Connection::open(f.path())
+            .unwrap()
+            .execute(
+                "UPDATE observations SET payload='invalid' WHERE native_key LIKE 'hidden-%'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(f.search(current(), Value::Null).to_string(), expected);
+    }
+}
+
+#[test]
+fn update_retraction_resurrection_and_action_apply_maintain_postings() {
+    let f = Fixture::new();
+    f.append(vec![row("mut", status("superseded"), false, false)]);
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
+        0
+    );
+    let mut item = row("mut", status("ready"), false, false);
+    item.observation.change = Change::Update;
+    item.observation.revision = "r1".into();
+    item.observation.supersedes = Some("r0".into());
+    f.append(vec![item.clone()]);
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
+        1
+    );
+    item.observation.fields.clear();
+    item.observation.change = Change::Retraction;
+    item.observation.revision = "r2".into();
+    item.observation.supersedes = Some("r1".into());
+    f.append(vec![item.clone()]);
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
+        0
+    );
+    item.observation
+        .fields
+        .insert("status".into(), status("ready"));
+    item.observation.change = Change::Initial;
+    item.observation.revision = "r3".into();
+    item.observation.supersedes = None;
+    f.append(vec![item]);
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
+        1
+    );
+    let g = Fixture::new();
+    std::fs::write(g.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
+    let out = ont::run(&["--store".into(),g.path().display().to_string(),"action".into(),"apply".into()],
+        json!({"action_type":"create_record","parameters":{"status":"ready"},"request_id":"r1-maintenance"}).to_string().as_bytes(),0,0);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        g.search(current(), Value::Null)["result"]["basis"]["matched"],
+        2
+    );
 }

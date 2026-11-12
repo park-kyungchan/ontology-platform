@@ -70,7 +70,7 @@ impl StoreMode {
         match self {
             Self::Education => 1,
             Self::Program => 2,
-            Self::Schema => 3,
+            Self::Schema => 4,
         }
     }
     fn accepts(self, scope: &Scope, namespace: &Namespace) -> bool {
@@ -189,7 +189,9 @@ impl Store {
                 mode,
             )?;
             db_mode(transaction.commit(), mode)?;
-        } else if app != APPLICATION_ID || version != mode.version() {
+        } else if app != APPLICATION_ID
+            || (version != mode.version() && !(mode == StoreMode::Schema && version == 3))
+        {
             return Err(Error::StoreFailure);
         }
         db_mode(connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;"), mode)?;
