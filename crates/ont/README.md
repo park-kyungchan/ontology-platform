@@ -246,7 +246,9 @@ A short-circuit SQL guard also checks every array before returning the payload.
 Legacy over-bound heads are excluded by `search`, `around` and `aggregate`:
 `basis.oversized_excluded` counts admitted excluded heads, forces `qualified:false`,
 and each consumes the scan allowance (`around` counts each unique head once).
-Hidden heads affect no visible count. `get` admits metadata before loading history
+Hidden heads affect no visible count. `render` refuses `observation_too_large`
+if any page excludes an oversized head, instead of publishing an incomplete block.
+`get` admits metadata before loading history
 and refuses `observation_too_large` for any over-bound historical observation.
 An identical-schema projection rebuild preserves uncertain postings for these
 heads, so equality-filtered reads also count their exclusion without loading them.

@@ -32,6 +32,7 @@ impl Temp {
             "action_types":{"write":{"parameters":{"text":{"type":"string","required":true}},"rules":[
                 {"create_object":"sentinel","set":{"text":"small"}},
                 {"create_object":"node","set":{"text":"$text"}}]}},
+            "views":{"all_nodes":{"object_type":"node","args":[],"order":[{"property":"text","direction":"asc"}],"columns":[{"header":"Text","property":"text"}]}},
             "functions":{},"grants":[{"principal":"agent","scope":{},"read":["node","indexed","sentinel"],"derive":["node","indexed"],"actions":["write"]}]});
         let t = Self { root, schema };
         Store::open_schema(&t.path())
@@ -396,4 +397,19 @@ fn get_checks_non_head_historical_observations() {
         t.cli("get", json!({"id":item.id}))["code"],
         "observation_too_large"
     );
+}
+
+#[test]
+fn render_refuses_oversized_legacy_heads_instead_of_omitting_rows() {
+    for count in [1, 1001] {
+        let t = Temp::new();
+        let mut rows: Vec<_> = (0..count).map(|i| row(&format!("a{i:04}"), "ok")).collect();
+        rows.push(row("z-poison", ""));
+        t.put(&rows);
+        t.legacy("z-poison", &"!".repeat(BYTES + 1));
+        // The 1001-row case places poison after the first search page;
+        // render must fail rather than publish a quietly incomplete board.
+        let answer = t.cli("render", json!({"view":"all_nodes","args":{}}));
+        assert_eq!(answer["code"], "observation_too_large", "{answer}");
+    }
 }
