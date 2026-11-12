@@ -302,6 +302,7 @@ unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
 atomically; two openers serialize. Backfill/schema upgrades read live payloads
 in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
 that head's postings in the write transaction; backfills do not replace them.
+A changed candidate semantics version rebuilds the projection once at first open, linear in heads, including existing format-4 stores.
 
 Older binaries reject format 4 on both read-only and writable opens. Before
 migration, quiesce old writers and keep a consistent store copy and its matching
@@ -318,7 +319,7 @@ identity/scope/head, observation values/freshness/pins, and schema bytes includi
 grants. `links` and `action_log` are not inputs to candidate membership.
 Native projecting writes record the projected generation in their transaction;
 partial writes refuse if the starting projection is stale. Each candidate page
-compares generations inside its read snapshot and refuses `projection_stale`
+compares generations and semantics versions inside its snapshot and refuses `projection_stale`
 on mismatch. Searches do not acquire a write lock or start a rebuild.
 
 Repair explicitly with `ont --store STORE schema install FILE`, using the exact

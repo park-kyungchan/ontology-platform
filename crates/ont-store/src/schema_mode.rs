@@ -466,8 +466,8 @@ impl Store {
         candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
-    /// Open an existing format 4 store read-only. A format 3 store is
-    /// migrated once through a writable connection before reopening read-only.
+    /// Open an existing format 4 store read-only. Format 3 or older projection
+    /// semantics upgrade once through a writable connection, then reopen read-only.
     /// No create flag is used, and an
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
@@ -502,7 +502,7 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
-        if !writable && !candidates::exists(&store.connection)? {
+        if !writable && !candidates::semantics_current(&store.connection)? {
             drop(store);
             drop(Self::open_schema_existing_with(path, true)?);
             return Self::open_schema_existing_with(path, false);

@@ -530,3 +530,93 @@ fn hidden_oversized_head_changes_no_set_read_answer_or_counter() {
         assert_eq!(answer, expected, "hidden head changed {cmd}");
     }
 }
+
+#[test]
+fn legacy_projection_semantics_upgrade_excludes_oversized_heads() {
+    let mut t = Temp::new();
+    t.schema["version"] = json!(2);
+    t.schema["views"]["all_nodes"]["filter"] = json!({"eq":["text","not present"]});
+    t.store()
+        .install_schema(t.schema.to_string().as_bytes(), Default::default())
+        .unwrap();
+    t.put(&[row("bad", "old"), row("good", "not present")]);
+    let mut legacy = row("bad", "").observation;
+    legacy.revision = "legacy".into();
+    legacy.change = Change::Update;
+    legacy.supersedes = Some("r0".into());
+    pad(&mut legacy, BYTES + 1);
+    let Knowledge::Value(text) = legacy.fields.get("text").unwrap() else {
+        panic!()
+    };
+    let resolved = format!("v{text}");
+    let db = rusqlite::Connection::open(t.path()).unwrap();
+    // Model the old engine's complete, fresh oversized head and its resolved
+    // posting; do not run the new projector or an identical-schema repair.
+    db.execute("INSERT INTO observations SELECT object_type,instance,account,native_key,'legacy',1,?1,10,schema_domain,schema_version,'update' FROM observations WHERE native_key='bad' AND ordinal=0", [serde_json::to_string(&legacy).unwrap()]).unwrap();
+    db.execute(
+        "UPDATE objects SET head='legacy' WHERE native_key='bad'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE head_candidates SET value=?1 WHERE native_key='bad' AND property='text'",
+            [&resolved]
+        )
+        .unwrap(),
+        1
+    );
+    db.execute("UPDATE candidate_generation SET projected=mutation", [])
+        .unwrap();
+    let has_marker: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_version')", [], |r| r.get(0)).unwrap();
+    if has_marker {
+        db.execute_batch("ALTER TABLE candidate_generation DROP COLUMN semantics_version")
+            .unwrap();
+    }
+    assert!(
+        db.query_row(
+            "SELECT mutation=projected FROM candidate_generation",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT value FROM head_candidates WHERE native_key='bad' AND property='text'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        resolved
+    );
+    drop(db);
+    // One ordinary read-only open must upgrade an existing format-4 store.
+    drop(Store::open_schema_existing(&t.path()).unwrap());
+    let answers = [
+        ("search", t.cli("search", json!({"object_type":"node","where":{"eq":["text","not present"]}}))),
+        ("aggregate", t.cli("aggregate", json!({"object_type":"node","where":{"eq":["text","not present"]},"metrics":["count"]}))),
+        ("render", t.cli("render", json!({"view":"all_nodes","args":{}}))),
+    ];
+    for (command, answer) in &answers {
+        eprintln!(
+            "{command}: status={}, code={}, oversized={}, qualified={}",
+            answer["status"],
+            answer["code"],
+            answer["result"]["basis"]["oversized_excluded"],
+            answer["result"]["basis"]["qualified"]
+        );
+    }
+    for (command, answer) in answers {
+        if command == "render" {
+            assert_eq!(answer["code"], "observation_too_large", "{answer}");
+        } else {
+            assert_eq!(answer["status"], "ok", "{answer}");
+            assert_eq!(
+                answer["result"]["basis"]["oversized_excluded"], 1,
+                "{command}: {answer}"
+            );
+            assert_eq!(answer["result"]["basis"]["qualified"], false);
+        }
+    }
+}
