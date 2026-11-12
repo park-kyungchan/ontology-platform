@@ -384,6 +384,16 @@ fn unavailable() -> Failure {
     Refusal::new(ont_core::Error::Unavailable.code()).into()
 }
 
+pub(crate) fn read_scopes(principal: &Principal, ty: &str) -> Vec<ont_core::Scope> {
+    principal
+        .view()
+        .entries
+        .iter()
+        .filter(|e| e.read.contains(ty))
+        .map(|e| e.scope.clone())
+        .collect()
+}
+
 pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
     let limit = match req.limit {
         None => DEFAULT_LIMIT,
@@ -400,13 +410,14 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         Some(n) => n,
     } as usize;
     let mut store = open_store(&ctx.store, false)?;
-    st!(store.read_schema(|tx| read_search(ctx, req, limit, tx)))
+    st!(store.read_schema(|tx| read_search(ctx, req, limit, SCAN_LIMIT, tx)))
 }
 
-fn read_search(
+pub(crate) fn read_search(
     ctx: &Context,
     req: &SearchRequest,
     limit: usize,
+    scan_limit: usize,
     tx: &SchemaRead<'_>,
 ) -> Result<Answer, Failure> {
     let set = tx.schema_set();
@@ -459,13 +470,7 @@ fn read_search(
     });
     let mut basis = Basis::default();
     let mut objects: Vec<Value> = Vec::new();
-    let scopes: Vec<_> = principal
-        .view()
-        .entries
-        .iter()
-        .filter(|e| e.read.contains(&req.object_type))
-        .map(|e| e.scope.clone())
-        .collect();
+    let scopes = read_scopes(&principal, &req.object_type);
     let mut cursor = after;
     let mut continuation = None;
     'pages: loop {
@@ -511,7 +516,7 @@ fn read_search(
                     .map(encode_continuation);
                 break 'pages;
             }
-            if basis.scanned == SCAN_LIMIT as u64 {
+            if basis.scanned == scan_limit as u64 {
                 return Err(Refusal::new("result_too_large").into());
             }
             let Some(head) = st!(tx.head_after_access(&access)) else {

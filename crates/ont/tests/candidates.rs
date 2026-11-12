@@ -62,8 +62,9 @@ fn schema(version: u64) -> Value {
     json!({"format":"ontology-schema/v1","domain":"test","version":version,
         "namespace":{"instance":"test","account":"root"},"scope_keys":["tenant"],
         "value_types":{},"sources":{},"object_types":{"record":{"owner":"ontology","primary_key":{"from":"$action_id"},
-            "properties":{"status":{"type":"string","max_bytes":170},"extra":{"type":"string"}}}},
-        "link_types":{},"action_types":{},"functions":{},
+            "properties":{"status":{"type":"string","max_bytes":170},"extra":{"type":"string"},"edge":{"type":{"ref":"record"}}}}},
+        "link_types":{"edge":{"from":"record","via":"edge","to":"record","cardinality":"many_to_one","names":{"forward":"next","reverse":"previous"}}},"action_types":{},"functions":{},
+        "views":{"ready_records":{"object_type":"record","order":[{"property":"status","direction":"asc"}],"filter":{"eq":["status","ready"]},"limit":1000,"columns":[{"header":"Key","property":"$key"}]},"all_records":{"object_type":"record","order":[{"property":"status","direction":"asc"}],"limit":1000,"columns":[{"header":"Key","property":"$key"}]}},
         "grants":[{"principal":"agent","scope":{"tenant":"public"},"read":["record"],"derive":["record"],"actions":[]}]})
 }
 fn row(key: &str, status: Knowledge, hidden: bool, stale: bool) -> Append {
@@ -78,7 +79,7 @@ fn row(key: &str, status: Knowledge, hidden: bool, stale: bool) -> Append {
             )]),
         )
         .unwrap(),
-        id,
+        id: id.clone(),
         observation: Observation {
             revision: "r0".into(),
             source_revision: "s0".into(),
@@ -87,7 +88,10 @@ fn row(key: &str, status: Knowledge, hidden: bool, stale: bool) -> Append {
             change: Change::Initial,
             supersedes: None,
             coverage: Coverage::Complete,
-            fields: BTreeMap::from([("status".into(), status)]),
+            fields: BTreeMap::from([
+                ("status".into(), status),
+                ("edge".into(), Knowledge::Value(json!(id))),
+            ]),
             lineage: Lineage {
                 artifact_sha256: "a".repeat(64),
                 pointer: "/synthetic".into(),
@@ -199,6 +203,7 @@ fn unresolved_stale_partial_and_historical_heads_remain_candidates() {
     );
     let mut upgraded = schema(2);
     upgraded["object_types"]["record"]["properties"]["status"]["type"] = json!("integer");
+    upgraded["views"]["ready_records"]["filter"] = json!({"eq":["status",1]});
     Store::open_schema_existing_writable(&f.path())
         .unwrap()
         .install_schema(upgraded.to_string().as_bytes(), InstallArgs::default())
@@ -405,4 +410,92 @@ fn preopened_case(drop_trigger: bool) {
         f.search(current(), Value::Null)["result"]["basis"]["matched"],
         2
     );
+}
+
+fn reader_request(command: &str, filtered: bool) -> Value {
+    let filter = if filtered {
+        json!({"eq":["status","ready"]})
+    } else {
+        Value::Null
+    };
+    match command {
+        "around" => {
+            json!({"from":{"object_type":"record","where":filter},"path":["next"],"limit":1000})
+        }
+        "aggregate" => {
+            json!({"object_type":"record","where":filter,"group_by":["status"],"metrics":["count"]})
+        }
+        _ => json!({"view":if filtered {"ready_records"} else {"all_records"}}),
+    }
+}
+fn reader_text(f: &Fixture, command: &str, filtered: bool) -> String {
+    let out = ont::run(
+        &[
+            "--store".into(),
+            f.path().display().to_string(),
+            "--now".into(),
+            "10".into(),
+            command.into(),
+        ],
+        reader_request(command, filtered).to_string().as_bytes(),
+        0,
+        0,
+    );
+    assert!(out.stderr.is_empty(), "{}", out.stderr);
+    out.stdout
+}
+fn reader_parity(command: &str) {
+    static LARGE: std::sync::OnceLock<Fixture> = std::sync::OnceLock::new();
+    let large = LARGE.get_or_init(|| {
+        let f = Fixture::new();
+        let mut rows: Vec<_> = (0..10001)
+            .map(|i| row(&format!("z-{i:05}"), status("superseded"), false, false))
+            .collect();
+        rows.extend((0..201).map(|i| row(&format!("a-{i:05}"), status("ready"), false, false)));
+        rows.extend(
+            (0..10001).map(|i| row(&format!("hidden-{i:05}"), status("ready"), true, true)),
+        );
+        f.append(rows);
+        f
+    });
+    let small = Fixture::new();
+    small.append(
+        (0..201)
+            .map(|i| row(&format!("a-{i:05}"), status("ready"), false, false))
+            .collect(),
+    );
+    let expected = reader_text(&small, command, true);
+    let answer: Value = serde_json::from_str(&expected).unwrap();
+    assert_eq!(answer["status"], "ok", "{answer}");
+    assert_eq!(reader_text(large, command, true), expected);
+    let raw: Value = serde_json::from_str(&reader_text(large, command, false)).unwrap();
+    assert_eq!(raw["code"], "result_too_large", "{raw}");
+    if command == "render" {
+        assert_eq!(answer["rows"], 201);
+    } else {
+        assert_eq!(answer["result"]["basis"]["scanned"], 201);
+    }
+}
+#[test]
+fn around_candidates_match_small_store_and_keep_raw_bound() {
+    reader_parity("around");
+}
+#[test]
+fn aggregate_candidates_match_small_store_and_keep_raw_bound() {
+    reader_parity("aggregate");
+}
+#[test]
+fn render_candidates_match_small_store_and_keep_raw_bound() {
+    reader_parity("render");
+}
+#[test]
+fn stale_projection_refuses_all_three_readers() {
+    let f = Fixture::new();
+    f.append(vec![row("a", status("ready"), false, false)]);
+    let sql = rusqlite::Connection::open(f.path()).unwrap();
+    sql.execute("UPDATE objects SET head=head", []).unwrap();
+    for command in ["around", "aggregate", "render"] {
+        let answer: Value = serde_json::from_str(&reader_text(&f, command, true)).unwrap();
+        assert_eq!(answer["code"], "projection_stale", "{command}: {answer}");
+    }
 }

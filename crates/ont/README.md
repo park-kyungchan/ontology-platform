@@ -220,9 +220,18 @@ A domain server uses the library without the command: `Context::new(store_path, 
 - `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. `scanned` now counts admitted candidate heads evaluated on this page; hidden and retracted heads consume neither the scan budget nor lookahead.
 
 
-O22 part A applies candidate selection to `search` only. `around`, `aggregate`
-and the renderer retain their existing scans until part B; renderer pagination
-still has its raw-head preflight. Limits for `search`:
+All four readers use the same visible candidate access and one read snapshot
+per operation. The renderer shares its allowance across all pages; `around`
+shares its per-type allowance across all hops. Numeric limits:
+
+| Reader | Candidate/head allowance | Output/other allowance |
+| --- | --- | --- |
+| `search` | 10,000 admitted candidates per page | 1-1,000 rows, default 100 |
+| `around` | 10,000 unique admitted heads per type across all hops; candidates at first hop | 1-3 hops, 10,000 reference entries, 1-1,000 rows (default 100) |
+| `aggregate` | 10,000 admitted candidates per operation | 2 group keys, 1 count metric, 1,000 buckets, 1,024 bytes/group value |
+| `render` | 10,000 admitted candidates across all pages | 1-1,000 displayed rows, default 200; exact omitted count |
+
+Candidate selection and search pagination:
 
 - `limit`: 1 to 1,000 matching returned objects, default 100. Continuation means
   another admitted candidate exists, not necessarily another matching row.
@@ -233,8 +242,9 @@ still has its raw-head preflight. Limits for `search`:
   provide no condition and retain an unfiltered scan. Empty `in` is supported.
 - Unresolved used properties, historical schema pins, partial coverage and stale
   heads remain candidates even if the selected equality cannot match, preserving
-  their existing qualification/exclusion effects. Only `scanned` changes meaning;
-  matching rows and other basis fields retain their definitions.
+  their existing qualification/exclusion effects. `scanned` counts candidates;
+  aggregate `oldest_observed_at` is the minimum timestamp of admitted candidates,
+  not excluded fresh/complete heads. Other basis fields keep their definitions.
 - Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
   bounded as documented above. No payload is loaded before metadata admission.
 
@@ -351,7 +361,7 @@ For example, the synthetic `render-board.json` test fixture declares:
 objects are omitted; stale values have ` (stale)` appended. Unresolved knowledge
 states appear as `(missing)`, `(null)`, `(blank)`, `(unknown)`, `(not_performed)`.
 Cells escape pipes, line breaks and HTML comment delimiters. Rendering uses
-search admission and its 10,000-head bound, with no hidden-object totals.
+search admission and a 10,000-candidate whole-render bound, with no hidden-object totals.
 
 Three forms (use `--store` with a test store; omitting it selects the host store):
 
@@ -387,12 +397,11 @@ An argument-bearing opening line has the form
 More matching rows than the limit add a final table row containing
 `(+N more; limit L)` with the exact omitted count. No timestamp is generated.
 
-Rendering reads schema metadata and each search page in separate short read
-transactions; it holds no read transaction while opening another connection.
-A block is deterministic for an unchanged store and fixed `now`; it is not a
-snapshot across pages: concurrent actions or schema installs can change later
-pages, counts or values. For a coherent whole-block view, render after writers
-have finished. The `(stale)` suffix still follows the trusted clock.
+Rendering reads schema metadata and every page in one SQLite read snapshot.
+Concurrent writes cannot change later pages, counts, ordering or values in that
+block; their commits may wait for the bounded render to finish. The remaining
+10,000-candidate allowance is passed to each page before loading payloads, with
+no raw-head preflight. The `(stale)` suffix follows the trusted clock.
 
 `--write` holds an exclusive advisory lock on the persistent
 `<target file name>.ont-render.lock` sidecar beside the target, from before the
@@ -466,6 +475,8 @@ admission precedes every payload load, including reverse scans. Hidden and missi
 targets both contribute to `dangling`, with identical answers. Each hop removes
 duplicate IDs. The final set is sorted by ID, capped at `limit` (default 100,
 maximum 1,000); `matched` counts the full final set, with no continuation token.
+The first hop uses the filter candidate condition and its unresolved basis.
+Reverse scans use unfiltered visible candidates; named forward targets use metadata admission.
 At most 10,000 unique admitted heads per type may be loaded across all hops;
 otherwise the operation refuses `result_too_large`. Basis `scanned`, `stale`
 and `partial` count unique admitted heads used by starting/reverse scans or
@@ -490,9 +501,9 @@ is supported; other metrics refuse `unsupported_metric` at `/metrics`.
 The answer has `kind: aggregation`, `groups:[{key:{status:"open"},count:0},...]`
 and basis `scanned`, `unresolved_excluded`, `stale`, `partial`,
 `oldest_observed_at` (null for no admitted heads), `qualified`, `stale_sources`.
-Read and derive grants are required on the type and on each readable object's
+Read and derive grants are required on the type and on each candidate object's
 scope, before loading payloads. Hidden objects affect no counts. Bounds are
-10,000 admitted heads, 2 distinct group properties, 1 metric, 1,000 buckets
+10,000 admitted candidates, 2 distinct group properties, 1 metric, 1,000 buckets
 including enum zero buckets, and 1,024 compact JSON bytes per group value.
 Enum keys expand all declared combinations, including on an empty store when
 all keys are enums; mixed keys expand for observed non-enum combinations.

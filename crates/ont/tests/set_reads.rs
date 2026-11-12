@@ -161,7 +161,8 @@ fn around_one_two_three_hops_both_directions_dedup_and_limit() {
         assert_eq!(keys(&answer), expected, "{answer}");
         assert_eq!(answer["result"]["basis"]["hops"], path.len());
         assert_eq!(answer["result"]["basis"]["qualified"], true);
-        assert_eq!(answer["result"]["basis"]["scanned"], 4);
+        let scanned = if path == ["next"] { 3 } else { 4 };
+        assert_eq!(answer["result"]["basis"]["scanned"], scanned);
     }
     let mut r = req("a", &["next"]);
     r["limit"] = json!(1);
@@ -310,7 +311,10 @@ fn around_result_default_maximum_and_admitted_scan_bound() {
         .collect();
     rows.push(row("hidden", &[], true));
     t.append(rows);
-    let r = req("absent", &["next"]);
+    let mut r = req("absent", &["next"]);
+    assert_eq!(t.both(r.clone())["result"]["basis"]["scanned"], 0);
+    // An unfiltered first hop still consumes the whole admitted-head allowance.
+    r["from"]["where"] = Value::Null;
     let a = t.both(r.clone());
     assert_eq!(a["result"]["basis"]["scanned"], 10000);
     t.put("one_above", &[], false);

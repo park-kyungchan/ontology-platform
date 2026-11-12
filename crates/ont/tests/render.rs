@@ -509,7 +509,7 @@ fn sorted_arguments_write_only_matching_section_and_check_all_blocks() {
 }
 
 #[test]
-fn pagination_counts_all_matches_and_concurrent_action_completes() {
+fn pagination_uses_one_snapshot_and_concurrent_action_commits_after_read() {
     let t = Temp::new();
     let mut s = schema();
     s["views"]["items"]["limit"] = json!(2);
@@ -538,28 +538,44 @@ fn pagination_counts_all_matches_and_concurrent_action_completes() {
     store.append_schema(&entries, 15).unwrap();
     drop(store);
     let store_path = t.0.join("store.sqlite");
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let pending = writer.clone();
     ont::render::__set_between_pages_hook(move || {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let action = std::thread::spawn(move || {
-            let args = vec![
-                "--store".into(),
-                store_path.display().to_string(),
-                "--now".into(),
-                "1000".into(),
-                "action".into(),
-                "apply".into(),
-            ];
-            let req = json!({"action_type":"modify_item","parameters":{"item":id("k0000"),"title":"concurrent"}});
-            tx.send(ont::run(&args, req.to_string().as_bytes(), 0, 0))
+        let (ready, receiver) = std::sync::mpsc::channel();
+        *pending.lock().unwrap() = Some(std::thread::spawn(move || {
+            let mut store = ont_store::Store::open_schema_existing_writable(&store_path).unwrap();
+            store
+                .write(1000, |tx| {
+                    let access = tx.head_access(&id("k1001"))?.unwrap();
+                    let head = tx.head_after_access(&access)?.unwrap();
+                    let mut observation = head.head.observation;
+                    observation.supersedes = Some(observation.revision.clone());
+                    observation.revision = "r2".into();
+                    observation.change = Change::Update;
+                    observation.fields = fields("concurrent", 1);
+                    tx.append(&ont_store::Append {
+                        id: head.id,
+                        scope: head.scope,
+                        observation,
+                    })?;
+                    ready.send(()).unwrap();
+                    Ok(())
+                })
                 .unwrap();
-        });
-        let answer = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        assert_eq!(answer.code, 0, "{} {}", answer.stdout, answer.stderr);
-        assert!(!answer.stdout.contains("store_busy"));
-        action.join().unwrap();
+        }));
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
     });
     let (code, ans) = t.render("items", json!({}));
     assert_eq!(code, 0, "{ans}");
+    writer.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(
+        t.render("items", json!({})).1["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("concurrent")
+    );
     assert!(
         ans["markdown"].as_str().unwrap().contains(
             "| k1001 | page | 1 |\n| k1000 | page | 2 |\n| (+1000 more; limit 2) |  |  |"

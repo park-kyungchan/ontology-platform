@@ -282,10 +282,19 @@ fn read_aggregate(
     let (mut scanned, mut excluded, mut stale, mut partial) = (0, 0, 0, 0);
     let mut oldest: Option<u64> = None;
     let mut stale_sources = BTreeSet::new();
+    let condition = search::candidate_condition(req.filter.as_ref(), &used);
+    let scopes = search::read_scopes(&principal, &req.object_type);
     let mut after = None;
     let mut used_unresolved = false;
     loop {
-        let page = st!(tx.scan_head_access(&req.object_type, 256, after.as_ref()));
+        let page = st!(tx.candidate_access(
+            &req.object_type,
+            condition.as_ref(),
+            ctx.now,
+            256,
+            after.as_ref(),
+            &scopes
+        ));
         if page.is_empty() {
             break;
         }
