@@ -284,6 +284,7 @@ fn hidden_population_has_byte_equal_search_answers() {
             (0..count).map(|i| row(&format!("hidden-{i:05}"), status("ready"), true, true)),
         );
         f.append(rows);
+        assert_eq!(f.search(current(), Value::Null).to_string(), expected);
         rusqlite::Connection::open(f.path())
             .unwrap()
             .execute(
@@ -291,7 +292,9 @@ fn hidden_population_has_byte_equal_search_answers() {
                 [],
             )
             .unwrap();
-        assert_eq!(f.search(current(), Value::Null).to_string(), expected);
+        let refused = f.search(current(), Value::Null);
+        assert_eq!(refused["code"], "projection_stale");
+        assert!(refused["hint"].as_str().unwrap().contains("schema install"));
     }
 }
 
@@ -339,6 +342,48 @@ fn update_retraction_resurrection_and_action_apply_maintain_postings() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(
         g.search(current(), Value::Null)["result"]["basis"]["matched"],
+        2
+    );
+}
+
+#[test]
+fn preopened_connection_stales_search_until_identical_schema_install() {
+    let f = Fixture::new();
+    std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
+    let old = rusqlite::Connection::open(f.path()).unwrap();
+    let mut change=old.prepare("UPDATE observations SET payload=json_set(payload,'$.fields.status.value','ready') WHERE json_extract(payload,'$.fields.status.value')='superseded'").unwrap();
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
+        1
+    );
+    change.execute([]).unwrap();
+    assert!(change.get_status(rusqlite::StatementStatus::RePrepare) > 0);
+    let refused = f.search(current(), Value::Null);
+    assert_eq!(refused["code"], "projection_stale");
+    let bytes: Vec<u8> = old
+        .query_row(
+            "SELECT bytes FROM schema_installs WHERE version=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let file = f.0.join("installed.json");
+    std::fs::write(&file, bytes).unwrap();
+    let out = ont::run(
+        &[
+            "--store".into(),
+            f.path().display().to_string(),
+            "schema".into(),
+            "install".into(),
+            file.display().to_string(),
+        ],
+        &b""[..],
+        0,
+        0,
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        f.search(current(), Value::Null)["result"]["basis"]["matched"],
         2
     );
 }

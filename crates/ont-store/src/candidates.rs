@@ -10,11 +10,32 @@ pub struct CandidateCondition {
 }
 pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
-        "SELECT (SELECT user_version FROM pragma_user_version)=4 AND EXISTS(SELECT 1 FROM sqlite_master WHERE name='head_candidates')",
+        "SELECT (SELECT user_version FROM pragma_user_version)=4 AND EXISTS(SELECT 1 FROM sqlite_master WHERE name='head_candidates') AND EXISTS(SELECT 1 FROM sqlite_master WHERE name='candidate_generation')",
         [],
         |r| r.get(0),
     ))
 }
+const GENERATION_CHECK: &str =
+    "SELECT mutation=projected FROM candidate_generation WHERE singleton=1";
+pub(super) fn current(c: &Connection) -> Result<bool, StoreRefusal> {
+    map_db(c.query_row(GENERATION_CHECK, [], |r| r.get(0)))
+}
+pub(super) fn require_current(c: &Connection) -> Result<(), StoreRefusal> {
+    if current(c)? {
+        Ok(())
+    } else {
+        Err(StoreRefusal::new("projection_stale"))
+    }
+}
+pub(super) fn checkpoint(c: &Connection) -> Result<(), StoreRefusal> {
+    map_db(c.execute(
+        "UPDATE candidate_generation SET projected=mutation WHERE singleton=1",
+        [],
+    ))?;
+    Ok(())
+}
+#[cfg(test)]
+thread_local! { static INTERRUPT_REBUILD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub(super) fn project(
     c: &Connection,
     set: &SchemaSet,
@@ -90,6 +111,10 @@ pub(super) fn project(
 }
 pub(super) fn rebuild(c: &Connection, set: &SchemaSet) -> Result<(), StoreRefusal> {
     map_db(c.execute("DELETE FROM head_candidates", []))?;
+    #[cfg(test)]
+    if INTERRUPT_REBUILD.replace(false) {
+        return Err(StoreRefusal::new("test_interrupted_rebuild"));
+    }
     for schema in set.pins().keys().filter_map(|d| set.schema(d)) {
         for ty in schema.object_types.keys() {
             let mut after = None;
@@ -105,7 +130,7 @@ pub(super) fn rebuild(c: &Connection, set: &SchemaSet) -> Result<(), StoreRefusa
             }
         }
     }
-    Ok(())
+    checkpoint(c)
 }
 pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRefusal> {
     if exists(c)? {
@@ -113,6 +138,24 @@ pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRef
     }
     let tx = map_db(c.transaction_with_behavior(TransactionBehavior::Immediate))?;
     if !exists(&tx)? {
+        map_db(tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS candidate_generation (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            mutation INTEGER NOT NULL CHECK(typeof(mutation)='integer' AND mutation>=0),
+            projected INTEGER NOT NULL CHECK(projected>=0 AND projected<=mutation));
+            INSERT OR IGNORE INTO candidate_generation VALUES(1,0,0);",
+        ))?;
+        // All candidate inputs: identity/scope/head, observation contents/pins,
+        // and schema bytes (including grants). Links/action_log are not inputs.
+        for table in ["objects", "observations", "schema_installs"] {
+            for event in ["INSERT", "UPDATE", "DELETE"] {
+                map_db(tx.execute_batch(&format!(
+                    "CREATE TRIGGER IF NOT EXISTS candidate_{table}_{event}
+                    AFTER {event} ON {table} BEGIN
+                    UPDATE candidate_generation SET mutation=mutation+1 WHERE singleton=1; END;"
+                )))?;
+            }
+        }
         map_db(tx.execute_batch("DROP TABLE IF EXISTS head_candidates;
             CREATE TABLE head_candidates (
             object_type TEXT NOT NULL, visibility TEXT NOT NULL,
@@ -148,6 +191,7 @@ impl SchemaRead<'_> {
         after: Option<&Id>,
         scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        require_current(self.tx)?;
         let schema = self
             .schemas
             .schema_of(ty)
@@ -246,3 +290,7 @@ impl SchemaRead<'_> {
 #[cfg(test)]
 #[path = "candidates_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "generation_tests.rs"]
+mod generation_tests;

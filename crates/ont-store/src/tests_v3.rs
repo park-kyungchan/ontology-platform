@@ -1597,17 +1597,11 @@ fn admission_metadata_avoids_payloads_and_rechecks_scope_in_one_read() {
             assert!(tx.head_after_access(&current).is_err());
         })
         .unwrap();
-    store
-        .write(100, |tx| {
-            assert_eq!(tx.head_access(&target)?, Some(current.clone()));
-            assert_eq!(
-                tx.scan_head_access("thing", 1, None)?,
-                vec![current.clone()]
-            );
-            assert!(tx.head_after_access(&access)?.is_none());
-            Ok::<_, StoreRefusal>(())
-        })
-        .unwrap();
+    // Raw input edits invalidate the projection before any native write closure.
+    assert_eq!(
+        store.write(100, |_| Ok(())).unwrap_err().code,
+        "projection_stale"
+    );
 }
 
 #[test]

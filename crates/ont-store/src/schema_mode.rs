@@ -585,6 +585,7 @@ impl Store {
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let schemas = refreshed_set(&cached, &tx)?;
+        candidates::require_current(&tx)?;
         let mut handle = SchemaWrite {
             tx: &tx,
             schemas: schemas.clone(),
@@ -592,6 +593,7 @@ impl Store {
         };
         let result = f(&mut handle)?;
         drop(handle);
+        candidates::checkpoint(&tx)?;
         map_db(tx.commit())?;
         self.schemas = schemas;
         Ok(result)
@@ -600,7 +602,7 @@ impl Store {
     /// Install one checked schema file inside one IMMEDIATE transaction.
     /// A domain's version only grows; different bytes of an installed
     /// version refuse; installing the exact bytes of the latest installed
-    /// version again is a no-op.
+    /// version again leaves the schema unchanged and repairs a stale projection.
     pub fn install_schema(
         &mut self,
         bytes: &[u8],
@@ -631,6 +633,7 @@ impl Store {
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let set = refreshed_set(&cached, &tx)?;
+        let projection_dirty = !candidates::current(&tx)?;
         let candidate_domain = Schema::parse(bytes).map(|s| s.domain).unwrap_or_default();
         let others: BTreeSet<String> = set
             .pins()
@@ -692,6 +695,10 @@ impl Store {
                         ))?;
                     }
                 }
+                if projection_dirty {
+                    candidates::rebuild(&tx, &set)?;
+                }
+                candidates::checkpoint(&tx)?;
                 map_db(tx.commit())?;
                 self.schemas = set;
                 return Ok(pin);

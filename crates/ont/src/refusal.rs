@@ -78,6 +78,11 @@ pub fn store_err(e: StoreRefusal) -> Failure {
             line: at.line(),
         });
     }
+    if e.code == "projection_stale" {
+        return Refusal::new("projection_stale").with("hint", json!(
+            "Repair with ont --store STORE schema install FILE (the identical installed schema); use --from CHECKOUT --commit SHA --path PATH for a pinned install."
+        )).into();
+    }
     if e.code == "store_path_is_symlink" {
         return Refusal::input(
             "store_path_is_symlink",

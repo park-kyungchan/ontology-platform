@@ -53,14 +53,6 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                     "lineage":{"artifact_sha256":"a".repeat(64),"pointer":""}})).unwrap() }
         }).collect();
         store.append_schema(&rows, 1).unwrap();
-        // Corrupt a hidden payload after indexing: selection must never load it.
-        store
-            .connection
-            .execute(
-                "UPDATE observations SET payload='invalid' WHERE native_key='00003'",
-                [],
-            )
-            .unwrap();
         store
             .read_schema(|tx| {
                 let scope = rows[0].scope.clone();
@@ -120,6 +112,15 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                 eprintln!("hidden={hidden}, vm_steps={}, plan={plan:?}", STEPS.get());
             })
             .unwrap();
+        // Corrupt a hidden payload after indexing: selection must never load it.
+        store
+            .connection
+            .execute(
+                "UPDATE observations SET payload='invalid' WHERE native_key='00003'",
+                [],
+            )
+            .unwrap();
+        assert!(!store.read_schema(|tx| current(tx.tx)).unwrap().unwrap());
     }
     assert!(counts[1] <= counts[0] * 2 && counts[2] <= counts[1] * 2);
     assert_eq!(counts[0], counts[2]);
