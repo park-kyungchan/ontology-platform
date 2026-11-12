@@ -9,12 +9,17 @@ fn format_barrier_restore_and_two_openers() {
     let original = include_bytes!("../../ont/tests/fixtures/o22-previous.sqlite");
     for _ in 0..2 {
         std::fs::write(&path, original).unwrap();
+        assert_eq!(
+            Store::open_schema_existing(&path).err().unwrap().code,
+            "store_upgrade_required"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         let barrier = std::sync::Barrier::new(2);
         std::thread::scope(|s| {
             for _ in 0..2 {
                 s.spawn(|| {
                     barrier.wait();
-                    Store::open_schema_existing(&path).unwrap();
+                    Store::open_schema_existing_writable(&path).unwrap();
                 });
             }
         });

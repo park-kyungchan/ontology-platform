@@ -609,8 +609,15 @@ fn assert_old_projection_upgrade(remove_version_marker: bool) {
         );
     }
     drop(db);
-    // One ordinary read-only open must upgrade an existing format-4 store.
-    drop(Store::open_schema_existing(&t.path()).unwrap());
+    // A read refuses; the owner's writable open upgrades the store.
+    use sha2::{Digest, Sha256};
+    let before = Sha256::digest(std::fs::read(t.path()).unwrap());
+    assert_eq!(
+        Store::open_schema_existing(&t.path()).err().unwrap().code,
+        "store_upgrade_required"
+    );
+    assert_eq!(Sha256::digest(std::fs::read(t.path()).unwrap()), before);
+    drop(Store::open_schema_existing_writable(&t.path()).unwrap());
     let answers = [
         ("search", t.cli("search", json!({"object_type":"node","where":{"eq":["text","not present"]}}))),
         ("aggregate", t.cli("aggregate", json!({"object_type":"node","where":{"eq":["text","not present"]},"metrics":["count"]}))),

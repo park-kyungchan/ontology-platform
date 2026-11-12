@@ -78,6 +78,12 @@ pub fn store_err(e: StoreRefusal) -> Failure {
             line: at.line(),
         });
     }
+    if e.code == "store_upgrade_required" {
+        return Refusal::new("store_upgrade_required")
+            .with("field", json!("--store"))
+            .with("hint", json!("This store needs a one-time upgrade by a write of its owner: `ont index` on the work store (its Lead), or the start of the service that owns a private store."))
+            .into();
+    }
     if e.code == "projection_stale" {
         return Refusal::new("projection_stale").with("hint", json!(
             "Repair with ont --store STORE schema install FILE (the identical installed schema); use --from CHECKOUT --commit SHA --path PATH for a pinned install."
@@ -98,8 +104,8 @@ pub fn store_err(e: StoreRefusal) -> Failure {
     Failure::Refused(refusal)
 }
 
-/// Open an existing schema store; format 3 migrates once to format 4.
-/// Reads reopen read-only after migration; `index` keeps a writable handle.
+/// Open an existing schema store; only writable opens upgrade format or projection
+/// semantics. Reads refuse with `store_upgrade_required` when an upgrade is needed.
 /// A missing store is
 /// `store_not_found` and carries the `path`.
 #[track_caller]

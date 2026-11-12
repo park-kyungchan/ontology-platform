@@ -262,6 +262,12 @@ fn previous_binary_store_migrates_once_and_preserves_existing_answer_fields() {
     let f = Fixture::new();
     std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
     let before = std::fs::read(f.path()).unwrap();
+    assert_eq!(
+        f.search(json!({"eq":["status","ready"]}), Value::Null)["code"],
+        "store_upgrade_required"
+    );
+    assert_eq!(before, std::fs::read(f.path()).unwrap());
+    drop(Store::open_schema_existing_writable(&f.path()).unwrap());
     let mut answer = f.search(json!({"eq":["status","ready"]}), Value::Null);
     let migrated = std::fs::read(f.path()).unwrap();
     assert_ne!(before, migrated);
@@ -366,6 +372,7 @@ fn preopened_case(drop_trigger: bool) {
     std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
     let old = rusqlite::Connection::open(f.path()).unwrap();
     let mut change=old.prepare("UPDATE observations SET payload=json_set(payload,'$.fields.status.value','ready') WHERE json_extract(payload,'$.fields.status.value')='superseded'").unwrap();
+    drop(Store::open_schema_existing_writable(&f.path()).unwrap());
     assert_eq!(
         f.search(current(), Value::Null)["result"]["basis"]["matched"],
         1
@@ -500,4 +507,116 @@ fn stale_projection_refuses_all_three_readers() {
         let answer: Value = serde_json::from_str(&reader_text(&f, command, true)).unwrap();
         assert_eq!(answer["code"], "projection_stale", "{command}: {answer}");
     }
+}
+
+fn store_hashes(f: &Fixture) -> BTreeMap<String, String> {
+    use sha2::{Digest, Sha256};
+    ["", "-journal", "-wal", "-shm"]
+        .into_iter()
+        .filter_map(|suffix| {
+            let path = f.0.join(format!("store.sqlite{suffix}"));
+            path.exists().then(|| {
+                (
+                    suffix.to_string(),
+                    format!("{:x}", Sha256::digest(std::fs::read(path).unwrap())),
+                )
+            })
+        })
+        .collect()
+}
+fn stored_heads(f: &Fixture) -> Vec<String> {
+    rusqlite::Connection::open_with_flags(f.path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .prepare("SELECT json_array(object_type,instance,account,native_key,scope,head) FROM objects ORDER BY object_type,instance,account,native_key")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn format3_upgrade_refusal_preserves_bytes_and_owner_write_preserves_heads() {
+    upgrade_refusal_case("format3");
+}
+#[test]
+fn old_projection_upgrade_refusal_preserves_bytes_and_owner_write_preserves_heads() {
+    for mode in ["missing", "different", "uncertified"] {
+        upgrade_refusal_case(mode);
+    }
+}
+fn upgrade_refusal_case(mode: &str) {
+    let f = Fixture::new();
+    std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
+    if mode != "format3" {
+        drop(Store::open_schema_existing_writable(&f.path()).unwrap());
+        let old = rusqlite::Connection::open(f.path()).unwrap();
+        old.execute_batch(match mode {
+            "missing" => "ALTER TABLE candidate_generation DROP COLUMN semantics_version",
+            "different" => "UPDATE candidate_generation SET semantics_version=99",
+            _ => "UPDATE candidate_generation SET semantics_projected=projected+1",
+        })
+        .unwrap();
+    }
+    let heads = stored_heads(&f);
+    std::fs::write(f.0.join("store.sqlite-journal"), b"").unwrap();
+    let before = store_hashes(&f);
+    assert_eq!(
+        Store::open_schema_existing(&f.path()).err().unwrap().code,
+        "store_upgrade_required",
+        "{mode}"
+    );
+    assert_eq!(store_hashes(&f), before, "read changed {mode}");
+    let request = json!({"object_type":"record","where":{"eq":["status","ready"]}});
+    let run = |command: &str, body: &Value| {
+        ont::run(
+            &[
+                "--store".into(),
+                f.path().display().to_string(),
+                "--now".into(),
+                "10".into(),
+                command.into(),
+            ],
+            body.to_string().as_bytes(),
+            0,
+            0,
+        )
+    };
+    let out = run("search", &request);
+    assert_eq!(out.code, 2, "{mode}: {}", out.stderr);
+    assert!(out.stderr.is_empty());
+    let refusal: Value = serde_json::from_str(&out.stdout).unwrap();
+    assert_eq!(refusal["code"], "store_upgrade_required");
+    assert_eq!(refusal["field"], "--store");
+    assert_eq!(
+        refusal["hint"],
+        "This store needs a one-time upgrade by a write of its owner: `ont index` on the work store (its Lead), or the start of the service that owns a private store."
+    );
+    let config = ont::mcp::Config {
+        store: f.path(),
+        now: Some(10),
+        client: "cli".into(),
+    };
+    let exec = ont::cli::execute;
+    let mut server = ont::mcp::Server::new(config, &exec);
+    server.handle_line(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}).to_string().as_bytes()).unwrap();
+    let mcp = server.handle_line(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ont_search","arguments":request}}).to_string().as_bytes()).unwrap();
+    assert_eq!(mcp["result"]["isError"], true, "{mcp}");
+    let text = mcp["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), refusal);
+    assert_eq!(store_hashes(&f), before, "command/MCP changed {mode}");
+    let upgraded = run("index", &json!({}));
+    assert_eq!(upgraded.code, 0, "{} {}", upgraded.stdout, upgraded.stderr);
+    let mut reader = Store::open_schema_existing(&f.path()).unwrap();
+    assert_eq!(
+        reader.scan_heads("record", 10, None).unwrap().len(),
+        heads.len()
+    );
+    assert_eq!(stored_heads(&f), heads);
+    let answer = run("search", &request);
+    assert_eq!(answer.code, 0, "{} {}", answer.stdout, answer.stderr);
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer.stdout).unwrap()["result"]["basis"]["matched"],
+        1
+    );
 }
