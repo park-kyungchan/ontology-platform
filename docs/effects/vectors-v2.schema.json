@@ -1,0 +1,1124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ontology-platform:effects:vectors-v2",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "effect-vectors/v2"
+    },
+    "selection": {
+      "const": "first_matching_row"
+    },
+    "states": {
+      "const": [
+        "unrecorded",
+        "pre_effect_recorded",
+        "dispatch_possible",
+        "answer_returned",
+        "answer_lost",
+        "timeout_returned",
+        "async_accepted",
+        "rejected",
+        "applied",
+        "not_applied",
+        "conflict",
+        "not_observable",
+        "manual_reconciliation"
+      ]
+    },
+    "evidence_kinds": {
+      "const": [
+        "target_token",
+        "returned_value",
+        "operation_record",
+        "complete_absence",
+        "none"
+      ]
+    },
+    "domains": {
+      "const": {
+        "stage": [
+          "absent",
+          "prepared",
+          "fenced",
+          "settled"
+        ],
+        "saved_state": [
+          null,
+          "applied",
+          "not_applied",
+          "rejected",
+          "conflict"
+        ],
+        "answer": [
+          "none",
+          "lost",
+          "returned_ack",
+          "completed_returned",
+          "returned_timeout",
+          "accepted",
+          "rejected_no_effect",
+          "completed_no_effect"
+        ],
+        "later_read": [
+          "not_read",
+          "unavailable",
+          "desired",
+          "before",
+          "other",
+          "token_applied_current",
+          "token_applied_diverged",
+          "token_sealed",
+          "token_rejected",
+          "token_conflict_no_effect",
+          "operation_pending",
+          "operation_applied_verified",
+          "operation_no_effect",
+          "operation_conflict_no_effect",
+          "operation_rejected",
+          "operation_done_unverified",
+          "operation_unobservable",
+          "absence_desired_closed",
+          "absence_undesired_closed",
+          "absence_open",
+          "incomplete_absence",
+          "identity_mismatch",
+          "contradictory",
+          "budget_exhausted"
+        ]
+      }
+    },
+    "allowed_next_steps": {
+      "const": [
+        "nothing",
+        "read_again",
+        "new_attempt_new_identity",
+        "never_retry",
+        "ask_person"
+      ]
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/row"
+      },
+      "minItems": 1
+    },
+    "normalization": {
+      "type": "object",
+      "properties": {
+        "selection": {
+          "const": "first_matching_rule_per_output"
+        },
+        "predicate_combination": {
+          "const": "all"
+        },
+        "predicate_paths": {
+          "const": "raw_input_json_pointer"
+        },
+        "outputs_independent": {
+          "const": true
+        },
+        "recorded_facts": {
+          "const": "copy_unchanged"
+        },
+        "answer_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/answerRule"
+          },
+          "minItems": 1
+        },
+        "later_read_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/readRule"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "selection",
+        "predicate_combination",
+        "predicate_paths",
+        "outputs_independent",
+        "recorded_facts",
+        "answer_rules",
+        "later_read_rules"
+      ],
+      "additionalProperties": false
+    },
+    "normalization_cases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/normalizationCase"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "format",
+    "selection",
+    "states",
+    "evidence_kinds",
+    "domains",
+    "allowed_next_steps",
+    "rows",
+    "normalization",
+    "normalization_cases"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "state": {
+      "enum": [
+        "unrecorded",
+        "pre_effect_recorded",
+        "dispatch_possible",
+        "answer_returned",
+        "answer_lost",
+        "timeout_returned",
+        "async_accepted",
+        "rejected",
+        "applied",
+        "not_applied",
+        "conflict",
+        "not_observable",
+        "manual_reconciliation"
+      ]
+    },
+    "settledState": {
+      "enum": [
+        "applied",
+        "not_applied",
+        "rejected",
+        "conflict"
+      ]
+    },
+    "answer": {
+      "enum": [
+        "none",
+        "lost",
+        "returned_ack",
+        "completed_returned",
+        "returned_timeout",
+        "accepted",
+        "rejected_no_effect",
+        "completed_no_effect"
+      ]
+    },
+    "read": {
+      "enum": [
+        "not_read",
+        "unavailable",
+        "desired",
+        "before",
+        "other",
+        "token_applied_current",
+        "token_applied_diverged",
+        "token_sealed",
+        "token_rejected",
+        "token_conflict_no_effect",
+        "operation_pending",
+        "operation_applied_verified",
+        "operation_no_effect",
+        "operation_conflict_no_effect",
+        "operation_rejected",
+        "operation_done_unverified",
+        "operation_unobservable",
+        "absence_desired_closed",
+        "absence_undesired_closed",
+        "absence_open",
+        "incomplete_absence",
+        "identity_mismatch",
+        "contradictory",
+        "budget_exhausted"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "target_token",
+        "returned_value",
+        "operation_record",
+        "complete_absence",
+        "none"
+      ]
+    },
+    "step": {
+      "enum": [
+        "nothing",
+        "read_again",
+        "new_attempt_new_identity",
+        "never_retry",
+        "ask_person"
+      ]
+    },
+    "kindSelector": {
+      "oneOf": [
+        {
+          "enum": [
+            "target_token",
+            "returned_value",
+            "operation_record",
+            "complete_absence",
+            "none"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "enum": [
+              "target_token",
+              "returned_value",
+              "operation_record",
+              "complete_absence",
+              "none"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        {
+          "const": "*"
+        }
+      ]
+    },
+    "answerSelector": {
+      "oneOf": [
+        {
+          "enum": [
+            "none",
+            "lost",
+            "returned_ack",
+            "completed_returned",
+            "returned_timeout",
+            "accepted",
+            "rejected_no_effect",
+            "completed_no_effect"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "enum": [
+              "none",
+              "lost",
+              "returned_ack",
+              "completed_returned",
+              "returned_timeout",
+              "accepted",
+              "rejected_no_effect",
+              "completed_no_effect"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        {
+          "const": "*"
+        }
+      ]
+    },
+    "readSelector": {
+      "oneOf": [
+        {
+          "enum": [
+            "not_read",
+            "unavailable",
+            "desired",
+            "before",
+            "other",
+            "token_applied_current",
+            "token_applied_diverged",
+            "token_sealed",
+            "token_rejected",
+            "token_conflict_no_effect",
+            "operation_pending",
+            "operation_applied_verified",
+            "operation_no_effect",
+            "operation_conflict_no_effect",
+            "operation_rejected",
+            "operation_done_unverified",
+            "operation_unobservable",
+            "absence_desired_closed",
+            "absence_undesired_closed",
+            "absence_open",
+            "incomplete_absence",
+            "identity_mismatch",
+            "contradictory",
+            "budget_exhausted"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "enum": [
+              "not_read",
+              "unavailable",
+              "desired",
+              "before",
+              "other",
+              "token_applied_current",
+              "token_applied_diverged",
+              "token_sealed",
+              "token_rejected",
+              "token_conflict_no_effect",
+              "operation_pending",
+              "operation_applied_verified",
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected",
+              "operation_done_unverified",
+              "operation_unobservable",
+              "absence_desired_closed",
+              "absence_undesired_closed",
+              "absence_open",
+              "incomplete_absence",
+              "identity_mismatch",
+              "contradictory",
+              "budget_exhausted"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        {
+          "const": "*"
+        }
+      ]
+    },
+    "recordedInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "enum": [
+                "absent",
+                "prepared",
+                "fenced"
+              ]
+            },
+            "evidence_kind": {
+              "$ref": "#/$defs/kind"
+            },
+            "saved_state": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "stage",
+            "evidence_kind",
+            "saved_state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "const": "settled"
+            },
+            "evidence_kind": {
+              "$ref": "#/$defs/kind"
+            },
+            "saved_state": {
+              "$ref": "#/$defs/settledState"
+            }
+          },
+          "required": [
+            "stage",
+            "evidence_kind",
+            "saved_state"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "recordedSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "absent",
+                    "prepared",
+                    "fenced"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "absent",
+                      "prepared",
+                      "fenced"
+                    ]
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "evidence_kind": {
+              "$ref": "#/$defs/kindSelector"
+            },
+            "saved_state": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "stage",
+            "evidence_kind",
+            "saved_state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "const": "settled"
+            },
+            "evidence_kind": {
+              "$ref": "#/$defs/kindSelector"
+            },
+            "saved_state": {
+              "$ref": "#/$defs/settledState"
+            }
+          },
+          "required": [
+            "stage",
+            "evidence_kind",
+            "saved_state"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "row": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^R[0-9]{2}$"
+        },
+        "recorded_facts": {
+          "$ref": "#/$defs/recordedSelector"
+        },
+        "answer": {
+          "$ref": "#/$defs/answerSelector"
+        },
+        "later_read": {
+          "$ref": "#/$defs/readSelector"
+        },
+        "expected_state": {
+          "$ref": "#/$defs/state"
+        },
+        "allowed_next_step": {
+          "$ref": "#/$defs/step"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "recorded_facts",
+        "answer",
+        "later_read",
+        "expected_state",
+        "allowed_next_step",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "rawInput": {
+      "type": "object",
+      "properties": {
+        "recorded_facts": {
+          "$ref": "#/$defs/recordedInput"
+        },
+        "answer_claim": {
+          "$ref": "#/$defs/answer"
+        },
+        "read_claim": {
+          "enum": [
+            "not_read",
+            "unavailable",
+            "desired",
+            "before",
+            "other",
+            "token_applied_current",
+            "token_applied_diverged",
+            "token_sealed",
+            "token_rejected",
+            "token_conflict_no_effect",
+            "operation_pending",
+            "operation_applied_verified",
+            "operation_no_effect",
+            "operation_conflict_no_effect",
+            "operation_rejected",
+            "operation_done_unverified",
+            "operation_unobservable",
+            "absence_desired_closed",
+            "absence_undesired_closed",
+            "absence_open",
+            "incomplete_absence",
+            "identity_mismatch",
+            "contradictory",
+            "budget_exhausted",
+            "value"
+          ]
+        },
+        "payload_binding": {
+          "enum": [
+            "native",
+            "adapter_immutable",
+            "none"
+          ]
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "answer_durable": {
+              "type": "boolean"
+            },
+            "loss_durable": {
+              "type": "boolean"
+            },
+            "login_failed": {
+              "type": "boolean"
+            },
+            "identity_matches": {
+              "type": "boolean"
+            },
+            "proof_bound": {
+              "type": "boolean"
+            },
+            "operation_id_durable": {
+              "type": "boolean"
+            },
+            "terminal": {
+              "type": "boolean"
+            },
+            "zero_partial_effect": {
+              "type": "boolean"
+            },
+            "no_late_work": {
+              "type": "boolean"
+            },
+            "no_past_effect": {
+              "type": "boolean"
+            },
+            "projections_verified": {
+              "type": "boolean"
+            },
+            "coverage_complete": {
+              "type": "boolean"
+            },
+            "authoritative_value": {
+              "type": "boolean"
+            },
+            "budget_exhausted": {
+              "type": "boolean"
+            },
+            "matches_desired": {
+              "type": "boolean"
+            },
+            "matches_before": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "answer_durable",
+            "loss_durable",
+            "login_failed",
+            "identity_matches",
+            "proof_bound",
+            "operation_id_durable",
+            "terminal",
+            "zero_partial_effect",
+            "no_late_work",
+            "no_past_effect",
+            "projections_verified",
+            "coverage_complete",
+            "authoritative_value",
+            "budget_exhausted",
+            "matches_desired",
+            "matches_before"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "recorded_facts",
+        "answer_claim",
+        "read_claim",
+        "payload_binding",
+        "preconditions"
+      ],
+      "additionalProperties": false
+    },
+    "normalizedInput": {
+      "type": "object",
+      "properties": {
+        "recorded_facts": {
+          "$ref": "#/$defs/recordedInput"
+        },
+        "answer": {
+          "$ref": "#/$defs/answer"
+        },
+        "later_read": {
+          "$ref": "#/$defs/read"
+        }
+      },
+      "required": [
+        "recorded_facts",
+        "answer",
+        "later_read"
+      ],
+      "additionalProperties": false
+    },
+    "predicate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "enum": [
+                "/preconditions/answer_durable",
+                "/preconditions/loss_durable",
+                "/preconditions/login_failed",
+                "/preconditions/identity_matches",
+                "/preconditions/proof_bound",
+                "/preconditions/operation_id_durable",
+                "/preconditions/terminal",
+                "/preconditions/zero_partial_effect",
+                "/preconditions/no_late_work",
+                "/preconditions/no_past_effect",
+                "/preconditions/projections_verified",
+                "/preconditions/coverage_complete",
+                "/preconditions/authoritative_value",
+                "/preconditions/budget_exhausted",
+                "/preconditions/matches_desired",
+                "/preconditions/matches_before"
+              ]
+            },
+            "test": {
+              "const": "equals"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "test",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/answer_claim"
+                },
+                "test": {
+                  "const": "equals"
+                },
+                "value": {
+                  "enum": [
+                    "none",
+                    "lost",
+                    "returned_ack",
+                    "completed_returned",
+                    "returned_timeout",
+                    "accepted",
+                    "rejected_no_effect",
+                    "completed_no_effect"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/answer_claim"
+                },
+                "test": {
+                  "const": "in"
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "none",
+                      "lost",
+                      "returned_ack",
+                      "completed_returned",
+                      "returned_timeout",
+                      "accepted",
+                      "rejected_no_effect",
+                      "completed_no_effect"
+                    ]
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/read_claim"
+                },
+                "test": {
+                  "const": "equals"
+                },
+                "value": {
+                  "enum": [
+                    "not_read",
+                    "unavailable",
+                    "desired",
+                    "before",
+                    "other",
+                    "token_applied_current",
+                    "token_applied_diverged",
+                    "token_sealed",
+                    "token_rejected",
+                    "token_conflict_no_effect",
+                    "operation_pending",
+                    "operation_applied_verified",
+                    "operation_no_effect",
+                    "operation_conflict_no_effect",
+                    "operation_rejected",
+                    "operation_done_unverified",
+                    "operation_unobservable",
+                    "absence_desired_closed",
+                    "absence_undesired_closed",
+                    "absence_open",
+                    "incomplete_absence",
+                    "identity_mismatch",
+                    "contradictory",
+                    "budget_exhausted",
+                    "value"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/read_claim"
+                },
+                "test": {
+                  "const": "in"
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "not_read",
+                      "unavailable",
+                      "desired",
+                      "before",
+                      "other",
+                      "token_applied_current",
+                      "token_applied_diverged",
+                      "token_sealed",
+                      "token_rejected",
+                      "token_conflict_no_effect",
+                      "operation_pending",
+                      "operation_applied_verified",
+                      "operation_no_effect",
+                      "operation_conflict_no_effect",
+                      "operation_rejected",
+                      "operation_done_unverified",
+                      "operation_unobservable",
+                      "absence_desired_closed",
+                      "absence_undesired_closed",
+                      "absence_open",
+                      "incomplete_absence",
+                      "identity_mismatch",
+                      "contradictory",
+                      "budget_exhausted",
+                      "value"
+                    ]
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/payload_binding"
+                },
+                "test": {
+                  "const": "equals"
+                },
+                "value": {
+                  "enum": [
+                    "native",
+                    "adapter_immutable",
+                    "none"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "const": "/payload_binding"
+                },
+                "test": {
+                  "const": "in"
+                },
+                "value": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native",
+                      "adapter_immutable",
+                      "none"
+                    ]
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "path",
+                "test",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      ]
+    },
+    "answerRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^A[0-9]{2}$"
+        },
+        "when": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          }
+        },
+        "then": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "literal": {
+                  "enum": [
+                    "none",
+                    "lost",
+                    "returned_ack",
+                    "completed_returned",
+                    "returned_timeout",
+                    "accepted",
+                    "rejected_no_effect",
+                    "completed_no_effect"
+                  ]
+                }
+              },
+              "required": [
+                "literal"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "copy_from": {
+                  "const": "/answer_claim"
+                }
+              },
+              "required": [
+                "copy_from"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "when",
+        "then"
+      ],
+      "additionalProperties": false
+    },
+    "readRule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^L[0-9]{2}$"
+        },
+        "when": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          }
+        },
+        "then": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "literal": {
+                  "enum": [
+                    "not_read",
+                    "unavailable",
+                    "desired",
+                    "before",
+                    "other",
+                    "token_applied_current",
+                    "token_applied_diverged",
+                    "token_sealed",
+                    "token_rejected",
+                    "token_conflict_no_effect",
+                    "operation_pending",
+                    "operation_applied_verified",
+                    "operation_no_effect",
+                    "operation_conflict_no_effect",
+                    "operation_rejected",
+                    "operation_done_unverified",
+                    "operation_unobservable",
+                    "absence_desired_closed",
+                    "absence_undesired_closed",
+                    "absence_open",
+                    "incomplete_absence",
+                    "identity_mismatch",
+                    "contradictory",
+                    "budget_exhausted"
+                  ]
+                }
+              },
+              "required": [
+                "literal"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "copy_from": {
+                  "const": "/read_claim"
+                }
+              },
+              "required": [
+                "copy_from"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "when",
+        "then"
+      ],
+      "additionalProperties": false
+    },
+    "normalizationCase": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]+$"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "raw_input": {
+          "$ref": "#/$defs/rawInput"
+        },
+        "normalized_input": {
+          "$ref": "#/$defs/normalizedInput"
+        },
+        "expected_row": {
+          "type": "string",
+          "pattern": "^R[0-9]{2}$"
+        },
+        "expected_state": {
+          "$ref": "#/$defs/state"
+        },
+        "allowed_next_step": {
+          "$ref": "#/$defs/step"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "raw_input",
+        "normalized_input",
+        "expected_row",
+        "expected_state",
+        "allowed_next_step"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
