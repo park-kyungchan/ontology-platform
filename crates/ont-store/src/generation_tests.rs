@@ -201,7 +201,7 @@ fn native_write_and_read_stay_current_without_rebuilding() {
             2,
         )
         .unwrap();
-    assert!(current(&store.connection).unwrap());
+    assert!(current(&store.connection, &store.candidate_triggers).unwrap());
     store
         .read_schema(|tx| {
             tx.candidate_access("record", None, 10, 100, None, &[head.scope])

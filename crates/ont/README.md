@@ -292,6 +292,14 @@ SQLite's schema cookie invalidates pre-migration prepared statements so their
 next execution runs the newly installed triggers; the held-connection regression
 executes and asserts this reprepare. The format barrier remains in place.
 
+The compatibility guarantee covers every binary of this repository, opened
+before or after migration. Trigger definitions are checked at open and before
+candidate reads, cached against SQLite's schema cookie; missing/changed triggers
+refuse until identical-schema repair recreates them and rebuilds atomically.
+Arbitrary SQL modification (dropping triggers, disabling them on a connection,
+or editing tables) is outside what the store can detect; presence checks do not
+detect a connection-local trigger switch.
+
 ## mcp
 `ont [--store PATH] mcp [--client NAME]` is a Model Context Protocol server over stdio: newline-delimited JSON-RPC 2.0, one request per line on stdin, one JSON line per response on stdout, nothing else on stdout; no listener, no threads. `--client`, when given, matches `^[a-z0-9][a-z0-9-]{0,31}$` (else the refusal `invalid_request`, before stdin is read); when `--client` is absent, `initialize` supplies `clientInfo.name` only when `valid_client` accepts it; absent, empty or invalid names use `mcp`. An explicit `--client` wins, except the reserved name `cli` also maps to `mcp`, so MCP writes never share the CLI action namespace. Actions record this client, the per-call `agent` (falling back to nonempty `ONT_AGENT`) and optional `session` through `Context`, subject to the library actor bounds. The uid check is that of the other subcommands.
 - Register it in a CLI as `{"command":"/usr/local/bin/ont","args":["mcp","--client","<cli>"]}`. This crate registers and installs nothing; each CLI's own configuration is changed by a separate packet.

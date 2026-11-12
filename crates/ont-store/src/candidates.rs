@@ -15,13 +15,59 @@ pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
         |r| r.get(0),
     ))
 }
+pub(super) type TriggerCache = std::cell::Cell<Option<(i64, bool)>>;
+fn triggers() -> impl Iterator<Item = (String, String)> {
+    ["objects", "observations", "schema_installs"]
+        .into_iter()
+        .flat_map(|table| {
+            ["INSERT", "UPDATE", "DELETE"]
+                .into_iter()
+                .map(move |event| {
+                    let name = format!("candidate_{table}_{event}");
+                    let sql = format!(
+                        "CREATE TRIGGER {name}
+                    AFTER {event} ON {table} BEGIN
+                    UPDATE candidate_generation SET mutation=mutation+1 WHERE singleton=1; END"
+                    );
+                    (name, sql)
+                })
+        })
+}
+pub(super) fn protected(c: &Connection, cache: &TriggerCache) -> Result<bool, StoreRefusal> {
+    let cookie = map_db(c.pragma_query_value(None, "schema_version", |r| r.get(0)))?;
+    if let Some((previous, valid)) = cache.get()
+        && previous == cookie
+    {
+        return Ok(valid);
+    }
+    let mut valid = true;
+    for (name, expected) in triggers() {
+        let actual: Option<String> = map_db(
+            c.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional(),
+        )?;
+        valid &= actual.as_ref() == Some(&expected);
+    }
+    cache.set(Some((cookie, valid)));
+    Ok(valid)
+}
+pub(super) fn repair_triggers(c: &Connection) -> Result<(), StoreRefusal> {
+    for (name, sql) in triggers() {
+        map_db(c.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}; {sql}")))?;
+    }
+    Ok(())
+}
 const GENERATION_CHECK: &str =
     "SELECT mutation=projected FROM candidate_generation WHERE singleton=1";
-pub(super) fn current(c: &Connection) -> Result<bool, StoreRefusal> {
-    map_db(c.query_row(GENERATION_CHECK, [], |r| r.get(0)))
+pub(super) fn current(c: &Connection, cache: &TriggerCache) -> Result<bool, StoreRefusal> {
+    Ok(protected(c, cache)? && map_db(c.query_row(GENERATION_CHECK, [], |r| r.get(0)))?)
 }
-pub(super) fn require_current(c: &Connection) -> Result<(), StoreRefusal> {
-    if current(c)? {
+pub(super) fn require_current(c: &Connection, cache: &TriggerCache) -> Result<(), StoreRefusal> {
+    if current(c, cache)? {
         Ok(())
     } else {
         Err(StoreRefusal::new("projection_stale"))
@@ -147,15 +193,7 @@ pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRef
         ))?;
         // All candidate inputs: identity/scope/head, observation contents/pins,
         // and schema bytes (including grants). Links/action_log are not inputs.
-        for table in ["objects", "observations", "schema_installs"] {
-            for event in ["INSERT", "UPDATE", "DELETE"] {
-                map_db(tx.execute_batch(&format!(
-                    "CREATE TRIGGER IF NOT EXISTS candidate_{table}_{event}
-                    AFTER {event} ON {table} BEGIN
-                    UPDATE candidate_generation SET mutation=mutation+1 WHERE singleton=1; END;"
-                )))?;
-            }
-        }
+        repair_triggers(&tx)?;
         map_db(tx.execute_batch("DROP TABLE IF EXISTS head_candidates;
             CREATE TABLE head_candidates (
             object_type TEXT NOT NULL, visibility TEXT NOT NULL,
@@ -191,7 +229,7 @@ impl SchemaRead<'_> {
         after: Option<&Id>,
         scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
-        require_current(self.tx)?;
+        require_current(self.tx, self.trigger_cache)?;
         let schema = self
             .schemas
             .schema_of(ty)

@@ -266,6 +266,7 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool
 
 /// A transaction-scoped, read-only schema/head view. Metadata precedes payloads.
 pub struct SchemaRead<'a> {
+    trigger_cache: &'a candidates::TriggerCache,
     tx: &'a Transaction<'a>,
     schemas: SchemaSet,
 }
@@ -425,6 +426,7 @@ impl Store {
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
         candidates::ensure(&mut store.connection, &store.schemas)?;
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
     /// Open an existing format 4 store read-only. A format 3 store is
@@ -471,6 +473,7 @@ impl Store {
         if writable {
             candidates::ensure(&mut store.connection, &store.schemas)?;
         }
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
     pub fn memory_schema() -> Result<Self, StoreRefusal> {
@@ -481,6 +484,7 @@ impl Store {
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
         candidates::ensure(&mut store.connection, &store.schemas)?;
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
     fn require_schema(&self) -> Result<(), StoreRefusal> {
@@ -507,14 +511,17 @@ impl Store {
         read: impl FnOnce(&SchemaRead<'_>) -> T,
     ) -> Result<T, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.read_tx()?;
         let schemas = refreshed_set(&cached, &tx)?;
         let result = read(&SchemaRead {
+            trigger_cache: &trigger_cache,
             tx: &tx,
             schemas: schemas.clone(),
         });
         drop(tx);
+        self.candidate_triggers.set(trigger_cache.get());
         self.schemas = schemas;
         Ok(result)
     }
@@ -582,10 +589,11 @@ impl Store {
         f: impl FnOnce(&mut SchemaWrite<'_>) -> Result<T, StoreRefusal>,
     ) -> Result<T, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let schemas = refreshed_set(&cached, &tx)?;
-        candidates::require_current(&tx)?;
+        candidates::require_current(&tx, &trigger_cache)?;
         let mut handle = SchemaWrite {
             tx: &tx,
             schemas: schemas.clone(),
@@ -630,10 +638,14 @@ impl Store {
         source_path: Option<String>,
     ) -> Result<SchemaPin, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let set = refreshed_set(&cached, &tx)?;
-        let projection_dirty = !candidates::current(&tx)?;
+        let projection_dirty = !candidates::current(&tx, &trigger_cache)?;
+        if projection_dirty {
+            candidates::repair_triggers(&tx)?;
+        }
         let candidate_domain = Schema::parse(bytes).map(|s| s.domain).unwrap_or_default();
         let others: BTreeSet<String> = set
             .pins()

@@ -348,6 +348,13 @@ fn update_retraction_resurrection_and_action_apply_maintain_postings() {
 
 #[test]
 fn preopened_connection_stales_search_until_identical_schema_install() {
+    preopened_case(false);
+}
+#[test]
+fn dropped_trigger_invalidates_cached_protection_until_repaired() {
+    preopened_case(true);
+}
+fn preopened_case(drop_trigger: bool) {
     let f = Fixture::new();
     std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
     let old = rusqlite::Connection::open(f.path()).unwrap();
@@ -356,7 +363,19 @@ fn preopened_connection_stales_search_until_identical_schema_install() {
         f.search(current(), Value::Null)["result"]["basis"]["matched"],
         1
     );
+    let mut held = Store::open_schema_existing_writable(&f.path()).unwrap();
+    if drop_trigger {
+        old.execute_batch("DROP TRIGGER candidate_observations_UPDATE")
+            .unwrap();
+    }
     change.execute([]).unwrap();
+    assert_eq!(
+        held.read_schema(|tx| tx.candidate_access("record", None, 10, 100, None, &[]))
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "projection_stale"
+    );
     assert!(change.get_status(rusqlite::StatementStatus::RePrepare) > 0);
     let refused = f.search(current(), Value::Null);
     assert_eq!(refused["code"], "projection_stale");

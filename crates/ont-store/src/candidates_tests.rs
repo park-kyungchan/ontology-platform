@@ -120,7 +120,12 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                 [],
             )
             .unwrap();
-        assert!(!store.read_schema(|tx| current(tx.tx)).unwrap().unwrap());
+        assert!(
+            !store
+                .read_schema(|tx| current(tx.tx, tx.trigger_cache))
+                .unwrap()
+                .unwrap()
+        );
     }
     assert!(counts[1] <= counts[0] * 2 && counts[2] <= counts[1] * 2);
     assert_eq!(counts[0], counts[2]);

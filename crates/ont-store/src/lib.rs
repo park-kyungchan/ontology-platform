@@ -104,6 +104,7 @@ pub struct Store {
     connection: Connection,
     mode: StoreMode,
     schemas: ont_core::schema::SchemaSet,
+    candidate_triggers: std::cell::Cell<Option<(i64, bool)>>,
 }
 pub struct ReadSnapshot<'a> {
     connection: &'a Connection,
@@ -199,6 +200,7 @@ impl Store {
             connection,
             mode,
             schemas: ont_core::schema::SchemaSet::default(),
+            candidate_triggers: std::cell::Cell::new(None),
         })
     }
     /// Atomic graph initialization, preserving explicit observation append order.
