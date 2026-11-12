@@ -314,8 +314,7 @@ fn admitted_scan_and_dynamic_bucket_limits_before_payload_or_growth() {
 
 #[test]
 fn filter_membership_equals_search_and_historical_filter_is_excluded() {
-    let root =
-        std::path::PathBuf::from("/home/palantirkc/work/ontology-operational-base/o7b-scratch");
+    let root = std::env::temp_dir();
     let path = root.join(format!("r1-filter-{}.sqlite", std::process::id()));
     let mut store = Store::open_schema(&path).unwrap();
     let mut s = schema();
