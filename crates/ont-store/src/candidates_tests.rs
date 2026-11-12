@@ -31,7 +31,7 @@ fn format_barrier_restore_and_two_openers() {
 }
 
 #[test]
-fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
+fn visible_keyset_work_is_bounded_with_hidden_and_retracted_heads() {
     let mut counts = Vec::new();
     for hidden in [512, 1024, 2048] {
         let mut store = Store::memory_schema().unwrap();
@@ -52,7 +52,19 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                     "change":"initial","supersedes":null,"coverage":"complete","fields":{"status":{"kind":"value","value":"ready"}},
                     "lineage":{"artifact_sha256":"a".repeat(64),"pointer":""}})).unwrap() }
         }).collect();
+        let mut retracted = vec![];
+        for i in 0..hidden {
+            let mut initial = rows[0].clone();
+            initial.id.native_key = format!("retracted{i:05}");
+            let mut deleted = initial.clone();
+            deleted.observation.revision = "r1".into();
+            deleted.observation.supersedes = Some("r0".into());
+            deleted.observation.change = Change::Retraction;
+            deleted.observation.fields.clear();
+            retracted.extend([initial, deleted]);
+        }
         store.append_schema(&rows, 1).unwrap();
+        store.append_schema(&retracted, 1).unwrap();
         store
             .read_schema(|tx| {
                 let scope = rows[0].scope.clone();
@@ -61,28 +73,31 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                     values: vec![Value::String("ready".into())],
                     used: BTreeSet::from(["status".into()]),
                 };
-                STEPS.set(0);
-                let mut after = None;
-                let mut ids = Vec::new();
-                loop {
-                    let page = tx
-                        .candidate_access(
-                            "record",
-                            Some(&condition),
-                            10,
-                            2,
-                            after.as_ref(),
-                            std::slice::from_ref(&scope),
-                        )
-                        .unwrap();
-                    if page.is_empty() {
-                        break;
+                for condition in [Some(&condition), None] {
+                    STEPS.set(0);
+                    let mut after = None;
+                    let mut ids = Vec::new();
+                    loop {
+                        let page = tx
+                            .candidate_access(
+                                "record",
+                                condition,
+                                10,
+                                2,
+                                after.as_ref(),
+                                std::slice::from_ref(&scope),
+                            )
+                            .unwrap();
+                        if page.is_empty() {
+                            break;
+                        }
+                        after = page.last().map(|a| a.id.clone());
+                        ids.extend(page.into_iter().map(|a| a.id.native_key));
                     }
-                    after = page.last().map(|a| a.id.clone());
-                    ids.extend(page.into_iter().map(|a| a.id.native_key));
+                    assert_eq!(ids, ["00000", "00001", "00002"]);
+                    assert!(STEPS.get() > 0, "VM-work probe must be active");
+                    counts.push(STEPS.get());
                 }
-                assert_eq!(ids, ["00000", "00001", "00002"]);
-                counts.push(STEPS.get());
                 let plan: Vec<String> = tx
                     .tx
                     .prepare(&format!("EXPLAIN QUERY PLAN {POSTING_SQL}"))
@@ -127,6 +142,11 @@ fn visible_keyset_steps_do_not_grow_with_hidden_postings() {
                 .unwrap()
         );
     }
-    assert!(counts[1] <= counts[0] * 2 && counts[2] <= counts[1] * 2);
+    // Equality and all-head streams both seek only admitted, live partitions.
+    // A visibility-unfiltered scan or paging through retracted objects grows
+    // VM work with the fixture size and fails these exact-work assertions.
     assert_eq!(counts[0], counts[2]);
+    assert_eq!(counts[2], counts[4]);
+    assert_eq!(counts[1], counts[3]);
+    assert_eq!(counts[3], counts[5]);
 }

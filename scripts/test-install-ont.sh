@@ -257,9 +257,17 @@ set -e
 [ -z "$(find "$BIN1" -name '.ont.*')" ] || fail 'stray failed-install temporary'
 rm "$TMP/tools/install"
 # Refuse before cargo, and record that df received the mktemp build path.
-printf '#!/bin/sh\nprintf "%%s\\n" "$3" >"$ONT_DF_LOG"\nprintf "Avail\\n0G\\n"\n' >"$TMP/tools/df"
+printf '#!/bin/sh\nprintf "%%s\\n" "$3" >"$ONT_DF_LOG"\nprintf "Avail\\n${ONT_TEST_AVAIL:-9}G\\n"\n' >"$TMP/tools/df"
 chmod +x "$TMP/tools/df"
-expect_refusal 'free space on the build file system is under 18 GiB' env PATH="$TMP/tools:$PATH" ONT_DF_LOG="$TMP/df-path" TMPDIR="$TMP" ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" "$INSTALL" install "$GOOD"
+expect_refusal 'free space on the build file system is under 10 GiB' env PATH="$TMP/tools:$PATH" ONT_DF_LOG="$TMP/df-path" TMPDIR="$TMP" ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" "$INSTALL" install "$GOOD"
 case $(cat "$TMP/df-path") in "$TMP"/tmp.*) ;; *) fail 'df did not inspect temporary build directory' ;; esac
 
+# At exactly 10 GiB, the guard passes and the disposable build reaches cargo.
+printf '#!/bin/sh\nexit 77\n' >"$TMP/tools/cargo"
+chmod +x "$TMP/tools/cargo"
+set +e
+env PATH="$TMP/tools:$PATH" ONT_TEST_AVAIL=10 ONT_DF_LOG="$TMP/df-path" TMPDIR="$TMP" ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" "$INSTALL" install "$GOOD" >"$TMP/ten-gib" 2>&1
+code=$?
+set -e
+[ "$code" -eq 77 ] || fail "10 GiB did not reach the stand-in cargo (status $code)"
 printf 'test-install-ont: PASS\n'

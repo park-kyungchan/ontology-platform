@@ -231,7 +231,7 @@ shares its per-type allowance across all hops. Numeric limits:
 | `aggregate` | 10,000 admitted candidates per operation | 2 group keys, 1 count metric, 1,000 buckets, 1,024 bytes/group value |
 | `render` | 10,000 admitted candidates across all pages | 1-1,000 displayed rows, default 200; exact omitted count |
 | One observation | `ont_core::MAX_OBSERVATION_BYTES` = 65,536 canonical UTF-8 JSON bytes | `ont_core::MAX_OBSERVATION_ARRAY_ITEMS` = 1,024 items in every array, including nested arrays |
-| `get` history | `ont_store::schema_mode::MAX_HISTORY_OBSERVATIONS` = 100 observations | Larger history refuses `result_too_large` before copying any payload; no continuation |
+| `get` history | `ont_store::schema_mode::MAX_HISTORY_OBSERVATIONS` = 100 observations | Newest 100 rows in append order; `basis.older_omitted` counts older rows from SQL metadata after admission; no continuation |
 
 All observation writers share `ont_core::observation_payload` before writing any
 row of that observation. Either bound refuses `observation_too_large`. Indexed
@@ -248,8 +248,13 @@ Legacy over-bound heads are excluded by `search`, `around` and `aggregate`:
 and each consumes the scan allowance (`around` counts each unique head once).
 Hidden heads affect no visible count. `render` refuses `observation_too_large`
 if any page excludes an oversized head, instead of publishing an incomplete block.
-`get` admits metadata before loading history
-and refuses `observation_too_large` for any over-bound historical observation.
+`get` admits metadata before counting or loading history. Its newest-100 window
+includes the head; `basis.oversized_excluded` counts over-bound nonhead rows left
+out of that window, without backfilling from older rows. This count and
+`basis.older_omitted` are disjoint. An over-bound head still refuses
+`observation_too_large`; a valid head superseding a bad old row is readable.
+The task Lead or store operator must repair an over-bound head by hand before
+`get` can read that object. The engine can no longer write an over-bound observation.
 An identical-schema projection rebuild preserves uncertain postings for these
 heads, so equality-filtered reads also count their exclusion without loading them.
 These bounds change neither schema format nor store format 4.

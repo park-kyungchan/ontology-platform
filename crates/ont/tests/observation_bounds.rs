@@ -326,37 +326,70 @@ fn legacy_byte_array_and_utf8_poison_excluded_by_set_reads_get_refuses() {
     }
 }
 #[test]
-fn get_history_bound_precedes_payload_loading() {
+fn get_150_observations_returns_latest_100_and_omitted_50() {
     let t = Temp::new();
     let mut item = row("history", "ok");
-    t.put(&[item.clone()]);
-    for i in 1..100 {
+    let mut rows = vec![item.clone()];
+    for i in 1..150 {
         item.observation.supersedes = Some(item.observation.revision.clone());
         item.observation.revision = format!("r{i}");
         item.observation.change = Change::Update;
-        t.put(&[item.clone()]);
+        rows.push(item.clone());
     }
-    let req = json!({"id":item.id});
-    let answer = t.cli("get", req.clone());
+    t.put(&rows);
+    // Even undecodable older rows must never be loaded by the recent window.
+    let db = rusqlite::Connection::open(t.path()).unwrap();
+    db.execute(
+        "UPDATE observations SET payload='invalid' WHERE ordinal<50",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    // Repair the projection after synthetic corruption, without reading old rows.
+    t.store()
+        .install_schema(t.schema.to_string().as_bytes(), Default::default())
+        .unwrap();
+    let answer = t.cli("get", json!({"id":item.id}));
+    assert_eq!(answer["status"], "ok", "{answer}");
+    let object = &answer["result"]["objects"][0];
+    let observations = object["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 100);
+    assert_eq!(object["head"], "r149");
+    let revisions: Vec<_> = observations
+        .iter()
+        .map(|o| o["revision"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        revisions,
+        (50..150).map(|i| format!("r{i}")).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        answer["result"]["basis"],
+        json!({"older_omitted":50,"oversized_excluded":0})
+    );
+    let db = rusqlite::Connection::open(t.path()).unwrap();
+    db.execute(
+        "UPDATE observations SET payload=?1 WHERE ordinal=75",
+        ["!".repeat(BYTES + 1)],
+    )
+    .unwrap();
+    drop(db);
+    t.store()
+        .install_schema(t.schema.to_string().as_bytes(), Default::default())
+        .unwrap();
+    let answer = t.cli("get", json!({"id":item.id}));
+    assert_eq!(answer["status"], "ok", "{answer}");
     assert_eq!(
         answer["result"]["objects"][0]["observations"]
             .as_array()
             .unwrap()
             .len(),
-        100
+        99
     );
-    item.observation.supersedes = Some(item.observation.revision.clone());
-    item.observation.revision = "r100".into();
-    t.put(&[item]);
-    let db = rusqlite::Connection::open(t.path()).unwrap();
-    db.execute(
-        "UPDATE observations SET payload='invalid' WHERE ordinal=0",
-        [],
-    )
-    .unwrap();
-    drop(db);
-    // A decode-first or count-after-copy implementation gets store_failure here.
-    assert_eq!(t.cli("get", req)["code"], "result_too_large");
+    assert_eq!(
+        answer["result"]["basis"],
+        json!({"older_omitted":50,"oversized_excluded":1})
+    );
 }
 
 #[test]
@@ -381,7 +414,7 @@ fn repeated_links_count_one_oversized_head_once() {
 }
 
 #[test]
-fn get_checks_non_head_historical_observations() {
+fn get_excludes_superseded_oversized_observation() {
     let t = Temp::new();
     t.put(&[row("history", "old")]);
     t.legacy("history", &"!".repeat(BYTES + 1));
@@ -393,10 +426,21 @@ fn get_checks_non_head_historical_observations() {
     let answer = t.cli("search", json!({"object_type":"node"}));
     assert_eq!(answer["result"]["basis"]["qualified"], true);
     assert_eq!(answer["result"]["basis"]["oversized_excluded"], 0);
+    let answer = t.cli("get", json!({"id":item.id}));
+    assert_eq!(answer["status"], "ok", "{answer}");
     assert_eq!(
-        t.cli("get", json!({"id":item.id}))["code"],
-        "observation_too_large"
+        answer["result"]["basis"],
+        json!({"older_omitted":0,"oversized_excluded":1})
     );
+    let object = &answer["result"]["objects"][0];
+    assert_eq!(object["head"], "new");
+    let revisions: Vec<_> = object["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["revision"].as_str().unwrap())
+        .collect();
+    assert_eq!(revisions, ["r0", "new"]);
 }
 
 #[test]
@@ -411,5 +455,78 @@ fn render_refuses_oversized_legacy_heads_instead_of_omitting_rows() {
         // render must fail rather than publish a quietly incomplete board.
         let answer = t.cli("render", json!({"view":"all_nodes","args":{}}));
         assert_eq!(answer["code"], "observation_too_large", "{answer}");
+    }
+}
+
+#[test]
+fn array_bound_is_per_array_not_total_items() {
+    let mut observation = row("two-arrays", "").observation;
+    observation.fields.insert(
+        "values".into(),
+        Knowledge::Value(json!({
+            "left": vec![0; ITEMS], "right": vec![0; ITEMS]
+        })),
+    );
+    assert!(ont_core::observation_payload(&observation).is_ok());
+}
+
+#[test]
+fn hidden_oversized_head_changes_no_set_read_answer_or_counter() {
+    let mut t = Temp::new();
+    t.schema["version"] = json!(2);
+    // This fixture needs only Ontology-owned types; file-source schemas have
+    // no scope-key mapping and must remain unscoped.
+    t.schema["sources"] = json!({});
+    t.schema["object_types"]
+        .as_object_mut()
+        .unwrap()
+        .remove("indexed");
+    t.schema["grants"][0]["read"] = json!(["node", "sentinel"]);
+    t.schema["grants"][0]["derive"] = json!(["node"]);
+    t.schema["scope_keys"] = json!(["tenant"]);
+    t.schema["grants"][0]["scope"] = json!({"tenant":"public"});
+    t.store()
+        .install_schema(t.schema.to_string().as_bytes(), Default::default())
+        .unwrap();
+    let mut good = row("good", "ok");
+    good.scope = Scope::domain(
+        good.id.namespace.clone(),
+        "test",
+        BTreeMap::from([("tenant".into(), "public".into())]),
+    )
+    .unwrap();
+    let mut hidden = row("hidden", "");
+    hidden.scope = Scope::domain(
+        hidden.id.namespace.clone(),
+        "test",
+        BTreeMap::from([("tenant".into(), "private".into())]),
+    )
+    .unwrap();
+    good.observation
+        .fields
+        .insert("edges".into(), Knowledge::Value(json!([hidden.id])));
+    t.put(&[good]);
+    let reads = [
+        ("search", json!({"object_type":"node"})),
+        (
+            "around",
+            json!({"from":{"object_type":"node"},"path":["next"]}),
+        ),
+        (
+            "aggregate",
+            json!({"object_type":"node","metrics":["count"]}),
+        ),
+    ];
+    let baseline: Vec<_> = reads
+        .iter()
+        .map(|(cmd, req)| t.cli(cmd, req.clone()))
+        .collect();
+    t.put(&[hidden]);
+    t.legacy("hidden", &"!".repeat(BYTES + 1));
+    for ((cmd, req), expected) in reads.into_iter().zip(baseline) {
+        let answer = t.cli(cmd, req);
+        assert_eq!(answer["status"], "ok", "{cmd}: {answer}");
+        assert_eq!(answer["result"]["basis"]["oversized_excluded"], 0);
+        assert_eq!(answer, expected, "hidden head changed {cmd}");
     }
 }

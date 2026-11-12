@@ -1,11 +1,12 @@
-//! `get`: at most 100 historical observations, after principal admission. An
+//! `get`: the newest 100 history rows in append order, after admission. An
 //! object the principal may not read and an object that does not exist give
 //! the same answer (`unavailable`).
 use crate::principal::Principal;
 use crate::refusal::{open_store, st};
 use crate::{Answer, Context, Failure, Refusal, internal, pin_json};
-use ont_core::schema::SchemaPin;
+use ont_core::schema::{SchemaPin, SchemaSet};
 use ont_core::{Id, Object, Query, Response, Snapshot};
+use ont_store::schema_mode::{HeadAccess, SchemaHistory, SchemaRead, StoreRefusal};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -51,11 +52,24 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     st!(store.read_schema(|tx| read_get(ctx, req, tx)))
 }
-fn read_get(
-    ctx: &Context,
-    req: &GetRequest,
-    tx: &ont_store::schema_mode::SchemaRead<'_>,
-) -> Result<Answer, Failure> {
+// Keep admission and the metadata count/load boundary observable in tests.
+trait GetSource {
+    fn schema_set(&self) -> &SchemaSet;
+    fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal>;
+    fn history(&self, id: &Id) -> Result<Option<SchemaHistory>, StoreRefusal>;
+}
+impl GetSource for SchemaRead<'_> {
+    fn schema_set(&self) -> &SchemaSet {
+        self.schema_set()
+    }
+    fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
+        self.head_access(id)
+    }
+    fn history(&self, id: &Id) -> Result<Option<SchemaHistory>, StoreRefusal> {
+        self.history(id)
+    }
+}
+fn read_get(ctx: &Context, req: &GetRequest, tx: &dyn GetSource) -> Result<Answer, Failure> {
     let set = tx.schema_set();
     let principal = Principal::bind(set)?;
     let admission = principal
@@ -116,6 +130,10 @@ fn read_get(
     if revision != policy_revision {
         return Err(Failure::Internal(internal!("authority_generation_changed")));
     }
+    result["basis"] = serde_json::json!({
+        "older_omitted": history.older_omitted,
+        "oversized_excluded": history.oversized_excluded,
+    });
     // Attach each observation's stored pin.
     let pin_by_revision: BTreeMap<&str, &SchemaPin> = history
         .observations
@@ -172,3 +190,7 @@ fn invalid_id(req: &GetRequest) -> Failure {
     )
     .into()
 }
+
+#[cfg(test)]
+#[path = "get_tests.rs"]
+mod tests;

@@ -24,7 +24,7 @@ use std::time::Duration;
 mod candidates;
 pub use candidates::CandidateCondition;
 
-/// A get/history load refuses before copying more than this many observations.
+/// Maximum recent history window copied by get/history, including the head.
 pub const MAX_HISTORY_OBSERVATIONS: usize = 100;
 
 // CASE short-circuits: do not parse an over-byte-limit legacy payload, and
@@ -244,6 +244,10 @@ pub struct SchemaHead {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaHistory {
+    /// Rows older than the recent window; counted without loading payloads.
+    pub older_omitted: u64,
+    /// Over-bound nonhead rows excluded from that window (no backfill).
+    pub oversized_excluded: u64,
     pub id: Id,
     pub scope: Scope,
     pub head: String,
@@ -1069,16 +1073,13 @@ fn history_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHistory>,
         return Ok(None);
     };
     let scope = decode_scope(&scope_raw)?;
-    let count: usize = map_db(connection.query_row(
-        &format!("SELECT count(*) FROM (SELECT 1 FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 LIMIT {})", MAX_HISTORY_OBSERVATIONS + 1),
+    let count: u64 = map_db(connection.query_row(
+        "SELECT count(*) FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4",
         params![id.object_type, id.namespace.instance, id.namespace.account, id.native_key],
         |r| r.get(0),
     ))?;
-    if count > MAX_HISTORY_OBSERVATIONS {
-        return Err(StoreRefusal::new("result_too_large"));
-    }
     let mut stmt = map_db(connection.prepare(
-        &format!("SELECT {}, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 ORDER BY ob.ordinal LIMIT {}", bounded_payload_sql(), MAX_HISTORY_OBSERVATIONS),
+        &format!("SELECT {}, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256, ob.revision FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 ORDER BY ob.ordinal DESC LIMIT {}", bounded_payload_sql(), MAX_HISTORY_OBSERVATIONS),
     ))?;
     let rows = map_db(stmt.query_map(
         params![
@@ -1095,31 +1096,46 @@ fn history_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHistory>,
                 r.get::<_, String>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         },
     ))?;
     let mut observations = Vec::new();
     let mut retracted = false;
     let mut pin: Option<SchemaPin> = None;
-    for row in rows {
-        let (payload, ingested_at, kind, domain, version, sha) = map_db(row)?;
-        retracted = kind == "retraction";
+    let mut oversized_excluded = 0;
+    for (index, row) in rows.enumerate() {
+        let (payload, ingested_at, kind, domain, version, sha, revision) = map_db(row)?;
+        if index == 0 && revision != head {
+            return Err(StoreRefusal::store_failure());
+        }
+        if payload.is_none() && revision != head {
+            oversized_excluded += 1;
+            continue;
+        }
         let p = SchemaPin {
             domain,
             version: to_u64(version)?,
             sha256: sha,
         };
-        pin = Some(p.clone());
+        if index == 0 {
+            retracted = kind == "retraction";
+            pin = Some(p.clone());
+        }
         observations.push(SchemaObservation {
             observation: decode_observation(&payload_value(payload)?)?,
             ingested_at: to_u64(ingested_at)?,
             schema_pin: p,
         });
     }
+    // Keep the existing append order within the newest window; the head is last.
+    observations.reverse();
     if observations.last().map(|o| &o.observation.revision) != Some(&head) {
         return Err(StoreRefusal::store_failure());
     }
     Ok(Some(SchemaHistory {
+        older_omitted: count.saturating_sub(MAX_HISTORY_OBSERVATIONS as u64),
+        oversized_excluded,
         retracted,
         schema_pin: pin.unwrap_or(SchemaPin {
             domain: String::new(),
