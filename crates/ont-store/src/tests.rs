@@ -397,3 +397,50 @@ fn external_scope_corruption_refuses_objects_links_and_existing_scope_append() {
         assert_eq!(read(&mut store, &target), Some(target));
     }
 }
+
+#[test]
+fn v1_v2_writers_accept_exact_bound_and_reject_bound_plus_one_atomically() {
+    for mode in [StoreMode::Education, StoreMode::Program] {
+        let mut store = memory(mode);
+        let mut item = object(mode, "exact");
+        let observation = &mut item.observations[0];
+        observation.fields.insert(
+            "text".into(),
+            ont_core::Knowledge::Value(serde_json::json!("")),
+        );
+        let padding =
+            ont_core::MAX_OBSERVATION_BYTES - serde_json::to_vec(observation).unwrap().len();
+        observation.fields.insert(
+            "text".into(),
+            ont_core::Knowledge::Value(serde_json::json!("x".repeat(padding))),
+        );
+        store.seed(std::slice::from_ref(&item), &[]).unwrap();
+        let mut big = correction(&item, "r2");
+        big.observation.fields.insert(
+            "text".into(),
+            ont_core::Knowledge::Value(serde_json::json!("")),
+        );
+        let padding = ont_core::MAX_OBSERVATION_BYTES + 1
+            - serde_json::to_vec(&big.observation).unwrap().len();
+        big.observation.fields.insert(
+            "text".into(),
+            ont_core::Knowledge::Value(serde_json::json!("x".repeat(padding))),
+        );
+        assert_eq!(
+            serde_json::to_vec(&big.observation).unwrap().len(),
+            ont_core::MAX_OBSERVATION_BYTES + 1
+        );
+        let small = object(mode, "before-refusal");
+        let small_append = Append {
+            id: small.id.clone(),
+            scope: small.scope.clone(),
+            observation: small.observations[0].clone(),
+        };
+        assert_eq!(
+            store.append_batch(&[small_append, big]),
+            Err(Error::ObservationTooLarge)
+        );
+        assert_eq!(read(&mut store, &item), Some(item));
+        assert_eq!(read(&mut store, &small), None);
+    }
+}

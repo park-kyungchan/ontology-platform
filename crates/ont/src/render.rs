@@ -322,6 +322,12 @@ fn read_render(
         else {
             return Err(crate::internal!("render_search_failed").into());
         };
+        if result["basis"]["oversized_excluded"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+        {
+            return Err(Refusal::new(ont_core::Error::ObservationTooLarge.code()).into());
+        }
         scanned += result["basis"]["scanned"].as_u64().unwrap_or(0);
         if scanned > crate::search::SCAN_LIMIT as u64 {
             return Err(Refusal::new("result_too_large").into());

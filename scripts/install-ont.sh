@@ -158,7 +158,7 @@ do_install() {
     local avail_gib
     avail_gib=$(df -BG --output=avail "$tmp" | tail -n 1 | tr -dc '0-9')
     [ -n "$avail_gib" ] || avail_gib=0
-    [ "$avail_gib" -ge 18 ] || refuse "free space on the build file system is under 18 GiB"
+    [ "$avail_gib" -ge 10 ] || refuse "free space on the build file system is under 10 GiB"
     mkdir -p "$tmp/src" "$tmp/target"
     git -C "$REPO_ROOT" archive "$commit" | tar -x -C "$tmp/src"
     # The build script reads the build commit from git HEAD; give the

@@ -10,7 +10,10 @@ use super::{
     Append, Store, StoreMode, db, decode, open_file, open_file_no_create, open_file_read_only,
 };
 use ont_core::schema::{PropertyType, Schema, SchemaPin, SchemaSet, Violation, codes};
-use ont_core::{Change, Error, Id, Knowledge, Observation, Scope};
+use ont_core::{
+    Change, Error, Id, Knowledge, MAX_OBSERVATION_ARRAY_ITEMS, MAX_OBSERVATION_BYTES, Observation,
+    Scope,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +23,32 @@ use std::time::Duration;
 #[path = "candidates.rs"]
 mod candidates;
 pub use candidates::CandidateCondition;
+
+/// Maximum recent history window copied by get/history, including the head.
+pub const MAX_HISTORY_OBSERVATIONS: usize = 100;
+
+// CASE short-circuits: do not parse an over-byte-limit legacy payload, and
+// never return either over-bound payload to the Rust row decoder. octet_length
+// reads stored byte-length metadata; length(TEXT) counts Unicode characters,
+// and length(CAST(TEXT AS BLOB)) materializes the body before measuring it.
+fn bounded_payload_sql() -> String {
+    format!("CASE WHEN octet_length(ob.payload) > {MAX_OBSERVATION_BYTES} THEN NULL
+        WHEN EXISTS(SELECT 1 FROM json_tree(ob.payload) j
+            WHERE CASE WHEN j.type='array' THEN json_array_length(j.value) > {MAX_OBSERVATION_ARRAY_ITEMS} ELSE 0 END)
+        THEN NULL ELSE ob.payload END")
+}
+#[cfg(test)]
+thread_local! { static PAYLOAD_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+fn payload_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
+    #[cfg(test)]
+    if !matches!(row.get_ref(index)?, rusqlite::types::ValueRef::Null) {
+        PAYLOAD_COPIES.set(PAYLOAD_COPIES.get() + 1);
+    }
+    row.get(index)
+}
+fn payload_value(payload: Option<String>) -> Result<String, StoreRefusal> {
+    payload.ok_or_else(|| StoreRefusal::from(Error::ObservationTooLarge))
+}
 
 /// A schema-mode refusal: a stable code, and for `schema_violation` the
 /// first violation (its code and JSON pointer) that caused it.
@@ -215,6 +244,10 @@ pub struct SchemaHead {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaHistory {
+    /// Rows older than the recent window; counted without loading payloads.
+    pub older_omitted: u64,
+    /// Over-bound nonhead rows excluded from that window (no backfill).
+    pub oversized_excluded: u64,
     pub id: Id,
     pub scope: Scope,
     pub head: String,
@@ -271,6 +304,10 @@ pub struct SchemaRead<'a> {
     schemas: SchemaSet,
 }
 impl SchemaRead<'_> {
+    /// Call only after admitting identity/scope in this same read snapshot.
+    pub fn history(&self, id: &Id) -> Result<Option<SchemaHistory>, StoreRefusal> {
+        history_in(self.tx, id)
+    }
     pub fn schema_set(&self) -> &SchemaSet {
         &self.schemas
     }
@@ -429,8 +466,8 @@ impl Store {
         candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
-    /// Open an existing format 4 store read-only. A format 3 store is
-    /// migrated once through a writable connection before reopening read-only.
+    /// Open an existing format 4 store read-only. Format 3 or older projection
+    /// semantics upgrade once through a writable connection, then reopen read-only.
     /// No create flag is used, and an
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
@@ -465,7 +502,7 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
-        if !writable && !candidates::exists(&store.connection)? {
+        if !writable && !candidates::semantics_current(&store.connection)? {
             drop(store);
             drop(Self::open_schema_existing_with(path, true)?);
             return Self::open_schema_existing_with(path, false);
@@ -560,7 +597,7 @@ impl Store {
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
+                payload_column(r, 3)?,
             ))
         }))?;
         let mut out: BTreeMap<String, InstallProvenance> = BTreeMap::new();
@@ -990,11 +1027,11 @@ fn head_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHead>, Store
     };
     let scope = decode_scope(&scope_raw)?;
     let row = map_db(connection.query_row(
-        "SELECT ob.payload, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 AND ob.revision=?5",
+        &format!("SELECT {}, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 AND ob.revision=?5", bounded_payload_sql()),
         params![id.object_type, id.namespace.instance, id.namespace.account, id.native_key, head],
         |r| {
             Ok((
-                r.get::<_, String>(0)?,
+                payload_column(r, 0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
@@ -1019,7 +1056,7 @@ fn head_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHead>, Store
         id: id.clone(),
         scope,
         head: SchemaObservation {
-            observation: decode_observation(&payload)?,
+            observation: decode_observation(&payload_value(payload)?)?,
             ingested_at: to_u64(ingested_at)?,
             schema_pin: pin,
         },
@@ -1036,8 +1073,13 @@ fn history_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHistory>,
         return Ok(None);
     };
     let scope = decode_scope(&scope_raw)?;
+    let count: u64 = map_db(connection.query_row(
+        "SELECT count(*) FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4",
+        params![id.object_type, id.namespace.instance, id.namespace.account, id.native_key],
+        |r| r.get(0),
+    ))?;
     let mut stmt = map_db(connection.prepare(
-        "SELECT ob.payload, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 ORDER BY ob.ordinal",
+        &format!("SELECT {}, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256, ob.revision FROM observations ob JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE ob.object_type=?1 AND ob.instance=?2 AND ob.account=?3 AND ob.native_key=?4 ORDER BY ob.ordinal DESC LIMIT {}", bounded_payload_sql(), MAX_HISTORY_OBSERVATIONS),
     ))?;
     let rows = map_db(stmt.query_map(
         params![
@@ -1048,37 +1090,52 @@ fn history_in(connection: &Connection, id: &Id) -> Result<Option<SchemaHistory>,
         ],
         |r| {
             Ok((
-                r.get::<_, String>(0)?,
+                payload_column(r, 0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         },
     ))?;
     let mut observations = Vec::new();
     let mut retracted = false;
     let mut pin: Option<SchemaPin> = None;
-    for row in rows {
-        let (payload, ingested_at, kind, domain, version, sha) = map_db(row)?;
-        retracted = kind == "retraction";
+    let mut oversized_excluded = 0;
+    for (index, row) in rows.enumerate() {
+        let (payload, ingested_at, kind, domain, version, sha, revision) = map_db(row)?;
+        if index == 0 && revision != head {
+            return Err(StoreRefusal::store_failure());
+        }
+        if payload.is_none() && revision != head {
+            oversized_excluded += 1;
+            continue;
+        }
         let p = SchemaPin {
             domain,
             version: to_u64(version)?,
             sha256: sha,
         };
-        pin = Some(p.clone());
+        if index == 0 {
+            retracted = kind == "retraction";
+            pin = Some(p.clone());
+        }
         observations.push(SchemaObservation {
-            observation: decode_observation(&payload)?,
+            observation: decode_observation(&payload_value(payload)?)?,
             ingested_at: to_u64(ingested_at)?,
             schema_pin: p,
         });
     }
+    // Keep the existing append order within the newest window; the head is last.
+    observations.reverse();
     if observations.last().map(|o| &o.observation.revision) != Some(&head) {
         return Err(StoreRefusal::store_failure());
     }
     Ok(Some(SchemaHistory {
+        older_omitted: count.saturating_sub(MAX_HISTORY_OBSERVATIONS as u64),
+        oversized_excluded,
         retracted,
         schema_pin: pin.unwrap_or(SchemaPin {
             domain: String::new(),
@@ -1119,7 +1176,7 @@ fn scan_in(
     };
     let limit_i64 = to_i64(limit as u64)?;
     let mut stmt = map_db(connection.prepare(
-        "SELECT o.object_type, o.instance, o.account, o.native_key, o.scope, ob.payload, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM objects o JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE o.object_type=?1 AND (o.instance,o.account,o.native_key)>(?2,?3,?4) AND ob.change_kind!='retraction' ORDER BY o.instance,o.account,o.native_key LIMIT ?5",
+        &format!("SELECT o.object_type, o.instance, o.account, o.native_key, o.scope, {}, ob.ingested_at, ob.change_kind, si.domain, si.version, si.sha256 FROM objects o JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head JOIN schema_installs si ON si.domain=ob.schema_domain AND si.version=ob.schema_version WHERE o.object_type=?1 AND (o.instance,o.account,o.native_key)>(?2,?3,?4) AND ob.change_kind!='retraction' ORDER BY o.instance,o.account,o.native_key LIMIT ?5", bounded_payload_sql()),
     ))?;
     let rows = map_db(
         stmt.query_map(params![object_type, inst, acc, key, limit_i64], |r| {
@@ -1129,7 +1186,7 @@ fn scan_in(
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
+                payload_column(r, 5)?,
                 r.get::<_, i64>(6)?,
                 r.get::<_, String>(7)?,
                 r.get::<_, String>(8)?,
@@ -1158,7 +1215,7 @@ fn scan_in(
             },
             scope: decode_scope(&scope_raw)?,
             head: SchemaObservation {
-                observation: decode_observation(&payload)?,
+                observation: decode_observation(&payload_value(payload)?)?,
                 ingested_at: to_u64(ingested_at)?,
                 schema_pin: pin.clone(),
             },
@@ -1329,6 +1386,7 @@ pub(crate) fn append_schema_in(
         scope,
         observation,
     } = item;
+    let payload = ont_core::observation_payload(observation).map_err(StoreRefusal::from)?;
     id.validate().map_err(StoreRefusal::from)?;
     if observation.change == Change::Initial && observation.supersedes.is_some() {
         return Err(StoreRefusal::schema(violation(
@@ -1409,14 +1467,14 @@ pub(crate) fn append_schema_in(
         .pin(&decl.domain)
         .ok_or_else(|| StoreRefusal::from(Error::StoreFailure))?;
     let existing = map_db(tx.query_row(
-        "SELECT o.scope, o.head, ob.change_kind, ob.payload FROM objects o JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND o.instance=?2 AND o.account=?3 AND o.native_key=?4",
+        &format!("SELECT o.scope, o.head, ob.change_kind, {} FROM objects o JOIN observations ob ON ob.object_type=o.object_type AND ob.instance=o.instance AND ob.account=o.account AND ob.native_key=o.native_key AND ob.revision=o.head WHERE o.object_type=?1 AND o.instance=?2 AND o.account=?3 AND o.native_key=?4", bounded_payload_sql()),
         params![id.object_type, id.namespace.instance, id.namespace.account, id.native_key],
         |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
+                payload_column(r, 3)?,
             ))
         },
     ).optional())?;
@@ -1473,7 +1531,7 @@ pub(crate) fn append_schema_in(
                         }
                         if observation.change == Change::Refresh {
                             let head_obs: Observation =
-                                decode(head_payload).map_err(StoreRefusal::from)?;
+                                decode_observation(&payload_value(head_payload.clone())?)?;
                             if head_obs.fields != observation.fields {
                                 return Err(StoreRefusal::schema(violation(
                                     codes::REFRESH_FIELDS_DIFFER,
@@ -1487,8 +1545,6 @@ pub(crate) fn append_schema_in(
             }
         }
     }
-    let payload =
-        serde_json::to_string(observation).map_err(|_| StoreRefusal::from(Error::StoreFailure))?;
     map_db(tx.execute(
         "INSERT INTO observations(object_type,instance,account,native_key,revision,ordinal,payload,ingested_at,schema_domain,schema_version,change_kind) SELECT ?1,?2,?3,?4,?5,COALESCE(MAX(ordinal),-1)+1,?6,?7,?8,?9,?10 FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4",
         params![
@@ -1595,5 +1651,103 @@ mod provenance_tests {
         );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod observation_bound_tests {
+    use super::*;
+    #[test]
+    fn over_bound_head_history_and_scan_copy_zero_payloads() {
+        let mut store = Store::memory_schema().unwrap();
+        let schema = serde_json::json!({"format":"ontology-schema/v1","domain":"test","version":1,
+            "namespace":{"instance":"test","account":"root"},"object_types":{"node":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}}}});
+        store
+            .install_schema(schema.to_string().as_bytes(), InstallArgs::default())
+            .unwrap();
+        let id = Id {
+            object_type: "node".into(),
+            namespace: ont_core::Namespace {
+                instance: "test".into(),
+                account: "root".into(),
+            },
+            native_key: "bad".into(),
+        };
+        let scope = Scope::domain(id.namespace.clone(), "test", BTreeMap::new()).unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO objects VALUES ('node','test','root','bad',?1,'legacy')",
+                [serde_json::to_string(&scope).unwrap()],
+            )
+            .unwrap();
+        for payload in [
+            "!".repeat(MAX_OBSERVATION_BYTES + 1),
+            format!("[{}]", vec!["0"; MAX_OBSERVATION_ARRAY_ITEMS + 1].join(",")),
+        ] {
+            store
+                .connection
+                .execute("DELETE FROM observations", [])
+                .unwrap();
+            store.connection.execute("INSERT INTO observations VALUES ('node','test','root','bad','legacy',0,?1,1,'test',1,'initial')", [payload]).unwrap();
+            PAYLOAD_COPIES.set(0);
+            assert_eq!(store.head(&id).unwrap_err().code, "observation_too_large");
+            assert_eq!(
+                store.history(&id).unwrap_err().code,
+                "observation_too_large"
+            );
+            assert_eq!(
+                store.scan_heads("node", 1, None).unwrap_err().code,
+                "observation_too_large"
+            );
+            assert_eq!(PAYLOAD_COPIES.get(), 0);
+        }
+    }
+    #[test]
+    fn sql_byte_guard_reads_column_length_metadata_only() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE observations(payload TEXT)")
+            .unwrap();
+        let mut stmt = db
+            .prepare(&format!(
+                "EXPLAIN SELECT {} FROM observations ob",
+                bounded_payload_sql()
+            ))
+            .unwrap();
+        let ops: Vec<(String, u8)> = stmt
+            .query_map([], |r| Ok((r.get(1)?, r.get(6)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let first_column = ops.iter().find(|(op, _)| op == "Column").unwrap();
+        // Bundled SQLite's OPFLAG_BYTELENARG=0xc0 asks OP_Column for the
+        // encoded byte length without materializing a TEXT or BLOB body.
+        // length(CAST(payload AS BLOB)) has flag 0 and fails this regression.
+        assert_eq!(first_column.1 & 0xc0, 0xc0);
+    }
+    #[test]
+    fn sql_guard_returns_null_not_an_over_bound_payload() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE observations(payload TEXT)")
+            .unwrap();
+        for payload in [
+            "!".repeat(MAX_OBSERVATION_BYTES + 1),
+            format!("[{}]", vec!["0"; MAX_OBSERVATION_ARRAY_ITEMS + 1].join(",")),
+        ] {
+            db.execute("DELETE FROM observations", []).unwrap();
+            db.execute("INSERT INTO observations VALUES (?1)", [payload])
+                .unwrap();
+            // Inspect the SQL result itself: no payload bytes can reach r.get
+            // or the observation decoder when SQLite returns NULL instead.
+            let projected: Option<String> = db
+                .query_row(
+                    &format!("SELECT {} FROM observations ob", bounded_payload_sql()),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(projected, None);
+        }
     }
 }

@@ -15,6 +15,33 @@ pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
         |r| r.get(0),
     ))
 }
+// Bump whenever posting meaning changes; generation equality alone cannot
+// certify a projection built by an older engine. Zero/missing means unversioned.
+const SEMANTICS_VERSION: i64 = 1;
+fn has_generation_column(c: &Connection, name: &str) -> Result<bool, StoreRefusal> {
+    map_db(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name=?1)",
+        [name],
+        |r| r.get(0),
+    ))
+}
+pub(super) fn semantics_current(c: &Connection) -> Result<bool, StoreRefusal> {
+    if !exists(c)?
+        || !has_generation_column(c, "semantics_version")?
+        || !has_generation_column(c, "semantics_projected")?
+    {
+        return Ok(false);
+    }
+    let recorded = map_db(
+        c.query_row(
+            "SELECT semantics_version,semantics_projected=projected FROM candidate_generation WHERE singleton=1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+        )
+        .optional(),
+    )?;
+    Ok(recorded == Some((SEMANTICS_VERSION, true)))
+}
 pub(super) type TriggerCache = std::cell::Cell<Option<(i64, bool)>>;
 fn triggers() -> impl Iterator<Item = (String, String)> {
     ["objects", "observations", "schema_installs"]
@@ -61,10 +88,15 @@ pub(super) fn repair_triggers(c: &Connection) -> Result<(), StoreRefusal> {
     }
     Ok(())
 }
-const GENERATION_CHECK: &str =
-    "SELECT mutation=projected FROM candidate_generation WHERE singleton=1";
+const GENERATION_CHECK: &str = "SELECT mutation=projected AND semantics_projected=projected,semantics_version FROM candidate_generation WHERE singleton=1";
 pub(super) fn current(c: &Connection, cache: &TriggerCache) -> Result<bool, StoreRefusal> {
-    Ok(protected(c, cache)? && map_db(c.query_row(GENERATION_CHECK, [], |r| r.get(0)))?)
+    if !protected(c, cache)? {
+        return Ok(false);
+    }
+    let (projected, semantics) = map_db(c.query_row(GENERATION_CHECK, [], |r| {
+        Ok((r.get::<_, bool>(0)?, r.get::<_, i64>(1)?))
+    }))?;
+    Ok(projected && semantics == SEMANTICS_VERSION)
 }
 pub(super) fn require_current(c: &Connection, cache: &TriggerCache) -> Result<(), StoreRefusal> {
     if current(c, cache)? {
@@ -75,8 +107,8 @@ pub(super) fn require_current(c: &Connection, cache: &TriggerCache) -> Result<()
 }
 pub(super) fn checkpoint(c: &Connection) -> Result<(), StoreRefusal> {
     map_db(c.execute(
-        "UPDATE candidate_generation SET projected=mutation WHERE singleton=1",
-        [],
+        "UPDATE candidate_generation SET projected=mutation,semantics_projected=mutation,semantics_version=?1 WHERE singleton=1",
+        [SEMANTICS_VERSION],
     ))?;
     Ok(())
 }
@@ -87,12 +119,28 @@ pub(super) fn project(
     set: &SchemaSet,
     head: &SchemaHead,
 ) -> Result<(), StoreRefusal> {
-    let id = &head.id;
+    project_access(
+        c,
+        set,
+        &HeadAccess {
+            id: head.id.clone(),
+            scope: head.scope.clone(),
+            retracted: head.retracted,
+        },
+        Some((&head.head.observation, &head.schema_pin)),
+    )
+}
+fn project_access(
+    c: &Connection,
+    set: &SchemaSet,
+    access: &HeadAccess,
+    observation: Option<(&Observation, &SchemaPin)>,
+) -> Result<(), StoreRefusal> {
+    let id = &access.id;
     map_db(c.execute("DELETE FROM head_candidates WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key]))?;
-    if head.retracted {
+    if access.retracted {
         return Ok(());
     }
-    let obs = &head.head.observation;
     let schema = set
         .schema_of(&id.object_type)
         .ok_or_else(StoreRefusal::store_failure)?;
@@ -107,24 +155,27 @@ pub(super) fn project(
             grant.scope.clone(),
         )
         .map_err(StoreRefusal::from)?;
-        if grant.read.contains(&id.object_type) && scope.matches(&head.scope) {
+        if grant.read.contains(&id.object_type) && scope.matches(&access.scope) {
             visibility
                 .insert(serde_json::to_string(&scope).map_err(|_| StoreRefusal::store_failure())?);
         }
     }
-    let scope_keys = match &head.scope {
+    let scope_keys = match &access.scope {
         Scope::Domain { keys, .. } => json_text(keys)?,
         _ => return Err(StoreRefusal::store_failure()),
     };
     let mut postings = vec![(String::new(), String::new())];
     if let Some(props) = set.properties(&id.object_type) {
         for p in props.keys() {
-            let value = match obs.fields.get(p) {
-                Some(Knowledge::Value(v))
+            let value = match observation {
+                Some((obs, pin))
                     if obs.coverage == ont_core::Coverage::Complete
-                        && set.pin(&head.schema_pin.domain) == Some(&head.schema_pin) =>
+                        && set.pin(&pin.domain) == Some(pin) =>
                 {
-                    format!("v{v}")
+                    match obs.fields.get(p) {
+                        Some(Knowledge::Value(v)) => format!("v{v}"),
+                        _ => "?".into(),
+                    }
                 }
                 _ => "?".into(),
             };
@@ -133,7 +184,10 @@ pub(super) fn project(
     }
     // Sixteen radix prefixes per expiry permit an ordered range to be read
     // as <=240 disjoint equality streams, each already in object-key order.
-    let expiry = format!("{:016x}", obs.fresh_until);
+    let expiry = format!(
+        "{:016x}",
+        observation.map_or(u64::MAX, |(obs, _)| obs.fresh_until)
+    );
     for n in 1..=16 {
         postings.push(("$stale".into(), expiry[..n].into()));
     }
@@ -165,13 +219,26 @@ pub(super) fn rebuild(c: &Connection, set: &SchemaSet) -> Result<(), StoreRefusa
         for ty in schema.object_types.keys() {
             let mut after = None;
             loop {
-                let heads = scan_in(c, set, ty, 256, after.as_ref())?;
+                let heads = access_in(c, None, ty, 256, after.as_ref())?;
                 if heads.is_empty() {
                     break;
                 }
                 after = heads.last().map(|h| h.id.clone());
-                for head in heads {
-                    project(c, set, &head)?;
+                for access in heads {
+                    if access.retracted {
+                        continue;
+                    }
+                    match head_after_access_in(c, &access) {
+                        Ok(Some(head)) => project(c, set, &head)?,
+                        // Preserve a visible uncertain posting for every property:
+                        // set reads must see and count an excluded legacy head,
+                        // including under an equality filter, without loading it.
+                        Err(e) if e.code == Error::ObservationTooLarge.code() => {
+                            project_access(c, set, &access, None)?
+                        }
+                        Err(e) => return Err(e),
+                        Ok(None) => return Err(StoreRefusal::store_failure()),
+                    }
                 }
             }
         }
@@ -179,17 +246,20 @@ pub(super) fn rebuild(c: &Connection, set: &SchemaSet) -> Result<(), StoreRefusa
     checkpoint(c)
 }
 pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRefusal> {
-    if exists(c)? {
+    if semantics_current(c)? {
         return Ok(());
     }
     let tx = map_db(c.transaction_with_behavior(TransactionBehavior::Immediate))?;
+    // Another opener may already have completed the upgrade while we waited.
+    if semantics_current(&tx)? {
+        return map_db(tx.commit());
+    }
     if !exists(&tx)? {
         map_db(tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS candidate_generation (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1),
             mutation INTEGER NOT NULL CHECK(typeof(mutation)='integer' AND mutation>=0),
-            projected INTEGER NOT NULL CHECK(projected>=0 AND projected<=mutation));
-            INSERT OR IGNORE INTO candidate_generation VALUES(1,0,0);",
+            projected INTEGER NOT NULL CHECK(projected>=0 AND projected<=mutation));",
         ))?;
         // All candidate inputs: identity/scope/head, observation contents/pins,
         // and schema bytes (including grants). Links/action_log are not inputs.
@@ -201,9 +271,21 @@ pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRef
             account TEXT NOT NULL, native_key TEXT NOT NULL, scope_keys TEXT NOT NULL,
             PRIMARY KEY(object_type,visibility,property,value,instance,account,native_key)) WITHOUT ROWID;
             CREATE INDEX candidates_head ON head_candidates(object_type,instance,account,native_key);"))?;
-        rebuild(&tx, &refreshed_set(set, &tx)?)?;
-        map_db(tx.pragma_update(None, "user_version", 4))?;
     }
+    map_db(tx.execute(
+        "INSERT OR IGNORE INTO candidate_generation(singleton,mutation,projected) VALUES(1,0,0)",
+        [],
+    ))?;
+    if !has_generation_column(&tx, "semantics_version")? {
+        map_db(tx.execute_batch("ALTER TABLE candidate_generation ADD COLUMN semantics_version INTEGER NOT NULL DEFAULT 0 CHECK(semantics_version>=0)"))?;
+    }
+    if !has_generation_column(&tx, "semantics_projected")? {
+        map_db(tx.execute_batch("ALTER TABLE candidate_generation ADD COLUMN semantics_projected INTEGER NOT NULL DEFAULT 0 CHECK(semantics_projected>=0)"))?;
+    }
+    // Fresh and old-semantic projections use the same projector. DDL, postings,
+    // generation and semantics marker commit or roll back in this transaction.
+    rebuild(&tx, &refreshed_set(set, &tx)?)?;
+    map_db(tx.pragma_update(None, "user_version", 4))?;
     map_db(tx.commit())
 }
 fn json_text(value: &impl serde::Serialize) -> Result<String, StoreRefusal> {

@@ -219,3 +219,192 @@ fn native_write_and_read_stay_current_without_rebuilding() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+struct SemanticsFixture {
+    dir: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+impl SemanticsFixture {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("ont-semantics-{name}-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("store.sqlite");
+        std::fs::write(
+            &path,
+            include_bytes!("../../ont/tests/fixtures/o22-previous.sqlite"),
+        )
+        .unwrap();
+        drop(Store::open_schema_existing_writable(&path).unwrap());
+        Self { dir, path }
+    }
+}
+impl Drop for SemanticsFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+fn semantics_marker(c: &Connection) -> Option<i64> {
+    let has_column: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_version')", [], |r| r.get(0)).unwrap();
+    has_column.then(|| {
+        c.query_row(
+            "SELECT semantics_version FROM candidate_generation WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    })
+}
+fn projection_snapshot(c: &Connection) -> String {
+    c.query_row("SELECT json_group_array(json_array(object_type,visibility,property,value,instance,account,native_key,scope_keys)) FROM (SELECT * FROM head_candidates ORDER BY object_type,visibility,property,value,instance,account,native_key)", [], |r| r.get(0)).unwrap()
+}
+#[test]
+fn current_projection_open_does_not_rebuild() {
+    let f = SemanticsFixture::new("current");
+    super::super::PAYLOAD_COPIES.set(0);
+    INTERRUPT_REBUILD.set(true);
+    let store = Store::open_schema_existing(&f.path).unwrap();
+    let armed = INTERRUPT_REBUILD.replace(false);
+    let copies = super::super::PAYLOAD_COPIES.get();
+    eprintln!("current_open_payload_copies={copies}, rebuild_probe_untouched={armed}");
+    assert_eq!(copies, 0);
+    assert!(armed, "a current projection must not enter rebuild");
+    assert_eq!(semantics_marker(&store.connection), Some(1));
+    let certified: bool = store.connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_projected')", [], |r| r.get(0)).unwrap();
+    assert!(
+        certified,
+        "native checkpoint must certify its projected generation"
+    );
+    assert!(
+        store
+            .connection
+            .query_row(
+                "SELECT semantics_projected=projected FROM candidate_generation",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    // A mutation without a checkpoint remains stale; opening must not rebuild it.
+    let mutation = Connection::open(&f.path).unwrap();
+    mutation
+        .execute("UPDATE objects SET head=head", [])
+        .unwrap();
+    INTERRUPT_REBUILD.set(true);
+    let reopened = Store::open_schema_existing(&f.path).unwrap();
+    assert!(
+        INTERRUPT_REBUILD.replace(false),
+        "compare with projected, not mutation"
+    );
+    assert!(!current(&reopened.connection, &reopened.candidate_triggers).unwrap());
+    drop(reopened);
+    // A preopened reader must not consume a projection relabelled by another engine.
+    let other = Connection::open(&f.path).unwrap();
+    other
+        .execute("UPDATE candidate_generation SET semantics_version=99", [])
+        .unwrap();
+    assert!(!current(&store.connection, &store.candidate_triggers).unwrap());
+}
+#[test]
+fn semantics_rebuild_failure_preserves_projection_and_version() {
+    for absent in [true, false] {
+        let f = SemanticsFixture::new(if absent { "absent" } else { "different" });
+        let old = Connection::open(&f.path).unwrap();
+        if semantics_marker(&old).is_some() {
+            old.execute_batch("ALTER TABLE candidate_generation DROP COLUMN semantics_version")
+                .unwrap();
+        }
+        if !absent {
+            old.execute_batch("ALTER TABLE candidate_generation ADD COLUMN semantics_version INTEGER NOT NULL DEFAULT 99").unwrap();
+        }
+        let projection = projection_snapshot(&old);
+        let marker = semantics_marker(&old);
+        let generation: (i64, i64) = old
+            .query_row(
+                "SELECT mutation,projected FROM candidate_generation",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        INTERRUPT_REBUILD.set(true);
+        let result = Store::open_schema_existing_writable(&f.path);
+        let unconsumed = INTERRUPT_REBUILD.replace(false);
+        let failure = match result {
+            Err(e) => e,
+            Ok(_) => panic!("old semantics were accepted without attempting rebuild"),
+        };
+        assert_eq!(failure.code, "test_interrupted_rebuild");
+        assert!(!unconsumed);
+        assert_eq!(projection_snapshot(&old), projection);
+        assert_eq!(
+            semantics_marker(&old),
+            marker,
+            "DDL/version must roll back too"
+        );
+        assert_eq!(
+            old.query_row(
+                "SELECT mutation,projected FROM candidate_generation",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            )
+            .unwrap(),
+            generation
+        );
+        drop(Store::open_schema_existing(&f.path).unwrap());
+        assert_eq!(semantics_marker(&old), Some(1));
+        assert_eq!(projection_snapshot(&old), projection);
+        assert_eq!(
+            old.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+    }
+}
+
+#[test]
+fn old_engine_checkpoint_stales_preopened_reader() {
+    let f = SemanticsFixture::new("old-checkpoint-reader");
+    let mut reader = Store::open_schema_existing(&f.path).unwrap();
+    let head = reader.scan_heads("record", 1, None).unwrap().remove(0);
+    let id = head.id.clone();
+    let mut obs = head.head.observation.clone();
+    obs.supersedes = Some(obs.revision.clone());
+    obs.revision = "old-oversized".into();
+    obs.change = Change::Update;
+    obs.fields.insert(
+        "status".into(),
+        Knowledge::Value(Value::String("x".repeat(MAX_OBSERVATION_BYTES))),
+    );
+    obs.validate().unwrap();
+    let payload = serde_json::to_string(&obs).unwrap();
+    assert!(payload.len() > MAX_OBSERVATION_BYTES);
+    let resolved = format!(
+        "v{}",
+        match obs.fields.get("status").unwrap() {
+            Knowledge::Value(v) => v,
+            _ => unreachable!(),
+        }
+    );
+    let old = Connection::open(&f.path).unwrap();
+    old.execute_batch("BEGIN IMMEDIATE").unwrap();
+    old.execute("INSERT INTO observations(object_type,instance,account,native_key,revision,ordinal,payload,ingested_at,schema_domain,schema_version,change_kind) SELECT ?1,?2,?3,?4,?5,COALESCE(MAX(ordinal),-1)+1,?6,2,?7,?8,'update' FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,obs.revision,payload,head.schema_pin.domain,head.schema_pin.version]).unwrap();
+    old.execute("UPDATE objects SET head=?5 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,obs.revision]).unwrap();
+    assert_eq!(old.execute("UPDATE head_candidates SET value=?5 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 AND property='status'", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,resolved]).unwrap(),1);
+    old.execute("UPDATE candidate_generation SET projected=mutation", [])
+        .unwrap();
+    old.execute_batch("COMMIT").unwrap();
+    let condition = CandidateCondition {
+        property: "status".into(),
+        values: vec![Value::String("not present".into())],
+        used: BTreeSet::from(["status".into()]),
+    };
+    let result = reader
+        .read_schema(|tx| {
+            tx.candidate_access("record", Some(&condition), 10, 100, None, &[head.scope])
+        })
+        .unwrap();
+    eprintln!(
+        "preopened_reader_result={}",
+        result.as_ref().err().map_or("ok", |e| e.code)
+    );
+    assert_eq!(result.unwrap_err().code, "projection_stale");
+}

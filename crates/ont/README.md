@@ -230,6 +230,34 @@ shares its per-type allowance across all hops. Numeric limits:
 | `around` | 10,000 unique admitted heads per type across all hops; candidates at first hop | 1-3 hops, 10,000 reference entries, 1-1,000 rows (default 100) |
 | `aggregate` | 10,000 admitted candidates per operation | 2 group keys, 1 count metric, 1,000 buckets, 1,024 bytes/group value |
 | `render` | 10,000 admitted candidates across all pages | 1-1,000 displayed rows, default 200; exact omitted count |
+| One observation | `ont_core::MAX_OBSERVATION_BYTES` = 65,536 canonical UTF-8 JSON bytes | `ont_core::MAX_OBSERVATION_ARRAY_ITEMS` = 1,024 items in every array, including nested arrays |
+| `get` history | `ont_store::schema_mode::MAX_HISTORY_OBSERVATIONS` = 100 observations | Newest 100 rows in append order; `basis.older_omitted` counts older rows from SQL metadata after admission; no continuation |
+
+All observation writers share `ont_core::observation_payload` before writing any
+row of that observation. Either bound refuses `observation_too_large`. Indexed
+ingest rolls back the entire source transaction (reported as `source_failed`
+with that code); action apply rolls back all edits and the action-log row in its
+existing IMMEDIATE transaction. Other sources in an index run remain independent.
+
+Schema-mode loads check SQL `octet_length(payload)` from column metadata before
+loading the body: `length(TEXT)` counts characters, while a cast to BLOB first
+materializes the body. This check counts UTF-8 bytes without that allocation.
+A short-circuit SQL guard also checks every array before returning the payload.
+Legacy over-bound heads are excluded by `search`, `around` and `aggregate`:
+`basis.oversized_excluded` counts admitted excluded heads, forces `qualified:false`,
+and each consumes the scan allowance (`around` counts each unique head once).
+Hidden heads affect no visible count. `render` refuses `observation_too_large`
+if any page excludes an oversized head, instead of publishing an incomplete block.
+`get` admits metadata before counting or loading history. Its newest-100 window
+includes the head; `basis.oversized_excluded` counts over-bound nonhead rows left
+out of that window, without backfilling from older rows. This count and
+`basis.older_omitted` are disjoint. An over-bound head still refuses
+`observation_too_large`; a valid head superseding a bad old row is readable.
+The task Lead or store operator must repair an over-bound head by hand before
+`get` can read that object. The engine can no longer write an over-bound observation.
+An identical-schema projection rebuild preserves uncertain postings for these
+heads, so equality-filtered reads also count their exclusion without loading them.
+These bounds change neither schema format nor store format 4.
 
 Candidate selection and search pagination:
 
@@ -243,7 +271,7 @@ Candidate selection and search pagination:
 - Unresolved used properties, historical schema pins, partial coverage and stale
   heads remain candidates even if the selected equality cannot match, preserving
   their existing qualification/exclusion effects. `scanned` counts candidates;
-  aggregate `oldest_observed_at` is the minimum timestamp of admitted candidates,
+  aggregate `oldest_observed_at` is the minimum timestamp of loadable admitted candidates,
   not excluded fresh/complete heads. Other basis fields keep their definitions.
 - Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
   bounded as documented above. No payload is loaded before metadata admission.
@@ -274,12 +302,17 @@ unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
 atomically; two openers serialize. Backfill/schema upgrades read live payloads
 in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
 that head's postings in the write transaction; backfills do not replace them.
+A changed candidate semantics version rebuilds the projection once at first open, linear in heads, including existing format-4 stores.
+An old projection on unwritable storage refuses read-only opens until a writable open upgrades it.
+Engines with different semantics versions that alternate on one store each rebuild at open, linear in heads.
 
-Older binaries reject format 4 on both read-only and writable opens. Before
-migration, quiesce old writers and keep a consistent store copy and its matching
-binary. Binary rollback requires restoring that pre-migration store copy, with
-any subsequent edits handled by the operator; binary-only rollback cannot open
-format 4. No db56e16 projection was installed outside disposable tests, so there
+Binaries older than format 4 reject it on both read-only and writable opens.
+A format-4 binary without the semantics marker can still write; its checkpoint
+makes the present engine rebuild at its next open. Before migrating from format 3,
+quiesce old writers and keep a consistent store copy and its matching binary.
+Rollback to a pre-format-4 binary requires restoring that pre-migration store
+copy, with any subsequent edits handled by the operator; that binary cannot
+open format 4. No db56e16 projection was installed outside disposable tests, so there
 is one migration path from format 3; disposable predecessor projections rebuild
 in that same migration. Do not manually lower the format marker.
 
@@ -288,9 +321,9 @@ and `schema_installs` advance a mutation generation, even through an older
 connection opened before migration. These tables contain every candidate input:
 identity/scope/head, observation values/freshness/pins, and schema bytes including
 grants. `links` and `action_log` are not inputs to candidate membership.
-Native projecting writes record the projected generation in their transaction;
+Native projecting writes record `projected` and `semantics_projected` together in their transaction;
 partial writes refuse if the starting projection is stale. Each candidate page
-compares generations inside its read snapshot and refuses `projection_stale`
+compares generations and semantics versions inside its snapshot and refuses `projection_stale`
 on mismatch. Searches do not acquire a write lock or start a rebuild.
 
 Repair explicitly with `ont --store STORE schema install FILE`, using the exact
@@ -527,7 +560,7 @@ and a usable declaration, independently of the stored rows:
 | Decimal, including non-enum value types | Unbounded spelling without `max_bytes`; admitted with `max_bytes <=1022` (plus two quotes). |
 | String, including non-enum value types | Unbounded without `max_bytes`; admitted with `max_bytes <=170` (up to six encoded bytes per input byte, plus two quotes). Pattern-derived bounds are not inferred. |
 | Reference | Id fields have length limits, but their worst-case escaped representation exceeds 1,024 bytes; refused. |
-| Array | No declared item-count limit; refused. |
+| Array | The global 1,024-item cap does not establish a fitting 1,024-byte group bound; refused. |
 | Struct | Admitted if field-name overhead plus every field's recursively declared bound fits; inner strings have no `max_bytes` declaration. |
 
 Bucket order compares keys in `group_by` order: enum components follow declared

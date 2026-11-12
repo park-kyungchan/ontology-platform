@@ -294,11 +294,15 @@ fn around_result_default_maximum_and_admitted_scan_bound() {
     let t = Temp::new();
     let targets: Vec<String> = (0..1001).map(|n| format!("n{n:05}")).collect();
     let refs: Vec<&str> = targets.iter().map(String::as_str).collect();
-    let mut rows = vec![row("a", &refs, false)];
+    let mut rows = vec![
+        row("a", &["g0", "g1"], false),
+        row("g0", &refs[..500], false),
+        row("g1", &refs[500..], false),
+    ];
     rows.extend(targets.iter().map(|key| row(key, &[], false)));
     t.append(rows);
     for (limit, expected) in [(None, 100), (Some(1000), 1000)] {
-        let mut r = req("a", &["next"]);
+        let mut r = req("a", &["next", "next"]);
         if let Some(n) = limit {
             r["limit"] = json!(n);
         }
@@ -306,7 +310,7 @@ fn around_result_default_maximum_and_admitted_scan_bound() {
         assert_eq!(keys(&a).len(), expected);
         assert_eq!(a["result"]["basis"]["matched"], 1001);
     }
-    let mut rows: Vec<_> = (1001..9999)
+    let mut rows: Vec<_> = (1001..9997)
         .map(|n| row(&format!("n{n:05}"), &[], false))
         .collect();
     rows.push(row("hidden", &[], true));
@@ -348,25 +352,29 @@ fn around_reference_entries_at_and_above_bound_forward_and_reverse() {
         for missing in [false, true] {
             for count in [bound, bound + 1] {
                 let t = Temp::new();
-                let targets = vec![
-                    if missing {
+                let sources: Vec<String> = (0..20).map(|i| format!("r{i:02}")).collect();
+                t.put("a", &[], false);
+                if !missing {
+                    t.put("b", &[], false);
+                }
+                for (i, key) in sources.iter().enumerate() {
+                    let n = 500 + usize::from(i == 0) * (count - bound);
+                    let target = if missing {
                         "z"
                     } else if reverse {
                         "a"
                     } else {
                         "b"
                     };
-                    count
-                ];
-                if reverse {
-                    t.put("a", &[], false);
-                    t.put("b", &targets, false);
-                } else {
-                    t.put("a", &targets, false);
-                    t.put("b", &[], false);
+                    t.put(key, &vec![target; n], false);
                 }
-                let request = req("a", &[if reverse { "previous" } else { "next" }]);
-                // Reverse success returns the large array: above the MCP cap.
+                let request = if reverse {
+                    req("a", &["previous"])
+                } else {
+                    json!({"op":"search_around","from":{"object_type":"node","where":{"prefix":["name","r"]}},"path":["next"]})
+                };
+                // Each stored observation fits O21; the combined reverse
+                // result still exceeds the MCP response cap at exact success.
                 let answer = if reverse && !missing && count == bound {
                     serde_json::from_str(&t.cli("around", &request)).unwrap()
                 } else {
@@ -383,7 +391,16 @@ fn around_reference_entries_at_and_above_bound_forward_and_reverse() {
                     );
                 } else {
                     assert_eq!(answer["status"], "ok", "{answer}");
-                    assert_eq!(keys(&answer), if missing { vec![] } else { vec!["b"] });
+                    assert_eq!(
+                        keys(&answer),
+                        if missing {
+                            vec![]
+                        } else if reverse {
+                            sources.iter().map(String::as_str).collect()
+                        } else {
+                            vec!["b"]
+                        }
+                    );
                     assert_eq!(
                         answer["result"]["basis"]["dangling"],
                         if missing && !reverse { bound } else { 0 }
@@ -400,11 +417,14 @@ fn around_reference_budget_is_shared_across_hops_and_heads() {
     for reverse in [false, true] {
         for extra in [0, 1] {
             let t = Temp::new();
-            if reverse {
-                t.put("a", &vec!["a"; bound / 2 + extra], false);
-            } else {
-                t.put("a", &vec!["b"; bound / 2], false);
-                t.put("b", &vec!["z"; bound / 2 + extra], false);
+            let children: Vec<String> = (0..20).map(|i| format!("c{i:02}")).collect();
+            let refs: Vec<&str> = children.iter().map(String::as_str).collect();
+            t.put("a", if reverse { &[] } else { &refs }, false);
+            for (i, key) in children.iter().enumerate() {
+                // Every observation stays below both O21 bounds. Reverse scans
+                // charge 5000 entries twice; forward hops charge 20 + 9980.
+                let n = if reverse { 250 } else { 499 } + usize::from(i == 0) * extra;
+                t.put(key, &vec![if reverse { "a" } else { "z" }; n], false);
             }
             let hop = if reverse { "previous" } else { "next" };
             let request = req("a", &[hop, hop]);
@@ -427,7 +447,7 @@ fn around_reference_budget_is_shared_across_hops_and_heads() {
 
 #[test]
 fn around_reference_bound_hidden_missing_parity_ignores_hidden_source_entries() {
-    let bound = ont::around::MAX_REFERENCE_ENTRIES;
+    let bound = 500; // Bounded observations still exercise hidden-source parity.
     for reverse in [false, true] {
         let missing = Temp::new();
         let hidden = Temp::new();
@@ -554,11 +574,7 @@ fn around_links_require_both_readable_endpoint_types_in_both_directions() {
 
 #[test]
 fn around_upgraded_reference_targets_are_excluded_and_keep_hidden_missing_parity() {
-    for count in [
-        1,
-        ont::around::MAX_REFERENCE_ENTRIES,
-        ont::around::MAX_REFERENCE_ENTRIES + 1,
-    ] {
+    for count in [1, 500, 501] {
         let mut prior = None;
         for visibility in ["visible", "hidden", "missing"] {
             let t = Temp::new();
@@ -604,23 +620,15 @@ fn around_upgraded_reference_targets_are_excluded_and_keep_hidden_missing_parity
                     req("a", &["next"])
                 };
                 let answer = t.both(request.clone());
-                if count > ont::around::MAX_REFERENCE_ENTRIES {
-                    assert_eq!(answer["code"], "result_too_large");
-                    assert_eq!(
-                        answer["max_reference_entries"],
-                        ont::around::MAX_REFERENCE_ENTRIES
-                    );
-                } else {
-                    assert_eq!(answer["status"], "ok", "{answer}");
-                    assert!(keys(&answer).is_empty());
-                    assert_eq!(answer["result"]["basis"]["qualified"], false);
-                    assert_eq!(answer["result"]["basis"]["unresolved_excluded"], count);
-                    assert_eq!(answer["result"]["basis"]["dangling"], 0);
-                    assert_eq!(
-                        answer["result"]["basis"]["scanned"],
-                        if reverse { 2 } else { 1 }
-                    );
-                }
+                assert_eq!(answer["status"], "ok", "{answer}");
+                assert!(keys(&answer).is_empty());
+                assert_eq!(answer["result"]["basis"]["qualified"], false);
+                assert_eq!(answer["result"]["basis"]["unresolved_excluded"], count);
+                assert_eq!(answer["result"]["basis"]["dangling"], 0);
+                assert_eq!(
+                    answer["result"]["basis"]["scanned"],
+                    if reverse { 2 } else { 1 }
+                );
                 answers.push(t.cli("around", &request));
             }
             if let Some(expected) = &prior {
