@@ -240,7 +240,13 @@ Normalization is executable data: copy recorded_facts, then independently evalua
 answer_rules and later_read_rules against raw_input JSON Pointer paths. A rule
 matches iff ALL predicates match (equals is exact JSON equality; in is literal-list
 membership); choose its FIRST match, then emit literal or copy_from. Empty when
-is the fallback. No rule may be reordered; unmatched inputs fail, never guess.
+is the fallback. Consumers MUST NOT reorder pinned rules; unmatched inputs fail,
+never guess. Rule ids are labels: use ARRAY order, never sort the ids.
+Within later_read_rules, L02 (budget_exhausted) is FIRST, before L01 (login_failed)
+and every rule that can produce read_again. For an unresolved fenced attempt,
+exhaustion therefore selects R09/manual_reconciliation/ask_person even when login
+or other read failures coexist; they cannot mask escalation or renew the budget.
+R01-R04 still preserve immutable settled outcomes before any R09 classification.
 Validate all raw inputs with the schema BEFORE normalization, then validate the
 normalized pair. Evaluate classification rows in array order with the same exact
 literal/list/* matching; saved_state must match its legal pair; select one row and
