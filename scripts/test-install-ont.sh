@@ -264,7 +264,9 @@ case $(cat "$TMP/df-path") in "$TMP"/tmp.*) ;; *) fail 'df did not inspect tempo
 
 # At exactly 10 GiB, the guard passes and the disposable build reaches cargo.
 printf '#!/bin/sh\nexit 77\n' >"$TMP/tools/cargo"
-chmod +x "$TMP/tools/cargo"
+# The Cargo stub does no build; CI hosts need no real host-specific lock path.
+printf '#!/bin/sh\nshift\nexec "$@"\n' >"$TMP/tools/flock"
+chmod +x "$TMP/tools/cargo" "$TMP/tools/flock"
 set +e
 env PATH="$TMP/tools:$PATH" ONT_TEST_AVAIL=10 ONT_DF_LOG="$TMP/df-path" TMPDIR="$TMP" ONT_INSTALL_TEST=1 ONT_INSTALL_BIN_DIR="$BIN1" ONT_INSTALL_STATE_DIR="$STATE1" "$INSTALL" install "$GOOD" >"$TMP/ten-gib" 2>&1
 code=$?
