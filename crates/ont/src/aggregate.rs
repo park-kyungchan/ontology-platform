@@ -5,7 +5,7 @@ use crate::principal::Principal;
 use crate::refusal::{open_store, st};
 use crate::search::{self, Filter, SCAN_LIMIT, Tri};
 use crate::{Answer, Context, Failure, Refusal, internal};
-use ont_core::schema::{Owner, PropertyType};
+use ont_core::schema::{Owner, PropertyType, ScalarType, Schema};
 use ont_core::{Knowledge, Object, Query};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ pub struct AggregateRequest {
     pub object_type: String,
     #[serde(default, rename = "where")]
     pub filter: Option<Filter>,
+    #[serde(default)]
     pub group_by: Vec<String>,
     pub metrics: Vec<Value>,
 }
@@ -84,8 +85,61 @@ fn bounded(value: &Value) -> Result<(), Failure> {
         .into()
     })
 }
+// Worst-case compact JSON size; string escaping costs up to six bytes per
+// input byte. Decimal/date grammars need no escaping. Arrays have no bound.
+fn declared_bytes(schema: &Schema, ty: &PropertyType, max_bytes: Option<u64>) -> Option<u64> {
+    match ty {
+        PropertyType::Scalar(ScalarType::Boolean) => Some(5),
+        PropertyType::Scalar(ScalarType::Integer | ScalarType::Timestamp) => Some(20),
+        PropertyType::Scalar(ScalarType::Date) => Some(12),
+        PropertyType::Scalar(ScalarType::Decimal) => max_bytes?.checked_add(2),
+        PropertyType::Scalar(ScalarType::String) => max_bytes?.checked_mul(6)?.checked_add(2),
+        PropertyType::ValueType(r) => {
+            let def = &schema.value_types[&r.value_type];
+            if let Some(values) = &def.enum_values {
+                let mut largest = 0;
+                for v in values {
+                    let mut budget = Budget(MAX_GROUP_VALUE_BYTES);
+                    serde_json::to_writer(&mut budget, v).ok()?;
+                    largest = largest.max((MAX_GROUP_VALUE_BYTES - budget.0) as u64);
+                }
+                Some(largest)
+            } else {
+                declared_bytes(schema, &PropertyType::Scalar(def.base), max_bytes)
+            }
+        }
+        PropertyType::Ref(_) => Some(4 * 512 * 6 + 128),
+        PropertyType::Array(_) => None,
+        PropertyType::Struct(fields) => {
+            let mut bytes = 2;
+            for (i, (name, ty)) in fields.struct_.iter().enumerate() {
+                bytes += u64::from(i > 0) + json!(name).to_string().len() as u64 + 1;
+                bytes = bytes.checked_add(declared_bytes(schema, ty, None)?)?;
+            }
+            Some(bytes)
+        }
+    }
+}
+fn key_code(key: &Value) -> String {
+    fn ordered(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(
+                m.keys()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|k| (k.clone(), ordered(&m[k])))
+                    .collect(),
+            ),
+            Value::Array(a) => Value::Array(a.iter().map(ordered).collect()),
+            _ => v.clone(),
+        }
+    }
+    ordered(key).to_string()
+}
+#[cfg(test)]
+thread_local! { static EXPANSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn bucket(groups: &mut BTreeMap<String, Value>, key: Value, count: u64) -> Result<(), Failure> {
-    let encoded = key.to_string();
+    let encoded = key_code(&key);
     if let Some(group) = groups.get_mut(&encoded) {
         group["count"] = json!(group["count"].as_u64().unwrap_or(0) + count);
     } else {
@@ -142,6 +196,12 @@ fn read_aggregate(
     let properties = set
         .properties(&req.object_type)
         .ok_or_else(|| Refusal::new("unavailable"))?;
+    let fits = |p: &String, v: &Value| {
+        schema.validate_value(&properties[p].ty, v).is_ok()
+            && properties[p]
+                .max_bytes
+                .is_none_or(|n| v.as_str().is_none_or(|s| s.len() as u64 <= n))
+    };
     let mut used = search::check_filter(set, &req.object_type, req.filter.as_ref())?;
     if let Some(f) = &req.filter {
         crate::around::unresolved_properties(f, &mut used);
@@ -161,7 +221,13 @@ fn read_aggregate(
                 )
                 .with("available", json!(properties.keys().collect::<Vec<_>>()))
             })?;
-        used.insert(p.clone());
+        if declared_bytes(schema, &def.ty, def.max_bytes)
+            .is_none_or(|n| n > MAX_GROUP_VALUE_BYTES as u64)
+        {
+            return Err(Refusal::input("unsupported_group_property", &format!("/group_by/{i}"),
+                "group values must fit 1024 JSON bytes: use a fitting enum, string max_bytes <=170 or decimal max_bytes <=1022; arrays and references lack a fitting declared bound")
+                .with("property", json!(p)).into());
+        }
         if let PropertyType::ValueType(r) = &def.ty
             && let Some(values) = schema
                 .value_types
@@ -191,6 +257,8 @@ fn read_aggregate(
     // Complete enum products exist even on an empty store. Mixed enum keys
     // expand for each observed combination of non-enum keys.
     let expand = |key: &Value, groups: &mut BTreeMap<String, Value>| -> Result<(), Failure> {
+        #[cfg(test)]
+        EXPANSIONS.set(EXPANSIONS.get() + 1);
         let mut keys = vec![key.clone()];
         for (p, values) in &enums {
             let mut next = Vec::new();
@@ -215,6 +283,7 @@ fn read_aggregate(
     let mut oldest: Option<u64> = None;
     let mut stale_sources = BTreeSet::new();
     let mut after = None;
+    let mut used_unresolved = false;
     loop {
         let page = st!(tx.scan_head_access(&req.object_type, 256, after.as_ref()));
         if page.is_empty() {
@@ -275,13 +344,9 @@ fn read_aggregate(
             let mut valid = true;
             for p in &used {
                 if let Some(Knowledge::Value(v)) = obs.fields.get(p) {
-                    // Bound group values before validation (which may walk arrays).
-                    if seen.contains(p) {
-                        bounded(v)?;
-                    }
-                    valid &= schema.validate_value(&properties[p].ty, v).is_ok();
+                    valid &= fits(p, v);
                 } else {
-                    valid = false;
+                    used_unresolved = true;
                 }
             }
             if !valid {
@@ -302,12 +367,22 @@ fn read_aggregate(
             }
             let mut key = json!({});
             for p in &req.group_by {
-                if let Some(Knowledge::Value(v)) = obs.fields.get(p) {
-                    key[p] = v.clone();
+                match obs.fields.get(p) {
+                    Some(Knowledge::Value(v)) if bounded(v).is_ok() && fits(p, v) => {
+                        key[p] = v.clone();
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
                 }
             }
+            if !valid {
+                excluded += 1;
+                continue;
+            }
             // Existing zero buckets mark combinations already expanded.
-            if !groups.contains_key(&key.to_string()) {
+            if !groups.contains_key(&key_code(&key)) {
                 let mut base = key.clone();
                 for p in enums.keys() {
                     base.as_object_mut().map(|m| m.remove(*p));
@@ -317,6 +392,31 @@ fn read_aggregate(
             bucket(&mut groups, key, 1)?;
         }
     }
+    let ranks: BTreeMap<_, BTreeMap<_, _>> = enums
+        .iter()
+        .map(|(p, vs)| {
+            (
+                *p,
+                vs.iter()
+                    .enumerate()
+                    .rev()
+                    .map(|(i, v)| (key_code(v), i))
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut groups: Vec<_> = groups.into_values().collect();
+    groups.sort_by_cached_key(|g| {
+        req.group_by
+            .iter()
+            .map(|p| {
+                let code = key_code(&g["key"][p]);
+                ranks
+                    .get(p)
+                    .map_or_else(|| code.clone(), |r| format!("{:04}", r[&code]))
+            })
+            .collect::<Vec<_>>()
+    });
     Ok(Answer::Enveloped {
         pins: set
             .pin(&schema.domain)
@@ -324,9 +424,9 @@ fn read_aggregate(
             .into_iter()
             .collect(),
         revision: principal.revision()?,
-        result: json!({"kind":"aggregation","groups":groups.into_values().collect::<Vec<_>>(),"basis":{
+        result: json!({"kind":"aggregation","groups":groups,"basis":{
             "scanned":scanned,"unresolved_excluded":excluded,"stale":stale,"partial":partial,"oldest_observed_at":oldest,
-            "qualified":excluded == 0 && stale == 0 && partial == 0,"stale_sources":stale_sources}}),
+            "qualified":excluded == 0 && stale == 0 && partial == 0 && !used_unresolved,"stale_sources":stale_sources}}),
     })
 }
 

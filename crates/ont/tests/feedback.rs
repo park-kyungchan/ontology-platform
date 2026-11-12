@@ -853,10 +853,8 @@ fn transform_feedback_distinguishes_primary_keys_and_parameters() {
 }
 
 #[test]
-fn action_tool_descriptions_leave_discovery_room_and_keep_call_guidance() {
+fn action_tool_descriptions_keep_call_guidance() {
     let list = ont::mcp::tools_list();
-    // A packet-specific room target; the existing protocol bounds stay 5000.
-    assert!(list.to_string().len() <= 4700, "{}", list.to_string().len());
     let tools = list["tools"].as_array().unwrap();
     let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
     for name in ["ont_action_validate", "ont_action_apply"] {

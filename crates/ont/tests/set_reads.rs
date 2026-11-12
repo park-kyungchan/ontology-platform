@@ -631,7 +631,10 @@ fn around_upgraded_reference_targets_are_excluded_and_keep_hidden_missing_parity
 #[test]
 fn aggregate_cli_mcp_count_filter_refusals_and_hints() {
     let t = Temp::new();
-    upgrade_schema(&t, |schema| schema["grants"][0]["derive"] = json!(["node"]));
+    upgrade_schema(&t, |schema| {
+        schema["grants"][0]["derive"] = json!(["node"]);
+        schema["object_types"]["node"]["properties"]["name"]["max_bytes"] = json!(170);
+    });
     t.put("a", &[], false);
     t.put("hidden", &[], true);
     let req = json!({"op":"aggregate","object_type":"node","where":{"eq":["name","a"]},"group_by":["name"],"metrics":["count"]});

@@ -163,19 +163,19 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Describe),
             spec: json!({"name":"ont_describe",
-         "description":"Call first: readable types, properties, links, actions, views, functions, sources; schema pins and authorization_revision.",
+         "description":"Call first: object types and properties, links, actions, views, functions and sources this caller may read. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"domain":s,"object_type":s}}}),
         },
         Tool {
             op: ToolOp::Read(Op::Get),
             spec: json!({"name":"ont_get",
-         "description":"Full history; id: objects[].id from ont_search. Hidden/missing: unavailable; schema pins and authorization_revision.",
+         "description":"One object's full history. id: objects[].id from ont_search. Hidden and missing both return unavailable. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}}),
         },
         Tool {
             op: ToolOp::Read(Op::SetRead),
             spec: json!({"name":"ont_search",
-         "description":"op: search (default), search_around or aggregate. search: object_type, where e.g. {\"eq\":[\"status\",\"open\"]}; eq/ne/lt/le/gt/ge/prefix [property,value], in [property,[values]], unresolved property, all/any/none [filters]; continuation. search_around: from {object_type,where?}, path 1-3 links (ont_describe). limit 1-1000 default 100. aggregate: object_type, where?, group_by 0-2 properties, metrics:[count] only; requires derive. Basis reports qualification.",
+         "description":"op: search (default) or search_around or aggregate. search: object_type, where e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]; continuation pages. search_around: from {object_type,where?}, path 1-3 link names (ont_describe). limit 1-1000, default 100. Basis reports qualification. aggregate: object_type, where?, group_by 0-2 properties, metrics:[count]; requires derive.",
          "inputSchema":{"type":"object",
             "properties":{"op":{"enum":["search","search_around","aggregate"]},"object_type":s,"where":{"type":"object"},
                 "from":{"type":"object","required":["object_type"],"properties":{"object_type":s,"where":{"type":"object"}}},
@@ -186,14 +186,14 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Index),
             spec: json!({"name":"ont_index",
-         "description":"Index sources and append what changed (default all); counts per source; failures: isError; concurrent run: index_busy. Includes schema pins and authorization_revision.",
+         "description":"Index installed sources and append what changed; counts per source; failed source gives isError. sources: names (default all). One run at a time (index_busy). Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","properties":{"sources":{"type":"array","items":s,"minItems":1}}}}),
         },
         Tool {
             op: ToolOp::ListActions,
             spec: json!({
                 "name":"ont_action_list",
-                "description":"List action_type, parameters, criteria codes for ont_action_validate/ont_action_apply; optional domain from ont_describe. Object ids: ont_search.",
+                "description":"List action types with parameters and criteria codes; optional domain from ont_describe. Use this list for action_type and parameter names in ont_action_validate and ont_action_apply. Object ids come from ont_search.",
                 "inputSchema":{"type":"object","additionalProperties":false,"properties":{"domain":s}}
             }),
         },

@@ -11,8 +11,8 @@ fn schema() -> Value {
         "namespace":{"instance":"test","account":"root"},"scope_keys":["tenant"],
         "value_types":{"status":{"base":"string","enum":["open","resolved"]}},
         "object_types":{"node":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{
-            "status":{"type":{"value_type":"status"}},"name":{"type":"string"},"link":{"type":{"ref":"node"}}}},
-            "other":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{}}},
+            "status":{"type":{"value_type":"status"}},"name":{"type":"string","max_bytes":170},"link":{"type":{"ref":"node"}}}},
+            "other":{"owner":"ontology","primary_key":{"from":"$action_id"},"properties":{"private_name":{"type":"string"}}}},
         "grants":[{"principal":"agent","scope":{"tenant":"public"},"read":["node"],"derive":["node"],"actions":[]}]})
 }
 fn install(store: &mut Store, s: &Value) {
@@ -31,7 +31,7 @@ fn row(key: &str, hidden: bool) -> Append {
         scope: Scope::domain(id.namespace.clone(), "test", BTreeMap::from([("tenant".into(), if hidden {"private"} else {"public"}.into())])).unwrap(),
         id: id.clone(),
         observation: serde_json::from_value(json!({
-            "revision":"r0","source_revision":"s0","observed_at":1,"fresh_until":100,"change":"initial","coverage":"complete",
+            "revision":"r0","source_revision":"s0","observed_at":1,"fresh_until":if hidden {1}else{100},"change":"initial","coverage":if hidden {"partial"}else{"complete"},
             "fields":{"status":{"kind":"value","value":"resolved"},"name":{"kind":"value","value":key},"link":{"kind":"value","value":id}},
             "lineage":{"artifact_sha256":"a".repeat(64),"pointer":"/synthetic"}
         })).unwrap(),
@@ -152,7 +152,16 @@ fn hidden_poison_parity_and_preflight_reads_no_heads() {
                         3 => req.object_type = "other".into(),
                         _ => req.group_by = vec!["status".into(); 3],
                     }
-                    assert_eq!(read(&req, &probe).code, 2);
+                    let output = read(&req, &probe);
+                    let a: Value = serde_json::from_str(&output.stdout).unwrap();
+                    if mutate == 0 {
+                        assert_eq!(a["available"], json!(["link", "name", "status"]));
+                    }
+                    if mutate == 3 {
+                        req.object_type = "absent".into();
+                        assert_eq!(output.stdout, read(&req, &probe).stdout);
+                    }
+                    assert_eq!(a["status"], "refused");
                     assert_eq!(probe.metadata.get(), 0);
                     assert_eq!(probe.payload.get(), 0);
                 }
@@ -192,7 +201,15 @@ fn historical_enum_reference_and_value_type_upgrades() {
         s["value_types"]["status"]["enum"] = json!(["open"]);
         s["object_types"]["node"]["properties"][property]["type"] = ty;
         install(&mut store, &s);
-        let a = answer(&mut store, &request(&[property]));
+        let mut req = request(if property == "link" {
+            &[]
+        } else {
+            std::slice::from_ref(&property)
+        });
+        if property == "link" {
+            req.filter = Some(Filter::Unresolved(property.into()));
+        }
+        let a = answer(&mut store, &req);
         assert_eq!(a["result"]["basis"]["unresolved_excluded"], 1, "{a}");
         assert_eq!(a["result"]["basis"]["qualified"], false);
         assert!(
@@ -293,4 +310,161 @@ fn admitted_scan_and_dynamic_bucket_limits_before_payload_or_growth() {
     }
     assert!(bucket(&mut groups, json!({"name":"above"}), 1).is_err());
     assert_eq!(groups.len(), MAX_BUCKETS);
+}
+
+#[test]
+fn filter_membership_equals_search_and_historical_filter_is_excluded() {
+    let root =
+        std::path::PathBuf::from("/home/palantirkc/work/ontology-operational-base/o7b-scratch");
+    let path = root.join(format!("r1-filter-{}.sqlite", std::process::id()));
+    let mut store = Store::open_schema(&path).unwrap();
+    let mut s = schema();
+    install(&mut store, &s);
+    let mut a = row("a", false);
+    a.observation
+        .fields
+        .insert("status".into(), Knowledge::Missing);
+    let mut b = row("b", false);
+    b.observation
+        .fields
+        .insert("name".into(), Knowledge::Missing);
+    store.append_schema(&[a, b], 10).unwrap();
+    let ctx = Context::new(path.clone(), 10);
+    for filter in [
+        json!({"unresolved":"status"}),
+        json!({"any":[{"eq":["status","resolved"]},{"eq":["name","a"]}]}),
+        json!({"none":[{"all":[{"eq":["status","open"]},{"eq":["name","a"]}]}]}),
+    ] {
+        let req = AggregateRequest::parse(
+            json!({"object_type":"node","where":filter,"metrics":["count"]})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        let search = crate::search::SearchRequest::parse(
+            json!({"object_type":"node","where":filter})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        let matched: Value = serde_json::from_str(
+            &crate::cli::render(crate::search::search(&ctx, &search), 10).stdout,
+        )
+        .unwrap();
+        assert_eq!(
+            answer(&mut store, &req)["result"]["groups"][0]["count"],
+            matched["result"]["basis"]["matched"]
+        );
+    }
+    s["version"] = json!(2);
+    s["object_types"]["node"]["properties"]["name"]["type"] = json!("integer");
+    install(&mut store, &s);
+    let mut req = request(&[]);
+    req.filter = Some(Filter::Unresolved("name".into()));
+    assert_eq!(
+        answer(&mut store, &req)["result"]["basis"]["unresolved_excluded"],
+        1
+    );
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn declared_types_and_stored_group_bytes_are_bounded_end_to_end() {
+    for (ty, max, ok) in [
+        (json!("boolean"), None, true),
+        (json!("integer"), None, true),
+        (json!("timestamp"), None, true),
+        (json!("date"), None, true),
+        (json!("decimal"), None, false),
+        (json!("decimal"), Some(1022), true),
+        (json!("string"), None, false),
+        (json!("string"), Some(170), true),
+        (json!("string"), Some(171), false),
+        (json!({"ref":"node"}), None, false),
+        (json!({"array":"integer"}), None, false),
+        (json!({"struct":{"flag":"boolean"}}), None, true),
+        (json!({"struct":{"text":"string"}}), None, false),
+    ] {
+        let mut s = schema();
+        s["object_types"]["node"]["properties"]["name"] = json!({"type":ty,"max_bytes":max});
+        let a = answer(&mut memory(&s), &request(&["name"]));
+        assert_eq!(a["status"] == "ok", ok, "{a}");
+        if !ok {
+            assert_eq!(a["property"], "name");
+            assert_eq!(a["field"], "/group_by/0");
+        }
+    }
+    let mut s = schema();
+    s["object_types"]["node"]["properties"]["name"]["max_bytes"] = Value::Null;
+    let mut store = memory(&s);
+    let denied = text(&mut store, &request(&["name"]));
+    store.append_schema(&[row("a", false)], 10).unwrap();
+    assert_eq!(denied, text(&mut store, &request(&["name"])));
+    let mut s = schema();
+    s["object_types"]["node"]["properties"]["name"] = json!({"type":"decimal","max_bytes":1023});
+    let mut store = memory(&s);
+    let mut rows = vec![];
+    for (key, bytes) in [
+        ("at", MAX_GROUP_VALUE_BYTES),
+        ("above", MAX_GROUP_VALUE_BYTES + 1),
+    ] {
+        let mut r = row(key, false);
+        r.observation.fields.insert(
+            "status".into(),
+            Knowledge::Value(json!(if key == "at" { "open" } else { "resolved" })),
+        );
+        r.observation.fields.insert(
+            "name".into(),
+            Knowledge::Value(json!("1".repeat(bytes - 2))),
+        );
+        rows.push(r);
+    }
+    store.append_schema(&rows, 10).unwrap();
+    s["version"] = json!(2);
+    s["object_types"]["node"]["properties"]["name"]["max_bytes"] = json!(1022);
+    install(&mut store, &s);
+    let mut req = request(&["name"]);
+    let a = answer(&mut store, &req);
+    assert_eq!(a["result"]["groups"][0]["count"], 1);
+    assert_eq!(a["result"]["basis"]["unresolved_excluded"], 1);
+    req.filter = Some(Filter::Eq("status".into(), json!("open")));
+    let a = answer(&mut store, &req);
+    assert_eq!(a["status"], "ok");
+    assert_eq!(a["result"]["basis"]["unresolved_excluded"], 0);
+}
+#[test]
+fn enum_product_precedes_expansion_order_and_key_identity_are_stable() {
+    let mut s = schema();
+    let values: Vec<_> = (0..1000).map(|i| i.to_string()).collect();
+    s["value_types"]["status"]["enum"] = json!(values);
+    s["object_types"]["node"]["properties"]["name"]["type"] = json!({"value_type":"status"});
+    EXPANSIONS.set(0);
+    assert_eq!(
+        answer(&mut memory(&s), &request(&["status", "name"]))["code"],
+        "result_too_large"
+    );
+    assert_eq!(EXPANSIONS.get(), 0);
+    s["value_types"]["status"]["enum"] = json!(["resolved", "open"]);
+    let a = answer(&mut memory(&s), &request(&["status"]));
+    assert_eq!(a["result"]["groups"][0]["key"]["status"], "resolved");
+    let pair = answer(&mut memory(&s), &request(&["status", "name"]));
+    assert_eq!(
+        pair["result"]["groups"][0]["key"],
+        json!({"status":"resolved","name":"resolved"})
+    );
+    assert_eq!(
+        pair["result"]["groups"][3]["key"],
+        json!({"status":"open","name":"open"})
+    );
+    let mut groups = BTreeMap::new();
+    let mut one = serde_json::Map::new();
+    one.insert("b".into(), json!({"y":1,"x":2}));
+    one.insert("a".into(), json!(0));
+    let mut two = serde_json::Map::new();
+    two.insert("a".into(), json!(0));
+    two.insert("b".into(), json!({"x":2,"y":1}));
+    bucket(&mut groups, Value::Object(one), 1).unwrap();
+    bucket(&mut groups, Value::Object(two), 1).unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups.values().next().unwrap()["count"], 2);
 }
