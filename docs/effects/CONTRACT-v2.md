@@ -27,6 +27,25 @@ several items once each, with separate fences/outcomes and partial success; it
 MUST NOT report all items applied from one successful field. A batch transport
 MUST persist every included item's fence first and bind each returned field.
 
+Durable means a committed local record survives process crash AND host restart or
+power loss under the profile's stated storage guarantees. A transaction must
+recover entirely before or entirely after publication; a file publication needs
+file sync, atomic rename/link and containing-directory sync, or an equivalent
+specified primitive. A write/close or process-crash-only guarantee is insufficient.
+Target proof durability/retention is separately qualified; a local sync cannot
+strengthen it. If commit acknowledgement is lost or uncertain, that process MUST
+NOT dispatch; recovery reads the journal. Only a positively recovered prepared
+record without a fence can authorize a first dispatch after fresh admission.
+
+Attempt identity is unique over (journal lineage, target instance, account,
+request, item, phase, attempt nonce). The encoded identity MUST bind every component
+without ambiguous concatenation, and MUST NEVER be reused within that lineage,
+including after compaction, backup restore, key rotation or target replacement.
+Consumption and unresolved dependencies survive for the entire lineage lifetime;
+a retired lineage cannot dispatch, and a new lineage must import existing fences
+and consumption before using overlapping targets. Remote idempotency retention
+never shortens this lifetime or grants replay.
+
 ## 2. Closed item-state vocabulary
 
 These are the ONLY contract state names. Facts such as a returned answer remain
@@ -90,7 +109,27 @@ Today's targets (paths use aliases defined in MAPPING-v2.md):
 | --- | --- |
 | Engine S07 fake | target_token, source-proved for this fake only (crates/ont-store/src/fake.rs:244,263). ValueOnly is none. Real-target transfer is an assumption, forbidden by docs/s07/CONTRACT-v1.md:51. |
 | Academy daily-record workflow | returned_value is the intended profile, still an assumption for save/finality/causality; the workflow also accepts equality after loss, a conformance gap. NA:53-54 records read-only evidence, no mutation/recovery measurement. Native sourceRevision/wireDigest do not establish content equality (NA:41); raw qualified values must be compared. No native token, operation or complete-absence capability is established. |
-| Memory publisher | operation_record plus complete_absence are intended; target_token/idempotent submission is an assumption (MP:92, MD:22); U3/U10/U14 remain unqualified (MP:90-93). MEASURE-U1-U15.md absent at source inspection; native runtime capability is none until measured. Source-described endpoints and synthetic tests are not native qualification. |
+| Memory publisher | MU:U3 observes operation-ID deduplication of pending/completed submissions, including changed bytes silently ignored; it does NOT support native token-plus-payload proof. Immutable adapter-owned operation-id -> payload-hash binding is required before operation_record proof can be used. MU:U14 observes paginated discovery, child payload readback and readable terminal results in scope; failure-retry/pruning horizons remain unknown. MU:U10 finds no complete-and-absent recall/search predicate. MU:U7/U15 and MF:F1 show why deletion stays pending despite source deletion or a completed refresh. Measured capabilities are partial; real-target qualification remains held for binding, terminal/retention and complete-absence gaps. |
+
+Observed memory cases do not weaken the proof rules: completed empty refresh
+with preserved deleted page/search text is operation_done_unverified -> R21,
+NEVER operation_applied_verified -> R16. Document 404, zero paginated facts and
+empty source membership do not establish page/index absence; deletion stays pending.
+MF's last-source removal sequence finishes earlier jobs, deletes the document,
+then deletes each affected mental model. It verifies exact document/model/page/
+history 404, zero paginated source facts, absent tree node, no removed marker in
+REST/MCP search and recall, and a missing-page BODY for the old MCP page id (even
+when HTTP 200/isError=false). This gives evidence of kind complete_absence for the bounded listed-read
+assertion, conditional on accepted profile/finality; it does not qualify absence
+across arbitrary views/queries. Clear leaves diagnostic source text; PATCH ignores content.
+Recreating a navigation page uses new ids and verifies empty body/snippets.
+MP:91 now records permission to use "absent on the listed reads"; this is not a
+universal U10 barrier or an accepted implementation profile. For a full retrieval
+profile, coverage_complete stays false: R32, not R22; deletion remains pending.
+A narrower accepted profile may use R22 only after every scoped absence/closure
+condition is proved; deletion otherwise stays pending.
+MF:F4 also observes child retries while the parent is pending: an error_message is
+not terminal failure. Check parent and child; never start an overlapping attempt.
 
 ## 4. Outcome table and its data form
 
@@ -122,6 +161,13 @@ unknown-field failures; identity_mismatch is never a read of a different item.
 contradictory includes incompatible bound proofs/answers, malformed identifiers,
 missing required durable facts and contradictory operation terminal results.
 budget_exhausted is a durable escalation after the implementation's bounded reads.
+A read failing at source login is NO OBSERVATION, never a new target/item state.
+NR:21-22 records a later separately authorized read succeeding after one login
+failure. Normalize the failed read to unavailable: R32 for an unresolved fenced
+attempt; R05/R07 before dispatch and R01-R04 for settled history preserve their
+classification. No lost-answer/no-effect fact may be invented from login failure.
+A later authorized read may reconcile the SAME attempt without a new identity;
+read_again does not grant an automatic retry forbidden by the domain's read policy.
 
 Each cell is a literal, an OR-list, or * (any value of that column). Evaluate TOP
 TO BOTTOM and use ONLY the FIRST matching row. Saved state is matched only in R01
@@ -186,10 +232,29 @@ existing fences and domain admission; it MUST NOT be disguised as a failed retry
 The JSON envelope declares format, selection, closed states/kinds, finite domains,
 allowed steps and rows. recorded_facts/answer/later_read are selectors as above;
 expected_state/allowed_next_step are exact assertions; reason explains the row.
-A consumer pins repository + full commit + docs/effects/vectors-v2.json + SHA256
-of exact bytes, together with CONTRACT-v2.md and MAPPING-v2.md at that commit.
+The closed vectors-v2.schema.json (JSON Schema 2020-12) rejects unknown fields,
+invalid selector types and illegal stage/saved_state pairs in rows and raw/normalized
+cases. Literal/list/* selectors exist for kind/answer/read; stage selection is
+restricted by legal saved-state pairs, never a wildcard spanning invalid pairs.
+Normalization is executable data: copy recorded_facts, then independently evaluate
+answer_rules and later_read_rules against raw_input JSON Pointer paths. A rule
+matches iff ALL predicates match (equals is exact JSON equality; in is literal-list
+membership); choose its FIRST match, then emit literal or copy_from. Empty when
+is the fallback. No rule may be reordered; unmatched inputs fail, never guess.
+Validate all raw inputs with the schema BEFORE normalization, then validate the
+normalized pair. Evaluate classification rows in array order with the same exact
+literal/list/* matching; saved_state must match its legal pair; select one row and
+stop. Cases assert normalized input, selected row, state and next step.
+Precondition booleans come from the accepted profile and durable qualified evidence,
+not caller assertions; unmeasured/unknown is false. payload_binding=native means a
+qualified immutable native payload association; adapter_immutable means the adapter
+owns and verifies an immutable operation-id/payload-hash binding across restore.
+Native ID reuse alone is none. Finality covers parent AND child work. Successful
+refresh without verified projections cannot pass operation_applied_verified.
+A consumer pins repository + full commit + paths and SHA256 of exact bytes for
+vectors-v2.json, vectors-v2.schema.json, CONTRACT-v2.md and MAPPING-v2.md.
 Verify hashes before running; missing/mismatched pins fail, never skip/fallback.
-Vendor the three pinned data/doc files if necessary; no Rust dependency is needed.
+Vendor the four pinned data/doc files if necessary; no Rust dependency is needed.
 The consumer owns its test implementation; it must prove state mapping, durable
 pre-dispatch order, single dispatch, no retry on uncertainty, immutable settlement,
 bounds/retention and every applicable row. Unsupported capabilities must be
@@ -217,6 +282,25 @@ behavior. Every fake behavior cites native evidence or says "assumption".
    summary must preserve identity consumption/no-replay guarantees before payload
    deletion; expiration alone is not proof. Restore must not erase known fences.
 
+A conformance claim requires an implementation profile ACCEPTED with its mapping
+test at the same frozen implementation revision. Missing values or unaccepted
+assumptions block the claim, even when all normalized classification rows pass.
+The profile MUST contain these fields (explicit finite numbers/units or justified
+never/unbounded values; a real-target profile cannot leave history unbounded):
+
+| Profile field | Required value |
+| --- | --- |
+| profile_id, profile_revision, implementation_pin | Stable identity/version, repository, full commit and build/storage configuration. |
+| contract_pin, mapping_test_pin, acceptance_ref | All four contract-file hashes/commit; test path/command/result evidence hash and accepting owner/record. |
+| target_profiles | Instance/account/scope, qualified kinds, immutable payload binding owner, native evidence hashes, read authority and supported finality/coverage guarantees. |
+| durability | Local/target loss boundaries, transaction or file publication protocol, sync/storage assumptions and ambiguous-commit recovery rule. |
+| attempt_identity | Exact uniqueness components/encoding, lineage lifetime, consumption retention and restored-lineage collision prevention. |
+| limits | Max items/request, unresolved attempts, history records/bytes, proof/answer bytes, read calls, read/deadline and lock-wait milliseconds. |
+| retention | Settled-payload/proof retention duration, identity-summary lifetime, target proof/pruning horizon and unresolved dependency protection. |
+| capacity | Admission thresholds and before-dispatch refusal; bounded read-only reconciliation at capacity, without deleting unresolved evidence. |
+| archive_restore | Archive contents, consistent restore/rollback procedure, fence/consumption preservation, writer quiescence and verified restore test/result. |
+| unsupported_assumptions | Explicit denied capabilities and remaining unknowns; accepted bounded evidence never implies a universal guarantee. |
+
 Current limits are observations, not new implementation:
 
 | Implementation | Bounds/retention today and required gap |
@@ -237,4 +321,5 @@ Current limits are observations, not new implementation:
 No cross-item atomicity, automatic retry, watcher, universal absence proof,
 new approval UI, consumer test framework or implementation cutover is specified.
 Historical S07 byte compatibility remains at v1; claiming v2 conformance requires
-mapping plus the new proof and durability obligations, not a renamed enum alone.
+an accepted profile and mapping test plus the proof/durability obligations, not a
+renamed enum alone.

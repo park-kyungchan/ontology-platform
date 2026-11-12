@@ -650,5 +650,790 @@
       "allowed_next_step": "ask_person",
       "reason": "Unqualified values cannot settle the attempt; do not infer no effect from an old value."
     }
+  ],
+  "normalization": {
+    "selection": "first_matching_rule_per_output",
+    "predicate_combination": "all",
+    "predicate_paths": "raw_input_json_pointer",
+    "outputs_independent": true,
+    "recorded_facts": "copy_unchanged",
+    "answer_rules": [
+      {
+        "id": "A01",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "lost"
+          },
+          {
+            "path": "/preconditions/loss_durable",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "none"
+        }
+      },
+      {
+        "id": "A02",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "lost"
+          },
+          {
+            "path": "/preconditions/loss_durable",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "lost"
+        }
+      },
+      {
+        "id": "A03",
+        "when": [
+          {
+            "path": "/preconditions/answer_durable",
+            "test": "equals",
+            "value": false
+          },
+          {
+            "path": "/preconditions/loss_durable",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "lost"
+        }
+      },
+      {
+        "id": "A04",
+        "when": [
+          {
+            "path": "/preconditions/answer_durable",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "none"
+        }
+      },
+      {
+        "id": "A05",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "completed_returned"
+          },
+          {
+            "path": "/preconditions/terminal",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "returned_ack"
+        }
+      },
+      {
+        "id": "A06",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "in",
+            "value": [
+              "rejected_no_effect",
+              "completed_no_effect"
+            ]
+          },
+          {
+            "path": "/preconditions/terminal",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "returned_ack"
+        }
+      },
+      {
+        "id": "A07",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "in",
+            "value": [
+              "rejected_no_effect",
+              "completed_no_effect"
+            ]
+          },
+          {
+            "path": "/preconditions/zero_partial_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "returned_ack"
+        }
+      },
+      {
+        "id": "A08",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "in",
+            "value": [
+              "rejected_no_effect",
+              "completed_no_effect"
+            ]
+          },
+          {
+            "path": "/preconditions/no_late_work",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "returned_ack"
+        }
+      },
+      {
+        "id": "A09",
+        "when": [],
+        "then": {
+          "copy_from": "/answer_claim"
+        }
+      }
+    ],
+    "later_read_rules": [
+      {
+        "id": "L01",
+        "when": [
+          {
+            "path": "/preconditions/login_failed",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "unavailable"
+        }
+      },
+      {
+        "id": "L02",
+        "when": [
+          {
+            "path": "/preconditions/budget_exhausted",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "budget_exhausted"
+        }
+      },
+      {
+        "id": "L03",
+        "when": [
+          {
+            "path": "/preconditions/identity_matches",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "identity_mismatch"
+        }
+      },
+      {
+        "id": "L04",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "accepted"
+          },
+          {
+            "path": "/preconditions/answer_durable",
+            "test": "equals",
+            "value": true
+          },
+          {
+            "path": "/preconditions/operation_id_durable",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L05",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "accepted"
+          },
+          {
+            "path": "/preconditions/answer_durable",
+            "test": "equals",
+            "value": true
+          },
+          {
+            "path": "/preconditions/proof_bound",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L06",
+        "when": [
+          {
+            "path": "/answer_claim",
+            "test": "equals",
+            "value": "accepted"
+          },
+          {
+            "path": "/preconditions/answer_durable",
+            "test": "equals",
+            "value": true
+          },
+          {
+            "path": "/payload_binding",
+            "test": "equals",
+            "value": "none"
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L07",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "token_applied_current",
+              "token_applied_diverged",
+              "token_sealed",
+              "token_rejected",
+              "token_conflict_no_effect",
+              "operation_pending",
+              "operation_applied_verified",
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected",
+              "operation_done_unverified",
+              "operation_unobservable"
+            ]
+          },
+          {
+            "path": "/preconditions/proof_bound",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L08",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "token_applied_current",
+              "token_applied_diverged",
+              "token_sealed",
+              "token_rejected",
+              "token_conflict_no_effect",
+              "operation_pending",
+              "operation_applied_verified",
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected",
+              "operation_done_unverified",
+              "operation_unobservable"
+            ]
+          },
+          {
+            "path": "/payload_binding",
+            "test": "equals",
+            "value": "none"
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L09",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "operation_pending",
+              "operation_applied_verified",
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected",
+              "operation_done_unverified",
+              "operation_unobservable"
+            ]
+          },
+          {
+            "path": "/preconditions/operation_id_durable",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L10",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "token_applied_current"
+          },
+          {
+            "path": "/preconditions/projections_verified",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "unavailable"
+        }
+      },
+      {
+        "id": "L11",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "token_sealed",
+              "token_rejected",
+              "token_conflict_no_effect"
+            ]
+          },
+          {
+            "path": "/preconditions/zero_partial_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L12",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "token_sealed",
+              "token_rejected",
+              "token_conflict_no_effect"
+            ]
+          },
+          {
+            "path": "/preconditions/no_late_work",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L13",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "token_sealed"
+          },
+          {
+            "path": "/preconditions/no_past_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L14",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "operation_applied_verified",
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected",
+              "operation_done_unverified"
+            ]
+          },
+          {
+            "path": "/preconditions/terminal",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "operation_pending"
+        }
+      },
+      {
+        "id": "L15",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "operation_applied_verified"
+          },
+          {
+            "path": "/preconditions/projections_verified",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "operation_done_unverified"
+        }
+      },
+      {
+        "id": "L16",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected"
+            ]
+          },
+          {
+            "path": "/preconditions/zero_partial_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "operation_done_unverified"
+        }
+      },
+      {
+        "id": "L17",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "operation_no_effect",
+              "operation_conflict_no_effect",
+              "operation_rejected"
+            ]
+          },
+          {
+            "path": "/preconditions/no_late_work",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "operation_done_unverified"
+        }
+      },
+      {
+        "id": "L18",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "absence_desired_closed",
+              "absence_undesired_closed"
+            ]
+          },
+          {
+            "path": "/preconditions/proof_bound",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "contradictory"
+        }
+      },
+      {
+        "id": "L19",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "absence_desired_closed",
+              "absence_undesired_closed"
+            ]
+          },
+          {
+            "path": "/preconditions/coverage_complete",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "incomplete_absence"
+        }
+      },
+      {
+        "id": "L20",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "absence_desired_closed",
+              "absence_undesired_closed"
+            ]
+          },
+          {
+            "path": "/preconditions/no_late_work",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "absence_open"
+        }
+      },
+      {
+        "id": "L21",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "absence_desired_closed",
+              "absence_undesired_closed"
+            ]
+          },
+          {
+            "path": "/preconditions/projections_verified",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "absence_open"
+        }
+      },
+      {
+        "id": "L22",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "absence_undesired_closed"
+          },
+          {
+            "path": "/preconditions/no_past_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "absence_open"
+        }
+      },
+      {
+        "id": "L23",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "absence_undesired_closed"
+          },
+          {
+            "path": "/preconditions/zero_partial_effect",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "absence_open"
+        }
+      },
+      {
+        "id": "L24",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "in",
+            "value": [
+              "value",
+              "desired",
+              "before",
+              "other"
+            ]
+          },
+          {
+            "path": "/preconditions/authoritative_value",
+            "test": "equals",
+            "value": false
+          }
+        ],
+        "then": {
+          "literal": "unavailable"
+        }
+      },
+      {
+        "id": "L25",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "value"
+          },
+          {
+            "path": "/preconditions/matches_desired",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "desired"
+        }
+      },
+      {
+        "id": "L26",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "value"
+          },
+          {
+            "path": "/preconditions/matches_before",
+            "test": "equals",
+            "value": true
+          }
+        ],
+        "then": {
+          "literal": "before"
+        }
+      },
+      {
+        "id": "L27",
+        "when": [
+          {
+            "path": "/read_claim",
+            "test": "equals",
+            "value": "value"
+          }
+        ],
+        "then": {
+          "literal": "other"
+        }
+      },
+      {
+        "id": "L28",
+        "when": [],
+        "then": {
+          "copy_from": "/read_claim"
+        }
+      }
+    ]
+  },
+  "normalization_cases": [
+    {"id":"uncommitted_answer","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":false,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"none","later_read":"not_read"},"expected_row":"R37","expected_state":"dispatch_possible","allowed_next_step":"read_again"},
+    {"id":"durable_loss_after_answer","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":false,"loss_durable":true,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"lost","later_read":"not_read"},"expected_row":"R36","expected_state":"answer_lost","allowed_next_step":"read_again"},
+    {"id":"returned_timeout","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"returned_timeout","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_timeout","later_read":"not_read"},"expected_row":"R35","expected_state":"timeout_returned","allowed_next_step":"read_again"},
+    {"id":"ack_is_not_completion","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":false,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"returned_ack","later_read":"desired"},"expected_row":"R39","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"final_return_equality","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"completed_returned","later_read":"desired"},"expected_row":"R27","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"desired_wins_value_tie","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"value","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":true,"matches_before":true}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"completed_returned","later_read":"desired"},"expected_row":"R27","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"before_value_no_noeffect_proof","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"value","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":true}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"completed_returned","later_read":"before"},"expected_row":"R28","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"third_value_conflict","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"value","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"completed_returned","later_read":"other"},"expected_row":"R29","expected_state":"conflict","allowed_next_step":"never_retry"},
+    {"id":"native_id_not_payload_proof","source":"MU:U3","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_applied_verified","payload_binding":"none","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"immutable_adapter_payload_binding","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_applied_verified","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_applied_verified"},"expected_row":"R16","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"completed_refresh_kept_deleted_text","source":"MU:U7,U15","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_applied_verified","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":false,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_done_unverified"},"expected_row":"R21","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"accepted_identifier_not_durable","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"accepted","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":false,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"accepted","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"wrong_payload_binding","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_applied_verified","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":false,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"child_error_parent_still_pending","source":"MF:F4","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"returned_ack","read_claim":"operation_no_effect","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":false,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_ack","later_read":"operation_pending"},"expected_row":"R20","expected_state":"async_accepted","allowed_next_step":"read_again"},
+    {"id":"partial_failure_not_noeffect","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_no_effect","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":false,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_done_unverified"},"expected_row":"R21","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"unreadable_operation","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_unobservable","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_unobservable"},"expected_row":"R21","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"operation_zero_effect_final","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_no_effect","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_no_effect"},"expected_row":"R17","expected_state":"not_applied","allowed_next_step":"new_attempt_new_identity"},
+    {"id":"operation_final_rejection","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_rejected","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_rejected"},"expected_row":"R19","expected_state":"rejected","allowed_next_step":"new_attempt_new_identity"},
+    {"id":"token_without_payload_binding","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_applied_current","payload_binding":"none","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"qualified_token_application","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_applied_current","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"token_applied_current"},"expected_row":"R11","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"token_application_then_drift","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_applied_diverged","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"token_applied_diverged"},"expected_row":"R12","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"missing_token_is_not_sealed","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_sealed","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":false,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"qualified_token_seal","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_sealed","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"token_sealed"},"expected_row":"R13","expected_state":"not_applied","allowed_next_step":"new_attempt_new_identity"},
+    {"id":"document_fact_absence_not_pages","source":"MU:U10,U15","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":false,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"incomplete_absence"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"listed_retraction_reads_not_global_barrier","source":"MF:F1b,removal-sequence","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":false,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"incomplete_absence"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"qualified_complete_retraction","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_desired_closed"},"expected_row":"R22","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"current_absence_not_history","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_undesired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":false,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_open"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"qualified_no_creation_history","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_undesired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_undesired_closed"},"expected_row":"R23","expected_state":"not_applied","allowed_next_step":"new_attempt_new_identity"},
+    {"id":"login_failure_no_observation","source":"NR:addendum","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"lost","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":true,"login_failed":true,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"lost","later_read":"unavailable"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"later_authorized_read_same_attempt","source":"NR:addendum-shape;save-assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"lost","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":true,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"lost","later_read":"desired"},"expected_row":"R30","expected_state":"answer_lost","allowed_next_step":"read_again"},
+    {"id":"login_failure_before_fence","source":"NR:addendum-shape","raw_input":{"recorded_facts":{"stage":"prepared","evidence_kind":"operation_record","saved_state":null},"answer_claim":"none","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":true,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"prepared","evidence_kind":"operation_record","saved_state":null},"answer":"none","later_read":"unavailable"},"expected_row":"R07","expected_state":"pre_effect_recorded","allowed_next_step":"nothing"},
+    {"id":"login_failure_keeps_settled_history","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"settled","evidence_kind":"operation_record","saved_state":"applied"},"answer_claim":"completed_returned","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":true,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"settled","evidence_kind":"operation_record","saved_state":"applied"},"answer":"completed_returned","later_read":"unavailable"},"expected_row":"R01","expected_state":"applied","allowed_next_step":"nothing"},
+    {"id":"unqualified_value_read","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer_claim":"completed_returned","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":false,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"returned_value","saved_state":null},"answer":"completed_returned","later_read":"unavailable"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"rejection_without_finality","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"rejected_no_effect","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":false,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_ack","later_read":"not_read"},"expected_row":"R38","expected_state":"answer_returned","allowed_next_step":"read_again"},
+    {"id":"definite_final_rejection","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"rejected_no_effect","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"rejected_no_effect","later_read":"not_read"},"expected_row":"R25","expected_state":"rejected","allowed_next_step":"new_attempt_new_identity"},
+    {"id":"accepted_operation_bound","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"accepted","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":false,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"accepted","later_read":"not_read"},"expected_row":"R33","expected_state":"async_accepted","allowed_next_step":"read_again"},
+    {"id":"unsupported_token_kind_denied","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"none","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_applied_current","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"none","saved_state":null},"answer":"completed_returned","later_read":"token_applied_current"},"expected_row":"R24","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"contradictory_answer_and_token","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"rejected_no_effect","read_claim":"token_applied_current","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"rejected_no_effect","later_read":"token_applied_current"},"expected_row":"R10","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"read_identity_mismatch","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":false,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"identity_mismatch"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"reconciliation_budget_exhausted","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":true,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"budget_exhausted"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"login_failure_standalone_read","source":"NR:addendum-shape","raw_input":{"recorded_facts":{"stage":"absent","evidence_kind":"none","saved_state":null},"answer_claim":"none","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":true,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"absent","evidence_kind":"none","saved_state":null},"answer":"none","later_read":"unavailable"},"expected_row":"R05","expected_state":"unrecorded","allowed_next_step":"nothing"},
+    {"id":"later_standalone_read_no_attempt","source":"NR:addendum-shape","raw_input":{"recorded_facts":{"stage":"absent","evidence_kind":"none","saved_state":null},"answer_claim":"none","read_claim":"desired","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"absent","evidence_kind":"none","saved_state":null},"answer":"none","later_read":"desired"},"expected_row":"R05","expected_state":"unrecorded","allowed_next_step":"nothing"},
+    {"id":"loss_not_durably_recorded","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"lost","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"none","later_read":"not_read"},"expected_row":"R37","expected_state":"dispatch_possible","allowed_next_step":"read_again"},
+    {"id":"noeffect_answer_missing_terminal","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_no_effect","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":false,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_ack","later_read":"not_read"},"expected_row":"R38","expected_state":"answer_returned","allowed_next_step":"read_again"},
+    {"id":"noeffect_answer_missing_zero_partial_effect","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_no_effect","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":false,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_ack","later_read":"not_read"},"expected_row":"R38","expected_state":"answer_returned","allowed_next_step":"read_again"},
+    {"id":"accepted_unbound_payload","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"accepted","read_claim":"not_read","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":false,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"accepted","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"accepted_native_id_only","source":"MU:U3","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"accepted","read_claim":"not_read","payload_binding":"none","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"accepted","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"operation_id_not_saved","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_pending","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":false,"terminal":false,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"returned_ack","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"token_current_value_not_observed","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_applied_current","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":false,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"unavailable"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"token_rejection_partial_unknown","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_rejected","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":false,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"seal_without_past_absence","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer_claim":"completed_returned","read_claim":"token_sealed","payload_binding":"native","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":false,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"target_token","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"operation_can_finish_later","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer_claim":"completed_returned","read_claim":"operation_no_effect","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":false,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"operation_record","saved_state":null},"answer":"completed_returned","later_read":"operation_done_unverified"},"expected_row":"R21","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"absence_wrong_binding","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":false,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"contradictory"},"expected_row":"R09","expected_state":"manual_reconciliation","allowed_next_step":"ask_person"},
+    {"id":"absence_while_work_may_finish","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":false,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_open"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"absence_not_all_projections","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_desired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":true,"no_late_work":true,"no_past_effect":true,"projections_verified":false,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_open"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"},
+    {"id":"absence_with_partial_effect","source":"synthetic_assumption","raw_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer_claim":"completed_returned","read_claim":"absence_undesired_closed","payload_binding":"adapter_immutable","preconditions":{"answer_durable":true,"loss_durable":false,"login_failed":false,"identity_matches":true,"proof_bound":true,"operation_id_durable":true,"terminal":true,"zero_partial_effect":false,"no_late_work":true,"no_past_effect":true,"projections_verified":true,"coverage_complete":true,"authoritative_value":true,"budget_exhausted":false,"matches_desired":false,"matches_before":false}},"normalized_input":{"recorded_facts":{"stage":"fenced","evidence_kind":"complete_absence","saved_state":null},"answer":"completed_returned","later_read":"absence_open"},"expected_row":"R32","expected_state":"not_observable","allowed_next_step":"read_again"}
   ]
 }

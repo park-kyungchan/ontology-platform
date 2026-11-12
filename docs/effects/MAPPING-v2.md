@@ -11,7 +11,29 @@ TF is /home/palantirkc/work/workspace-strategy-reassessment-20261109.
 BP is TF/academy-context-20261111/BUILD-PLAN-P8-S3.md;
 NA is TF/academy-context-20261111/NATIVE-ANSWERS-P8.md;
 MP is TF/memory-20261111/BUILD-PLAN-P10-P1b.md;
-MD is TF/memory-20261111/DESIGN-P10-MEMORY-v3.md.
+MD is TF/memory-20261111/DESIGN-P10-MEMORY-v3.md;
+MU is TF/memory-20261111/MEASURE-U1-U15.md;
+MF is TF/memory-20261111/MEASURE-U-FOLLOWUP.md;
+NR is TF/academy-context-20261111/REPORT-P8-RECORD-NATIVE.md (final addendum).
+All external anchors below are pinned by SHA256 of exact bytes; a mismatching
+live file is not that source version. Copy retrieval is the owner's concern;
+private evidence stays on the host. Engine code stays at the full commit above.
+MP changed concurrently; its exact pinned bytes are retained at task-local
+o24-scratch/r1/d6890d063a77f3fc44fe7a2d185177f28d704539fbff234e8a0de24cd2f9fc5d.md, never silently replaced by later plan bytes.
+
+| Anchor | SHA256 |
+| --- | --- |
+| C/state.rs | 91292cfadee559854bf544082f4a5bc4353c03625c6530d7fdfd228d2bc7b734 |
+| C/approval.rs | 444339c5e0174714414b622066e91d944d1436e1e579b3af20f56381a979a9fd |
+| C/service.rs | b0cd50e64952c581275d2e40650cc076e5ebd949945c00a9bafbbe875a32686d |
+| BP | 28ea94ae59211204f5fb9325b0b3b49bcd5868c4503f1a93f17f0605925ba570 |
+| NA | 1e5ea7eddbf89bde07defbff4aaefaaa5860b809bf62078cd1ad68c31848e101 |
+| NR | 276fc71196e034e921845bcb936e19f0d2d195b947fcbb4ba7ce878152f3bdbc |
+| MP | d6890d063a77f3fc44fe7a2d185177f28d704539fbff234e8a0de24cd2f9fc5d |
+| MD | 76a52a0a144881d4c85fc18dc8095d2a65377edcfc57ba9722b5873b1e8308a2 |
+| MU | 6ce5370b8dd5876b77901b267446dcbcf3ba497aa3b1711864f6b80bab80eb15 |
+| MF | 91cb5c5d4ab2044bba1a14e5675d9a4ff93d1aea381a5f010e7cd529acd6352c |
+
 BP/MP are plans, C is code; they are not evidence that the redesign is implemented.
 NA is private host evidence: only these non-payload conclusions/locators are cited;
 no captures, identifiers, narratives or lightly renamed private values belong here.
@@ -27,7 +49,7 @@ no captures, identifiers, narratives or lightly renamed private values belong he
 | no_effect | not_applied | crates/ont-store/src/actions.rs:325; durable target seal in crates/ont-store/src/fake.rs:263 prevents future apply. |
 | conflict_no_effect | conflict | crates/ont-store/src/actions.rs:326; target token records compare-and-set rejection at crates/ont-store/src/fake.rs:250. It is not proof that this attempt applied another writer's value. |
 | manual_reconciliation | manual_reconciliation | crates/ont-store/src/actions.rs:324; own application proof with conflicting subsequent value/version retains fence. |
-| Evidence::ValueOnly | dispatch_possible | crates/ont-store/src/actions.rs:310; no proof is promoted even when desired value matches; v2 kind none. |
+| Evidence::ValueOnly | pre_effect_recorded, dispatch_possible, applied, not_applied, conflict, manual_reconciliation | State-preserving, v2 kind none: prior reviewed/settled records return at crates/ont-store/src/actions.rs:296-297; prior possible_dispatch remains dispatch_possible at :310-313; prior manual_reconciliation, persisted after divergence at :324,331, remains manual_reconciliation at :310-313. No desired-value match promotes proof or downgrades R12. |
 
 Cannot express as distinct item states today: answer_returned, answer_lost,
 timeout_returned, async_accepted, rejected and not_observable. The six-value enum
@@ -85,15 +107,18 @@ Native qualification: returned_value after save is still an assumption. NA:53-54
 explicitly records no mutation, returned-timeout, lost-answer or recovery trial;
 NA:41 disproves using sourceRevision/wireDigest as a content hash. Its actual
 read metadata does not qualify a mutation boundary. No native successful-absence
-proof was established (NA:39). The native document itself is not vendored.
+proof was established (NA:39). NR:21-22's later successful read after a login
+failure supplies no new item state: unavailable is no observation, R32 if fenced,
+R05/R07 before dispatch; a later authorized read needs no new effect attempt and
+must not invent an earlier returned answer. The native documents are not vendored.
 
 ## Memory plan: projection status and operation facts
 
 | Today's name / planned fact | Contract states | Source path:line and qualification |
 | --- | --- | --- |
 | pending | pre_effect_recorded, dispatch_possible, answer_returned, answer_lost, timeout_returned, async_accepted, not_observable, manual_reconciliation | MP:76-77; row hidden before remote work, but status alone collapses every attempt/phase and proof condition. |
-| ready | applied | MP:78,85; projection convergence only after that row's document/fact/page/read-port barriers. Equal verified ready is a domain no-op (MP:70), not a new applied attempt. |
-| superseded | applied | MP:86; for desired deletion, withdraw after complete absence/barriers. Final-id refusal (MP:88) is local admission, not a dispatched rejection. Final status alone is not a reusable effect proof. |
+| ready | applied | MP:78,84; projection convergence only after that row's document/fact/page/read-port barriers. Equal verified ready is a domain no-op (MP:70), not a new applied attempt. |
+| superseded | applied | MP:85; for desired deletion, withdraw after complete absence/barriers. Final-id refusal (MP:88) is local admission, not a dispatched rejection. Final status alone is not a reusable effect proof. |
 | Earlier operation discovered, nonterminal | async_accepted | MP:72; bind identifier to item/payload/phase, wait boundedly, never dispatch a second operation. Discovery is not evidence of success. |
 | operation_terminal_unobservable | not_observable | MP:72; pending projection remains hidden, other rows continue. Terminal state without visible proofs is not a settled success or failure. |
 | Retain/delete acknowledgement lost | answer_lost, not_observable | MP:77,93; inspect operation/projection before retry. A rerun's selected Git tip is not proof that the old attempt failed. |
@@ -106,7 +131,7 @@ Cannot express independently through pending/ready/superseded today: unrecorded
 timeout_returned, async_accepted, rejected, not_applied, conflict,
 not_observable and manual_reconciliation; pre_effect_recorded versus remote work
 also needs phase facts. These statuses describe current projection visibility,
-not immutable attempt history: ready -> pending repair is intentional (MP:87).
+not immutable attempt history: ready -> pending repair is intentional (MP:86).
 Do not map that repair as changing an old settled applied attempt.
 
 Predicted gaps: R20/R21/R33 require durable operation/phase/attempt binding which
@@ -114,17 +139,38 @@ is not a field in MP:80-88's listed projection schema; R35/R36/R38 cannot be
 reconstructed from pending alone. P19/P20 must retain these facts on the pending
 object's edit record (assessment disposition), or provide a qualified bound target
 lookup. P24/P25 must prove immutable prior-attempt results as well as visibility
-(MP:195-196). R02/R03/R13/R17/R19/R23/R25/R26 require a NEW attempt identity after
+(MP:204-206). R02/R03/R13/R17/R19/R23/R25/R26 require a NEW attempt identity after
 no-effect, whereas MP:92's same-tip phase identity and same-UUID retry plan lack a
 separate consumed-attempt identity. Same remote document ID is allowed; resending
 an old attempt is not. No same-tip retry is authorized merely by a new run.
-R22/R23 require complete closed coverage; MP:91 explicitly leaves U10 unresolved.
-U14 operation finality and U3 submission idempotency remain assumptions; the
-measurement file was absent. None of these are measured native failures.
+R22/R23 require complete closed coverage; MP:91 now permits the explicit bounded
+assertion "absent on the listed reads", while leaving general U10 coverage open.
+MU:U3 now establishes operation-ID deduplication, including silently ignored
+changed bytes for a reused ID; native token-plus-payload proof is unsupported.
+The adapter must own an immutable operation-id/payload-hash binding before a bound
+operation_record may be claimed. MU:U14 establishes scoped paginated discovery,
+child payload readback and terminal inspection, not failure-retry or pruning
+horizons. MF:F4's extraction error leaves parent pending and child retrying;
+normalize that observed active work as operation_pending -> R20, never no-effect.
+MU:U10 found no index completeness/absence token on served recall/search ports.
+MU:U7/U15's completed empty refresh retains deleted page/search text: its exact
+normalization is operation_done_unverified -> R21, NEVER R16. Document 404,
+zero paginated facts and empty source membership do not release the pending row.
+MF:F1's measured retraction deletes the source document and affected mental model,
+then reads exact document/model/page/history 404, zero source facts, absent tree
+node, absent marker on REST/MCP searches and recall, and the old MCP page's missing
+BODY. Its evidence kind is complete_absence at that explicitly bounded listed-read
+scope, conditional on an accepted profile/finality; clear/PATCH do not. Recreated navigation uses new ids and verified empty content.
+MP:91 records permission for that bounded assertion, not a universal index
+barrier or accepted implementation profile. For an arbitrary-query/bank profile,
+normalization_cases keeps coverage_complete=false -> R32. Qualification
+remains held for binding, failure/finality/retention and full retraction coverage.
+These are scoped measured counterexamples and unknowns, not blanket assumptions.
 
 ## What each mapping must prove, without prescribing its test design
 
-Each implementation pins the contract/data and accounts for all normalized table
+Each implementation supplies an accepted implementation profile with its mapping
+test, pins the contract/data and accounts for all normalized table
 inputs in its declared capability profile, including denial of unsupported proof
 kinds. It proves durable pre-dispatch ordering, one dispatch per attempt, bounded
 read-only recovery, correct returned/lost/timeout/accepted separation, no retry
@@ -142,6 +188,6 @@ resolution API (C/service.rs:940-960); and native Academy answers now exist but
 qualify reads only (NA:53-54), not writes. The assessment's "only Academy has
 returned-vs-lost" is about implemented field records; MP:72,77,93 already specifies
 lost-ack operation inspection as future work. No equivalence of mechanisms follows.
-The packet's private-repository premise is contradicted by MP:146 and the current
+The packet's private-repository premise is contradicted by MP:149 and the current
 GitHub repository metadata (ontology-platform visibility public); acquisition must
 still fail closed if access changes, never silently request a new credential.
