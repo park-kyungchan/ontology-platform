@@ -96,14 +96,18 @@ impl AroundSource for Probe<'_, '_> {
         self.named_reads.set(self.named_reads.get() + 1);
         self.tx.head_access(id)
     }
-    fn scan_head_access(
+    fn candidate_access(
         &self,
         ty: &str,
+        condition: Option<&ont_store::schema_mode::CandidateCondition>,
+        now: u64,
         limit: usize,
         after: Option<&Id>,
+        scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
         self.metadata_reads.set(self.metadata_reads.get() + 1);
-        self.tx.scan_head_access(ty, limit, after)
+        self.tx
+            .candidate_access(ty, condition, now, limit, after, scopes)
     }
     fn head_after_access(&self, access: &HeadAccess) -> Result<Option<SchemaHead>, StoreRefusal> {
         self.payload_reads.borrow_mut().push(access.id.clone());

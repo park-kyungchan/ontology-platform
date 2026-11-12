@@ -177,6 +177,7 @@ version = "0.1.0"
 dependencies = [
  "ont-core",
  "ont-store",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

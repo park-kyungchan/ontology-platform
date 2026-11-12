@@ -1,4 +1,4 @@
-//! Store mode `Schema` (format 3): schema installs, typed ingest,
+//! Store mode `Schema` (format 4; upgrades format 3 on open): schema installs, typed ingest,
 //! retraction-aware reads and the action log. Library only; packet O3 adds
 //! the binary that calls this.
 //!
@@ -16,6 +16,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
+
+#[path = "candidates.rs"]
+mod candidates;
+pub use candidates::CandidateCondition;
 
 /// A schema-mode refusal: a stable code, and for `schema_violation` the
 /// first violation (its code and JSON pointer) that caused it.
@@ -262,6 +266,7 @@ fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool
 
 /// A transaction-scoped, read-only schema/head view. Metadata precedes payloads.
 pub struct SchemaRead<'a> {
+    trigger_cache: &'a candidates::TriggerCache,
     tx: &'a Transaction<'a>,
     schemas: SchemaSet,
 }
@@ -420,10 +425,13 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        candidates::ensure(&mut store.connection, &store.schemas)?;
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
-    /// Open a store that must already exist and already be a format 3
-    /// store. The connection is read-only, there is no create flag, and an
+    /// Open an existing format 4 store read-only. A format 3 store is
+    /// migrated once through a writable connection before reopening read-only.
+    /// No create flag is used, and an
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
     pub fn open_schema_existing(path: &Path) -> Result<Self, StoreRefusal> {
@@ -457,6 +465,15 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        if !writable && !candidates::exists(&store.connection)? {
+            drop(store);
+            drop(Self::open_schema_existing_with(path, true)?);
+            return Self::open_schema_existing_with(path, false);
+        }
+        if writable {
+            candidates::ensure(&mut store.connection, &store.schemas)?;
+        }
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
     pub fn memory_schema() -> Result<Self, StoreRefusal> {
@@ -466,6 +483,8 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        candidates::ensure(&mut store.connection, &store.schemas)?;
+        candidates::protected(&store.connection, &store.candidate_triggers)?;
         Ok(store)
     }
     fn require_schema(&self) -> Result<(), StoreRefusal> {
@@ -492,14 +511,17 @@ impl Store {
         read: impl FnOnce(&SchemaRead<'_>) -> T,
     ) -> Result<T, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.read_tx()?;
         let schemas = refreshed_set(&cached, &tx)?;
         let result = read(&SchemaRead {
+            trigger_cache: &trigger_cache,
             tx: &tx,
             schemas: schemas.clone(),
         });
         drop(tx);
+        self.candidate_triggers.set(trigger_cache.get());
         self.schemas = schemas;
         Ok(result)
     }
@@ -567,9 +589,11 @@ impl Store {
         f: impl FnOnce(&mut SchemaWrite<'_>) -> Result<T, StoreRefusal>,
     ) -> Result<T, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let schemas = refreshed_set(&cached, &tx)?;
+        candidates::require_current(&tx, &trigger_cache)?;
         let mut handle = SchemaWrite {
             tx: &tx,
             schemas: schemas.clone(),
@@ -577,6 +601,7 @@ impl Store {
         };
         let result = f(&mut handle)?;
         drop(handle);
+        candidates::checkpoint(&tx)?;
         map_db(tx.commit())?;
         self.schemas = schemas;
         Ok(result)
@@ -585,7 +610,7 @@ impl Store {
     /// Install one checked schema file inside one IMMEDIATE transaction.
     /// A domain's version only grows; different bytes of an installed
     /// version refuse; installing the exact bytes of the latest installed
-    /// version again is a no-op.
+    /// version again leaves the schema unchanged and repairs a stale projection.
     pub fn install_schema(
         &mut self,
         bytes: &[u8],
@@ -613,9 +638,14 @@ impl Store {
         source_path: Option<String>,
     ) -> Result<SchemaPin, StoreRefusal> {
         self.require_schema()?;
+        let trigger_cache = self.candidate_triggers.clone();
         let cached = self.schemas.clone();
         let tx = self.write_tx()?;
         let set = refreshed_set(&cached, &tx)?;
+        let projection_dirty = !candidates::current(&tx, &trigger_cache)?;
+        if projection_dirty {
+            candidates::repair_triggers(&tx)?;
+        }
         let candidate_domain = Schema::parse(bytes).map(|s| s.domain).unwrap_or_default();
         let others: BTreeSet<String> = set
             .pins()
@@ -677,6 +707,10 @@ impl Store {
                         ))?;
                     }
                 }
+                if projection_dirty {
+                    candidates::rebuild(&tx, &set)?;
+                }
+                candidates::checkpoint(&tx)?;
                 map_db(tx.commit())?;
                 self.schemas = set;
                 return Ok(pin);
@@ -713,6 +747,7 @@ impl Store {
                 ],
             ))?;
         }
+        candidates::rebuild(&tx, &load_schema_set(&tx)?)?;
         map_db(tx.commit())?;
         // No reload outside a transaction: reuse the set read in this
         // transaction plus the new install. If that cannot be built, the
@@ -1479,6 +1514,9 @@ pub(crate) fn append_schema_in(
             observation.revision
         ],
     ))?;
+    if let Some(head) = head_in(tx, id)? {
+        candidates::project(tx, schemas, &head)?;
+    }
     Ok(())
 }
 

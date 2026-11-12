@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 3 store.
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 migrates on open).
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -217,7 +217,98 @@ A domain server uses the library without the command: `Context::new(store_path, 
 - References from record strings: a property of type `{"ref":T}` on a source-owned type may be filled by `from` or `template`, plus a transform. The indexer builds the one reference representation the store and `get` already use, the full `Id` object `{"object_type":T,"namespace":<the domain namespace>,"native_key":<the resolved string>}`; an empty or unresolved string gives the unresolved (`missing`) state, never a reference to an empty key. A reference whose target object does not exist is stored as it is (the target may be indexed later or by another source): `get` returns the full `Id` object for it and `search` can match it with `eq` on the full `Id` or find its absence with `unresolved`, even while the target object itself is not found. `schema check` refuses such a property when `T` is not declared in the domain (`unknown_type`, as the link checks use). `unresolved` on a reference property means the property has no value, not that its target is absent; a reference to a retracted or never indexed object stays as stored.
 
 ## search
-- `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. The 10,000-head scan cap counts heads the principal may not read (a limit until scoped grants exist).
+- `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. `scanned` now counts admitted candidate heads evaluated on this page; hidden and retracted heads consume neither the scan budget nor lookahead.
+
+
+All four readers use the same visible candidate access and one read snapshot
+per operation. The renderer shares its allowance across all pages; `around`
+shares its per-type allowance across all hops. Numeric limits:
+
+| Reader | Candidate/head allowance | Output/other allowance |
+| --- | --- | --- |
+| `search` | 10,000 admitted candidates per page | 1-1,000 rows, default 100 |
+| `around` | 10,000 unique admitted heads per type across all hops; candidates at first hop | 1-3 hops, 10,000 reference entries, 1-1,000 rows (default 100) |
+| `aggregate` | 10,000 admitted candidates per operation | 2 group keys, 1 count metric, 1,000 buckets, 1,024 bytes/group value |
+| `render` | 10,000 admitted candidates across all pages | 1-1,000 displayed rows, default 200; exact omitted count |
+
+Candidate selection and search pagination:
+
+- `limit`: 1 to 1,000 matching returned objects, default 100. Continuation means
+  another admitted candidate exists, not necessarily another matching row.
+- Scan budget: 10,000 admitted candidates evaluated per page; an additional
+  admitted candidate refuses `result_too_large` unless the row limit was reached.
+- Candidates: the first `eq` or `in` leaf reachable through `all` nodes supplies
+  a necessary property condition. `any`, `none`, other operators and no filter
+  provide no condition and retain an unfiltered scan. Empty `in` is supported.
+- Unresolved used properties, historical schema pins, partial coverage and stale
+  heads remain candidates even if the selected equality cannot match, preserving
+  their existing qualification/exclusion effects. `scanned` counts candidates;
+  aggregate `oldest_observed_at` is the minimum timestamp of admitted candidates,
+  not excluded fresh/complete heads. Other basis fields keep their definitions.
+- Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
+  bounded as documented above. No payload is loaded before metadata admission.
+
+The store maintains a format-4 `head_candidates` projection transactionally.
+`visibility` stores each matching grant's canonical namespace/domain/scope-key
+predicate; `scope_keys` stores the actual object's key/value map. Omitted grant
+keys keep native wildcard semantics. The primary key is
+`(object_type,visibility,property,value,instance,account,native_key)`.
+Current read admission (type, namespace, domain and scope-key equality) is fully
+represented by these partitions; Authority/session checks still run before
+payload loading. No inaccessible head needs a residual per-head work budget.
+
+Equality/uncertain postings and 16 hexadecimal expiry prefixes per live head
+permit at most 240 stale equality streams per readable scope. Every stream uses
+an indexed keyset seek after the previous object key and returns at most 256
+metadata rows. A bounded merge retains only the first 256 unique keys. There is
+no UNION materialization or SQL sort; work is bounded by stream count times
+admitted candidates plus fixed seek overhead, independently of hidden heads.
+With 100,000 fresh superseded and 201 current heads, only current/uncertain/stale
+postings are read and 201 payloads are loaded. Unsupported filter forms also use
+the visibility-aware admission/lookahead loop: intentionally, hidden tails no
+longer create continuations or consume the old raw-head allowance.
+
+A nominally read-only open of format 3 performs a one-time writable migration,
+then reopens read-only. This preserves automatic upgrade for existing callers;
+unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
+atomically; two openers serialize. Backfill/schema upgrades read live payloads
+in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
+that head's postings in the write transaction; backfills do not replace them.
+
+Older binaries reject format 4 on both read-only and writable opens. Before
+migration, quiesce old writers and keep a consistent store copy and its matching
+binary. Binary rollback requires restoring that pre-migration store copy, with
+any subsequent edits handled by the operator; binary-only rollback cannot open
+format 4. No db56e16 projection was installed outside disposable tests, so there
+is one migration path from format 3; disposable predecessor projections rebuild
+in that same migration. Do not manually lower the format marker.
+
+Database triggers on every INSERT/UPDATE/DELETE of `objects`, `observations`
+and `schema_installs` advance a mutation generation, even through an older
+connection opened before migration. These tables contain every candidate input:
+identity/scope/head, observation values/freshness/pins, and schema bytes including
+grants. `links` and `action_log` are not inputs to candidate membership.
+Native projecting writes record the projected generation in their transaction;
+partial writes refuse if the starting projection is stale. Each candidate page
+compares generations inside its read snapshot and refuses `projection_stale`
+on mismatch. Searches do not acquire a write lock or start a rebuild.
+
+Repair explicitly with `ont --store STORE schema install FILE`, using the exact
+installed schema bytes (or its `--from CHECKOUT --commit SHA --path PATH` form).
+An identical install repairs all domains under IMMEDIATE; `changed:false` still
+refers to the schema pin. Rebuild and checkpoint commit together; interruption
+rolls back and leaves the old correct projection or the stale refusal.
+SQLite's schema cookie invalidates pre-migration prepared statements so their
+next execution runs the newly installed triggers; the held-connection regression
+executes and asserts this reprepare. The format barrier remains in place.
+
+The compatibility guarantee covers every binary of this repository, opened
+before or after migration. Trigger definitions are checked at open and before
+candidate reads, cached against SQLite's schema cookie; missing/changed triggers
+refuse until identical-schema repair recreates them and rebuilds atomically.
+Arbitrary SQL modification (dropping triggers, disabling them on a connection,
+or editing tables) is outside what the store can detect; presence checks do not
+detect a connection-local trigger switch.
 
 ## mcp
 `ont [--store PATH] mcp [--client NAME]` is a Model Context Protocol server over stdio: newline-delimited JSON-RPC 2.0, one request per line on stdin, one JSON line per response on stdout, nothing else on stdout; no listener, no threads. `--client`, when given, matches `^[a-z0-9][a-z0-9-]{0,31}$` (else the refusal `invalid_request`, before stdin is read); when `--client` is absent, `initialize` supplies `clientInfo.name` only when `valid_client` accepts it; absent, empty or invalid names use `mcp`. An explicit `--client` wins, except the reserved name `cli` also maps to `mcp`, so MCP writes never share the CLI action namespace. Actions record this client, the per-call `agent` (falling back to nonempty `ONT_AGENT`) and optional `session` through `Context`, subject to the library actor bounds. The uid check is that of the other subcommands.
@@ -270,7 +361,7 @@ For example, the synthetic `render-board.json` test fixture declares:
 objects are omitted; stale values have ` (stale)` appended. Unresolved knowledge
 states appear as `(missing)`, `(null)`, `(blank)`, `(unknown)`, `(not_performed)`.
 Cells escape pipes, line breaks and HTML comment delimiters. Rendering uses
-search admission and its 10,000-head bound, with no hidden-object totals.
+search admission and a 10,000-candidate whole-render bound, with no hidden-object totals.
 
 Three forms (use `--store` with a test store; omitting it selects the host store):
 
@@ -306,12 +397,11 @@ An argument-bearing opening line has the form
 More matching rows than the limit add a final table row containing
 `(+N more; limit L)` with the exact omitted count. No timestamp is generated.
 
-Rendering reads schema metadata and each search page in separate short read
-transactions; it holds no read transaction while opening another connection.
-A block is deterministic for an unchanged store and fixed `now`; it is not a
-snapshot across pages: concurrent actions or schema installs can change later
-pages, counts or values. For a coherent whole-block view, render after writers
-have finished. The `(stale)` suffix still follows the trusted clock.
+Rendering reads schema metadata and every page in one SQLite read snapshot.
+Concurrent writes cannot change later pages, counts, ordering or values in that
+block; their commits may wait for the bounded render to finish. The remaining
+10,000-candidate allowance is passed to each page before loading payloads, with
+no raw-head preflight. The `(stale)` suffix follows the trusted clock.
 
 `--write` holds an exclusive advisory lock on the persistent
 `<target file name>.ont-render.lock` sidecar beside the target, from before the
@@ -385,6 +475,8 @@ admission precedes every payload load, including reverse scans. Hidden and missi
 targets both contribute to `dangling`, with identical answers. Each hop removes
 duplicate IDs. The final set is sorted by ID, capped at `limit` (default 100,
 maximum 1,000); `matched` counts the full final set, with no continuation token.
+The first hop uses the filter candidate condition and its unresolved basis.
+Reverse scans use unfiltered visible candidates; named forward targets use metadata admission.
 At most 10,000 unique admitted heads per type may be loaded across all hops;
 otherwise the operation refuses `result_too_large`. Basis `scanned`, `stale`
 and `partial` count unique admitted heads used by starting/reverse scans or
@@ -409,9 +501,9 @@ is supported; other metrics refuse `unsupported_metric` at `/metrics`.
 The answer has `kind: aggregation`, `groups:[{key:{status:"open"},count:0},...]`
 and basis `scanned`, `unresolved_excluded`, `stale`, `partial`,
 `oldest_observed_at` (null for no admitted heads), `qualified`, `stale_sources`.
-Read and derive grants are required on the type and on each readable object's
+Read and derive grants are required on the type and on each candidate object's
 scope, before loading payloads. Hidden objects affect no counts. Bounds are
-10,000 admitted heads, 2 distinct group properties, 1 metric, 1,000 buckets
+10,000 admitted candidates, 2 distinct group properties, 1 metric, 1,000 buckets
 including enum zero buckets, and 1,024 compact JSON bytes per group value.
 Enum keys expand all declared combinations, including on an empty store when
 all keys are enums; mixed keys expand for observed non-enum combinations.

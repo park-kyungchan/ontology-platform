@@ -602,7 +602,7 @@ fn scan_limit_is_ten_thousand_heads() {
         account: "root".into(),
     };
     let mut store = ont_store::Store::open_schema(Path::new(&t.store())).unwrap();
-    let mut put = |from: usize, to: usize| {
+    let mut put = |from: usize, to: usize, text: &str| {
         store
             .write(1, |tx| {
                 for i in from..to {
@@ -623,7 +623,7 @@ fn scan_limit_is_ten_thousand_heads() {
                             coverage: Coverage::Complete,
                             fields: BTreeMap::from([(
                                 "text".to_string(),
-                                Knowledge::Value(json!("none")),
+                                Knowledge::Value(json!(text)),
                             )]),
                             lineage: Lineage {
                                 artifact_sha256: "a".repeat(64),
@@ -636,8 +636,9 @@ fn scan_limit_is_ten_thousand_heads() {
             })
             .unwrap();
     };
-    put(0, 10_000);
-    let req = json!({"object_type":"note","where":{"eq":["text","absent"]}});
+    put(0, 10_000, "none");
+    put(10_000, 10_001, "excluded"); // A raw scan would now refuse.
+    let req = json!({"object_type":"note","where":{"all":[{"eq":["text","none"]},{"eq":["text","absent"]}]}});
     let (code, ans) = search(&t, 2, &req);
     assert_eq!(code, 0, "{ans}");
     assert_eq!(ans["result"]["basis"]["scanned"], 10_000);

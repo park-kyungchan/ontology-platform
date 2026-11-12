@@ -10,7 +10,7 @@
 //! exist (`unavailable`), and hidden objects are not counted. A comparison
 //! on a property that is not in `value` state is unknown (three-valued
 //! logic): such an object is excluded and counted in `unresolved_excluded`.
-//! At most 10,000 heads are scanned per request, else `result_too_large`;
+//! At most 10,000 admitted candidate heads are scanned per request, else `result_too_large`;
 //! retracted heads are never scanned.
 use crate::get::OneObject;
 use crate::principal::Principal;
@@ -18,13 +18,13 @@ use crate::refusal::{open_store, st};
 use crate::{Answer, Context, Failure, Refusal, internal};
 use ont_core::schema::{PropertyType, ScalarType, Schema};
 use ont_core::{Id, Knowledge, Object, Output, Query, Response};
-use ont_store::schema_mode::SchemaHead;
+use ont_store::schema_mode::{CandidateCondition, SchemaHead, SchemaRead};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Heads scanned per request.
+/// Admitted candidate heads scanned per request.
 pub const SCAN_LIMIT: usize = 10_000;
 pub const DEFAULT_LIMIT: u64 = 100;
 pub const MAX_LIMIT: u64 = 1_000;
@@ -361,8 +361,37 @@ pub(crate) fn check_filter(
     Ok(checker.used)
 }
 
+/// Select the first necessary equality leaf; disjunction/negation cannot
+/// supply one. Other used properties retain their unresolved basis effects.
+pub(crate) fn candidate_condition(
+    filter: Option<&Filter>,
+    used: &BTreeSet<String>,
+) -> Option<CandidateCondition> {
+    let (property, values) = match filter? {
+        Filter::Eq(p, v) => (p.clone(), vec![v.clone()]),
+        Filter::In(p, vs) => (p.clone(), vs.clone()),
+        Filter::All(fs) => return fs.iter().find_map(|f| candidate_condition(Some(f), used)),
+        _ => return None,
+    };
+    Some(CandidateCondition {
+        property,
+        values,
+        used: used.clone(),
+    })
+}
+
 fn unavailable() -> Failure {
     Refusal::new(ont_core::Error::Unavailable.code()).into()
+}
+
+pub(crate) fn read_scopes(principal: &Principal, ty: &str) -> Vec<ont_core::Scope> {
+    principal
+        .view()
+        .entries
+        .iter()
+        .filter(|e| e.read.contains(ty))
+        .map(|e| e.scope.clone())
+        .collect()
 }
 
 pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
@@ -381,8 +410,18 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         Some(n) => n,
     } as usize;
     let mut store = open_store(&ctx.store, false)?;
-    let set = st!(store.schema_set()).clone();
-    let principal = Principal::bind(&set)?;
+    st!(store.read_schema(|tx| read_search(ctx, req, limit, SCAN_LIMIT, tx)))
+}
+
+pub(crate) fn read_search(
+    ctx: &Context,
+    req: &SearchRequest,
+    limit: usize,
+    scan_limit: usize,
+    tx: &SchemaRead<'_>,
+) -> Result<Answer, Failure> {
+    let set = tx.schema_set();
+    let principal = Principal::bind(set)?;
     let revision = principal.revision()?;
     // A type that does not exist and one the principal may not read look the
     // same, before anything else about the request is judged.
@@ -397,7 +436,7 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
         return Err(unavailable());
     }
     let mut checker = Checker {
-        set: &set,
+        set,
         schema,
         object_type: &req.object_type,
         leaves: 0,
@@ -419,7 +458,7 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
             })
         }
     };
-    let heads = st!(store.scan_heads(&req.object_type, SCAN_LIMIT, after.as_ref()));
+    let condition = candidate_condition(req.filter.as_ref(), &used);
     let admission = principal
         .authority()
         .admit(principal.session())
@@ -431,92 +470,124 @@ pub fn search(ctx: &Context, req: &SearchRequest) -> Result<Answer, Failure> {
     });
     let mut basis = Basis::default();
     let mut objects: Vec<Value> = Vec::new();
-    let mut last_matched: Option<usize> = None;
-    for (index, head) in heads.iter().enumerate() {
-        let obs = &head.head.observation;
-        let object = Object {
-            id: head.id.clone(),
-            scope: head.scope.clone(),
-            head: obs.revision.clone(),
-            observations: vec![obs.clone()],
-        };
-        let response = admission.query(
-            &OneObject(Some(object)),
-            Query::Get {
-                id: head.id.clone(),
-            },
+    let scopes = read_scopes(&principal, &req.object_type);
+    let mut cursor = after;
+    let mut continuation = None;
+    'pages: loop {
+        let page = st!(tx.candidate_access(
+            &req.object_type,
+            condition.as_ref(),
             ctx.now,
-        );
-        let view = match response {
-            Ok(Response::Ok {
-                authorization_revision,
-                result: Output::Objects { mut objects },
-            }) if objects.len() == 1 => {
-                // The same check as `get`: the answer's generation is the
-                // one the principal was bound under.
-                if authorization_revision != revision {
-                    return Err(Failure::Internal(internal!("authority_generation_changed")));
+            256,
+            cursor.as_ref(),
+            &scopes
+        ));
+        if page.is_empty() {
+            break;
+        }
+        for access in page {
+            cursor = Some(access.id.clone());
+            if access.retracted {
+                continue;
+            }
+            // Admit metadata before fetching any observation payload, including
+            // the lookahead used to decide continuation or scan overflow.
+            let metadata = Object {
+                id: access.id.clone(),
+                scope: access.scope.clone(),
+                head: String::new(),
+                observations: vec![],
+            };
+            match admission.query(
+                &OneObject(Some(metadata)),
+                Query::Get {
+                    id: access.id.clone(),
+                },
+                ctx.now,
+            ) {
+                Ok(Response::Ok { .. }) => {}
+                Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => continue,
+                _ => return Err(Failure::Internal(internal!("authority_failure"))),
+            }
+            if objects.len() == limit {
+                continuation = objects
+                    .last()
+                    .and_then(|o| o["id"]["native_key"].as_str())
+                    .map(encode_continuation);
+                break 'pages;
+            }
+            if basis.scanned == scan_limit as u64 {
+                return Err(Refusal::new("result_too_large").into());
+            }
+            let Some(head) = st!(tx.head_after_access(&access)) else {
+                continue;
+            };
+            let obs = &head.head.observation;
+            let object = Object {
+                id: head.id.clone(),
+                scope: head.scope.clone(),
+                head: obs.revision.clone(),
+                observations: vec![obs.clone()],
+            };
+            let response = admission.query(
+                &OneObject(Some(object)),
+                Query::Get {
+                    id: head.id.clone(),
+                },
+                ctx.now,
+            );
+            let view = match response {
+                Ok(Response::Ok {
+                    authorization_revision,
+                    result: Output::Objects { mut objects },
+                }) if objects.len() == 1 => {
+                    // The same check as `get`: the answer's generation is the
+                    // one the principal was bound under.
+                    if authorization_revision != revision {
+                        return Err(Failure::Internal(internal!("authority_generation_changed")));
+                    }
+                    objects.remove(0)
                 }
-                objects.remove(0)
+                Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => continue,
+                _ => return Err(Failure::Internal(internal!("authority_failure"))),
+            };
+            let Some(observed) = view.observations.into_iter().next() else {
+                return Err(Failure::Internal(internal!("authority_failure")));
+            };
+            basis.scanned += 1;
+            let stale = observed.stale;
+            let partial = obs.coverage == ont_core::Coverage::Partial;
+            if stale {
+                basis.stale += 1;
+                if let Some(s) = &source {
+                    basis
+                        .stale_sources
+                        .insert(format!("{s}: ont index --source {s}"));
+                }
             }
-            Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => continue,
-            _ => return Err(Failure::Internal(internal!("authority_failure"))),
-        };
-        let Some(observed) = view.observations.into_iter().next() else {
-            return Err(Failure::Internal(internal!("authority_failure")));
-        };
-        basis.scanned += 1;
-        let stale = observed.stale;
-        let partial = obs.coverage == ont_core::Coverage::Partial;
-        if stale {
-            basis.stale += 1;
-            if let Some(s) = &source {
-                basis
-                    .stale_sources
-                    .insert(format!("{s}: ont index --source {s}"));
+            if partial {
+                basis.partial += 1;
             }
-        }
-        if partial {
-            basis.partial += 1;
-        }
-        let used_resolved = used
-            .iter()
-            .all(|p| matches!(obs.fields.get(p), Some(Knowledge::Value(_))));
-        if !used_resolved {
-            basis.used_unresolved = true;
-        }
-        let verdict = match &req.filter {
-            None => Tri::True,
-            Some(f) => eval(f, &obs.fields),
-        };
-        match verdict {
-            Tri::False => {}
-            Tri::Unknown => basis.unresolved_excluded += 1,
-            Tri::True => {
-                basis.matched += 1;
-                objects.push(object_json(head, ty, &observed));
-                last_matched = Some(index);
-                if objects.len() == limit {
-                    break;
+            let used_resolved = used
+                .iter()
+                .all(|p| matches!(obs.fields.get(p), Some(Knowledge::Value(_))));
+            if !used_resolved {
+                basis.used_unresolved = true;
+            }
+            let verdict = match &req.filter {
+                None => Tri::True,
+                Some(f) => eval(f, &obs.fields),
+            };
+            match verdict {
+                Tri::False => {}
+                Tri::Unknown => basis.unresolved_excluded += 1,
+                Tri::True => {
+                    basis.matched += 1;
+                    objects.push(object_json(&head, ty, &observed));
                 }
             }
         }
     }
-    // More heads after the last one looked at?
-    let scanned_all = heads.len() < SCAN_LIMIT;
-    let continuation = if objects.len() == limit {
-        let at = last_matched.unwrap_or(0);
-        let more = at + 1 < heads.len() || !scanned_all;
-        more.then(|| encode_continuation(&heads[at].id.native_key))
-    } else {
-        if !scanned_all {
-            let id = &heads[heads.len() - 1].id;
-            if !st!(store.scan_heads(&req.object_type, 1, Some(id))).is_empty() {
-                return Err(Refusal::new("result_too_large").into());
-            }
-        }
-        None
-    };
     let qualified = basis.stale == 0
         && basis.partial == 0
         && basis.unresolved_excluded == 0

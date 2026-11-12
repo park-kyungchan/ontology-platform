@@ -1,6 +1,6 @@
 //! Deterministic Markdown views and atomic replacement of generated blocks.
 use crate::refusal::{open_store, st};
-use crate::search::{Filter, SearchRequest, search};
+use crate::search::{self, Filter, SearchRequest};
 use crate::{Answer, Context, Failure, Refusal};
 use ont_core::schema::{PropertyType, Schema, ViewDef, ViewDirection};
 use serde::Deserialize;
@@ -238,24 +238,29 @@ pub fn __set_between_pages_hook(hook: impl FnOnce() + 'static) {
 
 pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
-    let set = st!(store.schema_set()).clone();
+    st!(store.read_schema(|tx| read_render(ctx, req, tx)))
+}
+fn read_render(
+    ctx: &Context,
+    req: &RenderRequest,
+    tx: &ont_store::schema_mode::SchemaRead<'_>,
+) -> Result<Answer, Failure> {
+    let set = tx.schema_set();
     let (schema, view) = set
         .pins()
         .keys()
         .filter_map(|d| set.schema(d))
         .find_map(|s| s.views.get(&req.view).map(|v| (s, v)))
         .ok_or_else(|| Refusal::new("unavailable"))?;
-    // Admission precedes argument checks, exactly as search.
-    search(
-        ctx,
-        &SearchRequest {
-            op: None,
-            object_type: view.object_type.clone(),
-            filter: None,
-            limit: Some(1),
-            continuation: None,
-        },
-    )?;
+    // Type admission precedes argument checks without scanning extra heads.
+    let principal = crate::principal::Principal::bind(set)?;
+    if !principal
+        .view()
+        .read_types(&schema.domain)
+        .contains(&view.object_type)
+    {
+        return Err(Refusal::new("unavailable").into());
+    }
     for name in &view.args {
         if !req.args.contains_key(name) {
             return Err(invalid(name, "required argument declared by the view").into());
@@ -297,16 +302,6 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
             })
         })
         .transpose()?;
-    // Enforce search's bound on raw heads, including objects admission hides.
-    // Pagination must not multiply the per-type scan allowance.
-    let heads = st!(store.scan_heads(&view.object_type, crate::search::SCAN_LIMIT, None));
-    if heads.len() == crate::search::SCAN_LIMIT
-        && let Some(last) = heads.last()
-        && !st!(store.scan_heads(&view.object_type, 1, Some(&last.id))).is_empty()
-    {
-        return Err(Refusal::new("result_too_large").into());
-    }
-    drop(heads);
     let mut request = SearchRequest {
         op: None,
         object_type: view.object_type.clone(),
@@ -317,7 +312,14 @@ pub fn render(ctx: &Context, req: &RenderRequest) -> Result<Answer, Failure> {
     let mut objects = Vec::new();
     let mut scanned = 0;
     loop {
-        let Answer::Enveloped { result, .. } = search(ctx, &request)? else {
+        let Answer::Enveloped { result, .. } = search::read_search(
+            ctx,
+            &request,
+            1000,
+            crate::search::SCAN_LIMIT - scanned as usize,
+            tx,
+        )?
+        else {
             return Err(crate::internal!("render_search_failed").into());
         };
         scanned += result["basis"]["scanned"].as_u64().unwrap_or(0);

@@ -6,7 +6,9 @@ use crate::search::{self, DEFAULT_LIMIT, Filter, MAX_LIMIT, SCAN_LIMIT, Tri};
 use crate::{Answer, Context, Failure, Refusal, internal};
 use ont_core::schema::{LinkType, Owner, SchemaSet};
 use ont_core::{Admission, Id, Knowledge, Object, Query, Response, Scope};
-use ont_store::schema_mode::{HeadAccess, SchemaHead, SchemaRead, StoreRefusal};
+use ont_store::schema_mode::{
+    CandidateCondition, HeadAccess, SchemaHead, SchemaRead, StoreRefusal,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -128,11 +130,14 @@ struct Basis {
 pub(crate) trait AroundSource {
     fn schema_set(&self) -> &SchemaSet;
     fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal>;
-    fn scan_head_access(
+    fn candidate_access(
         &self,
         ty: &str,
+        condition: Option<&CandidateCondition>,
+        now: u64,
         limit: usize,
         after: Option<&Id>,
+        scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal>;
     fn head_after_access(&self, access: &HeadAccess) -> Result<Option<SchemaHead>, StoreRefusal>;
 }
@@ -143,13 +148,16 @@ impl AroundSource for SchemaRead<'_> {
     fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal> {
         self.head_access(id)
     }
-    fn scan_head_access(
+    fn candidate_access(
         &self,
         ty: &str,
+        condition: Option<&CandidateCondition>,
+        now: u64,
         limit: usize,
         after: Option<&Id>,
+        scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
-        self.scan_head_access(ty, limit, after)
+        self.candidate_access(ty, condition, now, limit, after, scopes)
     }
     fn head_after_access(&self, access: &HeadAccess) -> Result<Option<SchemaHead>, StoreRefusal> {
         self.head_after_access(access)
@@ -229,11 +237,19 @@ impl Reader<'_, '_> {
             None => Ok(None),
         }
     }
-    fn scan(&mut self, ty: &str) -> Result<Vec<Arc<SchemaHead>>, Failure> {
+    fn scan(
+        &mut self,
+        ty: &str,
+        condition: Option<&CandidateCondition>,
+        scopes: &[Scope],
+    ) -> Result<Vec<Arc<SchemaHead>>, Failure> {
         let mut after = None;
         let mut heads = Vec::new();
         loop {
-            let page = st!(self.tx.scan_head_access(ty, 256, after.as_ref()));
+            let page =
+                st!(self
+                    .tx
+                    .candidate_access(ty, condition, self.now, 256, after.as_ref(), scopes));
             if page.is_empty() {
                 break;
             }
@@ -369,7 +385,9 @@ fn read_around(
         basis: Basis::default(),
     };
     let mut current = BTreeMap::new();
-    for head in reader.scan(&req.from.object_type)? {
+    let condition = search::candidate_condition(req.from.filter.as_ref(), &used);
+    let scopes = search::read_scopes(&principal, &req.from.object_type);
+    for head in reader.scan(&req.from.object_type, condition.as_ref(), &scopes)? {
         let fields = &head.head.observation.fields;
         if used
             .iter()
@@ -404,7 +422,11 @@ fn read_around(
         let mut next = BTreeMap::new();
         if hop.reverse {
             if !current.is_empty() {
-                for head in reader.scan(target_type)? {
+                for head in reader.scan(
+                    target_type,
+                    None,
+                    &search::read_scopes(&principal, target_type),
+                )? {
                     match refs(&head, &hop.link.via, &mut examined)? {
                         Some(ids) => {
                             let mut linked = false;
