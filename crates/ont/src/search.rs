@@ -79,7 +79,7 @@ impl SearchRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "use search for op search, around for search_around",
+                "use search for op search, around for search_around, aggregate for aggregate",
             ));
         }
         let req: Self = crate::cli::parse_request(bytes)?;

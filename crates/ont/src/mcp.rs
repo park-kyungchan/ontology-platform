@@ -175,11 +175,12 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::SetRead),
             spec: json!({"name":"ont_search",
-         "description":"op: search (default) or search_around. search: object_type, where e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]; continuation pages. search_around: from {object_type,where?}, path 1-3 link names (ont_describe). limit 1-1000, default 100. Basis reports qualification.",
+         "description":"op: search (default) or search_around or aggregate. search: object_type, where e.g. {\"eq\":[\"status\",\"open\"]}; also ne lt le gt ge prefix [property,value], in [property,[values]], unresolved property, all|any|none [filters]; continuation pages. search_around: from {object_type,where?}, path 1-3 link names (ont_describe). limit 1-1000, default 100. Basis reports qualification. aggregate: object_type, where?, group_by 0-2 properties, metrics:[count]; requires derive.",
          "inputSchema":{"type":"object",
-            "properties":{"op":{"enum":["search","search_around"]},"object_type":s,"where":{"type":"object"},
+            "properties":{"op":{"enum":["search","search_around","aggregate"]},"object_type":s,"where":{"type":"object"},
                 "from":{"type":"object","required":["object_type"],"properties":{"object_type":s,"where":{"type":"object"}}},
                 "path":{"type":"array","items":s,"minItems":1,"maxItems":3},
+                "group_by":{"type":"array","items":s,"maxItems":2},"metrics":{"const":["count"]},
                 "limit":{"type":"integer","minimum":1,"maximum":1000},"continuation":s}}}),
         },
         Tool {

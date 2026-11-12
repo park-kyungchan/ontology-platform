@@ -39,7 +39,7 @@ impl AroundRequest {
             return Err(Refusal::input(
                 "invalid_request",
                 "/op",
-                "around accepts search_around; use search for search",
+                "around accepts search_around; use search for search, aggregate for aggregate",
             ));
         }
         Ok(req)
@@ -125,7 +125,7 @@ struct Basis {
     used_unresolved: bool,
     stale_sources: BTreeSet<String>,
 }
-trait AroundSource {
+pub(crate) trait AroundSource {
     fn schema_set(&self) -> &SchemaSet;
     fn head_access(&self, id: &Id) -> Result<Option<HeadAccess>, StoreRefusal>;
     fn scan_head_access(
@@ -278,7 +278,7 @@ fn refs<'a>(
 }
 
 // Qualification requires value states even for an explicit unresolved predicate.
-fn unresolved_properties(filter: &Filter, used: &mut BTreeSet<String>) {
+pub(crate) fn unresolved_properties(filter: &Filter, used: &mut BTreeSet<String>) {
     match filter {
         Filter::Unresolved(p) => {
             used.insert(p.clone());

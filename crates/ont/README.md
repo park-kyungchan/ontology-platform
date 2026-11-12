@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `action list|validate|apply` over a format 3 store.
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 3 store.
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -399,3 +399,45 @@ is charged before iteration or target lookups, also in reverse scans; hidden
 source heads consume no entries. Exceeding `MAX_REFERENCE_ENTRIES` refuses
 `result_too_large` with `max_reference_entries: 10000`. Loaded heads are shared
 without copying their reference arrays before this check.
+
+## Count aggregation
+
+`ont aggregate` and `ont_search` with `"op":"aggregate"` accept
+`{"object_type":"instruction_conflict","group_by":["status"],"metrics":["count"]}`
+and optional `where` using the search filter grammar. Only `metrics:["count"]`
+is supported; other metrics refuse `unsupported_metric` at `/metrics`.
+The answer has `kind: aggregation`, `groups:[{key:{status:"open"},count:0},...]`
+and basis `scanned`, `unresolved_excluded`, `stale`, `partial`,
+`oldest_observed_at` (null for no admitted heads), `qualified`, `stale_sources`.
+Read and derive grants are required on the type and on each readable object's
+scope, before loading payloads. Hidden objects affect no counts. Bounds are
+10,000 admitted heads, 2 distinct group properties, 1 metric, 1,000 buckets
+including enum zero buckets, and 1,024 compact JSON bytes per group value.
+Enum keys expand all declared combinations, including on an empty store when
+all keys are enums; mixed keys expand for observed non-enum combinations.
+`group_by` may be omitted for zero keys. `where` uses search membership,
+including `unresolved`, `any` and `none`; missing filter values are evaluated
+by that grammar. Historical incompatible filter values are excluded and counted.
+Only matching rows need resolved group values; oversized or incompatible
+historical group values are excluded and counted, never a request-wide refusal.
+Any exclusion, stale/partial head or unresolved used filter value prevents qualification.
+
+Group properties must have a declared worst-case compact JSON size <=1,024 bytes;
+otherwise preflight refuses `unsupported_group_property`, naming the property
+and a usable declaration, independently of the stored rows:
+
+| Declared type | Size guarantee and admission |
+| --- | --- |
+| Enum value type | Largest encoded member; all members must fit. |
+| Boolean | 5 bytes; admitted. |
+| Integer, timestamp | 20 bytes; admitted. |
+| Date | 12 bytes; admitted. |
+| Decimal, including non-enum value types | Unbounded spelling without `max_bytes`; admitted with `max_bytes <=1022` (plus two quotes). |
+| String, including non-enum value types | Unbounded without `max_bytes`; admitted with `max_bytes <=170` (up to six encoded bytes per input byte, plus two quotes). Pattern-derived bounds are not inferred. |
+| Reference | Id fields have length limits, but their worst-case escaped representation exceeds 1,024 bytes; refused. |
+| Array | No declared item-count limit; refused. |
+| Struct | Admitted if field-name overhead plus every field's recursively declared bound fits; inner strings have no `max_bytes` declaration. |
+
+Bucket order compares keys in `group_by` order: enum components follow declared
+enum order, other components sort by canonical encoded JSON. JSON object fields
+are recursively sorted for identity, independently of map construction order.
