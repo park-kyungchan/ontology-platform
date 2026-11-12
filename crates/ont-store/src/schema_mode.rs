@@ -1,4 +1,4 @@
-//! Store mode `Schema` (format 4; upgrades format 3 on open): schema installs, typed ingest,
+//! Store mode `Schema` (format 4; writable opens upgrade format 3): schema installs, typed ingest,
 //! retraction-aware reads and the action log. Library only; packet O3 adds
 //! the binary that calls this.
 //!
@@ -467,7 +467,7 @@ impl Store {
         Ok(store)
     }
     /// Open an existing format 4 store read-only. Format 3 or older projection
-    /// semantics upgrade once through a writable connection, then reopen read-only.
+    /// semantics refuse with `store_upgrade_required`; the owner upgrades on a writable open.
     /// No create flag is used, and an
     /// empty or foreign file refuses with `store_failure` and keeps its
     /// bytes. A missing file is `store_not_found`.
@@ -503,9 +503,7 @@ impl Store {
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
         if !writable && !candidates::semantics_current(&store.connection)? {
-            drop(store);
-            drop(Self::open_schema_existing_with(path, true)?);
-            return Self::open_schema_existing_with(path, false);
+            return Err(StoreRefusal::new("store_upgrade_required"));
         }
         if writable {
             candidates::ensure(&mut store.connection, &store.schemas)?;

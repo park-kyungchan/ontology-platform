@@ -10,7 +10,7 @@ license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.145"
+serde_json = "=1.0.150"
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 sha2 = "=0.10.9"
 ont-core = { path = "crates/ont-core", version = "=0.1.0" }

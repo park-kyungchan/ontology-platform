@@ -349,6 +349,12 @@ fn semantics_rebuild_failure_preserves_projection_and_version() {
             .unwrap(),
             generation
         );
+        assert_eq!(
+            Store::open_schema_existing(&f.path).err().unwrap().code,
+            "store_upgrade_required"
+        );
+        assert_eq!(semantics_marker(&old), marker);
+        drop(Store::open_schema_existing_writable(&f.path).unwrap());
         drop(Store::open_schema_existing(&f.path).unwrap());
         assert_eq!(semantics_marker(&old), Some(1));
         assert_eq!(projection_snapshot(&old), projection);

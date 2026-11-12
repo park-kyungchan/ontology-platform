@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 migrates on open).
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 upgrades only on a writable open; a read refuses with `store_upgrade_required`).
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -192,6 +192,9 @@ validate and apply refuse `rule_value_stale`. Store-link refusals use the expand
 
 ## Embedding
 A domain server uses the library without the command: `Context::new(store_path, now)` is the supported constructor (`Context` is `#[non_exhaustive]`; `with_snapshot_bounds` is the documented test constructor) (then set its fields: the store path, a trusted `now`, `client`, `agent`, `session`), then call the public functions `ont::action::list_actions`, `ont::action::validate_action`, `ont::action::apply_action`, `ont::get::get` and `ont::search::search` with their public request types (`ListActionsRequest`, `ValidateActionRequest`, `ApplyActionRequest`, `GetRequest`, `SearchRequest`). Install the server's own schema into its own store file first (for example with `ont_store::Store::install_schema`).
+A read-only open that needs a format or projection upgrade refuses with `store_upgrade_required`; the owner's first writable open performs the upgrade.
+Create a private store and install its schema with `ont::schema::install` and `InstallRequest`: for a non-default store path whose parent exists, it creates the missing file with mode 0600 before SQLite opens it.
+A consumer pins `ont-core`, `ont-store` and `ont` to one Git `rev` of this repository.
 - The uid rule is the caller's: the command checks real = effective uid 0 before binding principal `agent`; a library caller must do the same check itself (see `ont::check_uid`) before it trusts a `Context`. Attribution in the action log is self-reported; it is not authentication.
 - The store file has one owner process family: every process opens the file itself, SQLite's write lock admits one writer at a time, and no second process family may write the SQLite file, `edits.jsonl`, or the schema installs directly.
 
