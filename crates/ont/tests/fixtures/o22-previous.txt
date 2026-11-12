@@ -1,0 +1,7 @@
+Synthetic format-3 store produced by ont binary built from origin/main
+50dd391239a880dcbabbe775321c0355588c9de1 (TASK-O22 base).
+Commands: schema install (ontology-owned record.status, create_record action),
+action apply with status ready/request_id old-ready and status superseded/request_id old-superseded.
+All commands use --store <scratch>/previous-actions.sqlite --now 1.
+Answer: search --now 10, {"object_type":"record","where":{"eq":["status","ready"]},"limit":1000}.
+No live data or raw SQL writes. The fixture contains no candidate index.

@@ -637,7 +637,7 @@ fn scan_limit_is_ten_thousand_heads() {
             .unwrap();
     };
     put(0, 10_000);
-    let req = json!({"object_type":"note","where":{"eq":["text","absent"]}});
+    let req = json!({"object_type":"note","where":{"all":[{"eq":["text","none"]},{"eq":["text","absent"]}]}});
     let (code, ans) = search(&t, 2, &req);
     assert_eq!(code, 0, "{ans}");
     assert_eq!(ans["result"]["basis"]["scanned"], 10_000);

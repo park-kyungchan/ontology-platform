@@ -217,7 +217,43 @@ A domain server uses the library without the command: `Context::new(store_path, 
 - References from record strings: a property of type `{"ref":T}` on a source-owned type may be filled by `from` or `template`, plus a transform. The indexer builds the one reference representation the store and `get` already use, the full `Id` object `{"object_type":T,"namespace":<the domain namespace>,"native_key":<the resolved string>}`; an empty or unresolved string gives the unresolved (`missing`) state, never a reference to an empty key. A reference whose target object does not exist is stored as it is (the target may be indexed later or by another source): `get` returns the full `Id` object for it and `search` can match it with `eq` on the full `Id` or find its absence with `unresolved`, even while the target object itself is not found. `schema check` refuses such a property when `T` is not declared in the domain (`unknown_type`, as the link checks use). `unresolved` on a reference property means the property has no value, not that its target is absent; a reference to a retracted or never indexed object stays as stored.
 
 ## search
-- `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. The 10,000-head scan cap counts heads the principal may not read (a limit until scoped grants exist).
+- `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. `scanned` now counts admitted candidate heads evaluated on this page; hidden and retracted heads consume neither the scan budget nor lookahead.
+
+
+O22 part A applies candidate selection to `search` only. `around`, `aggregate`
+and the renderer retain their existing scans until part B; renderer pagination
+still has its raw-head preflight. Limits for `search`:
+
+- `limit`: 1 to 1,000 matching returned objects, default 100. Continuation means
+  another admitted candidate exists, not necessarily another matching row.
+- Scan budget: 10,000 admitted candidates evaluated per page; an additional
+  admitted candidate refuses `result_too_large` unless the row limit was reached.
+- Candidates: the first `eq` or `in` leaf reachable through `all` nodes supplies
+  a necessary property condition. `any`, `none`, other operators and no filter
+  provide no condition and retain an unfiltered scan. Empty `in` is supported.
+- Unresolved used properties, historical schema pins, partial coverage and stale
+  heads remain candidates even if the selected equality cannot match, preserving
+  their existing qualification/exclusion effects. Only `scanned` changes meaning;
+  matching rows and other basis fields retain their definitions.
+- Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
+  bounded as documented above. No payload is loaded before metadata admission.
+
+The store maintains `head_candidates` in the append/schema-install transaction:
+one row per declared property of each live head, canonical JSON equality values
+and a NULL bucket for uncertain values. Indexes on type/property/value and
+type/property/freshness select postings before payload loading. With 100,000
+fresh, complete, current-schema superseded heads and 201 ready heads, a ready
+read seeks the ready/uncertain/stale postings and loads 201 payloads. SQL merges
+candidate identities in order; it can examine/sort all selected posting metadata
+per page (including hidden candidates), but never reads excluded payloads.
+
+Existing format-3 stores acquire the index atomically on first open, using a
+validated writable connection for migration, then reopen read-only for reads.
+Migration and schema upgrades rebuild the projection in 256-head pages; they
+read every live payload once and require writable storage. Repeated opens do
+not rewrite an existing index. Normal appends replace that head's projection in
+the same transaction; backfills do not replace it. Use the upgraded writer after
+migration; previous builds do not maintain this adjunct index.
 
 ## mcp
 `ont [--store PATH] mcp [--client NAME]` is a Model Context Protocol server over stdio: newline-delimited JSON-RPC 2.0, one request per line on stdin, one JSON line per response on stdout, nothing else on stdout; no listener, no threads. `--client`, when given, matches `^[a-z0-9][a-z0-9-]{0,31}$` (else the refusal `invalid_request`, before stdin is read); when `--client` is absent, `initialize` supplies `clientInfo.name` only when `valid_client` accepts it; absent, empty or invalid names use `mcp`. An explicit `--client` wins, except the reserved name `cli` also maps to `mcp`, so MCP writes never share the CLI action namespace. Actions record this client, the per-call `agent` (falling back to nonempty `ONT_AGENT`) and optional `session` through `Context`, subject to the library actor bounds. The uid check is that of the other subcommands.

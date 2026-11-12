@@ -17,6 +17,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
+#[path = "candidates.rs"]
+mod candidates;
+pub use candidates::CandidateCondition;
+
 /// A schema-mode refusal: a stable code, and for `schema_violation` the
 /// first violation (its code and JSON pointer) that caused it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +424,7 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        candidates::ensure(&mut store.connection, &store.schemas)?;
         Ok(store)
     }
     /// Open a store that must already exist and already be a format 3
@@ -457,6 +462,14 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        if !writable && !candidates::exists(&store.connection)? {
+            drop(store);
+            drop(Self::open_schema_existing_with(path, true)?);
+            return Self::open_schema_existing_with(path, false);
+        }
+        if writable {
+            candidates::ensure(&mut store.connection, &store.schemas)?;
+        }
         Ok(store)
     }
     pub fn memory_schema() -> Result<Self, StoreRefusal> {
@@ -466,6 +479,7 @@ impl Store {
         )
         .map_err(StoreRefusal::from)?;
         store.schemas = load_schema_set(&store.connection)?;
+        candidates::ensure(&mut store.connection, &store.schemas)?;
         Ok(store)
     }
     fn require_schema(&self) -> Result<(), StoreRefusal> {
@@ -713,6 +727,7 @@ impl Store {
                 ],
             ))?;
         }
+        candidates::rebuild(&tx, &load_schema_set(&tx)?)?;
         map_db(tx.commit())?;
         // No reload outside a transaction: reuse the set read in this
         // transaction plus the new install. If that cannot be built, the
@@ -1479,6 +1494,9 @@ pub(crate) fn append_schema_in(
             observation.revision
         ],
     ))?;
+    if let Some(head) = head_in(tx, id)? {
+        candidates::project(tx, schemas, &head)?;
+    }
     Ok(())
 }
 
