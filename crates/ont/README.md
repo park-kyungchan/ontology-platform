@@ -303,12 +303,16 @@ atomically; two openers serialize. Backfill/schema upgrades read live payloads
 in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
 that head's postings in the write transaction; backfills do not replace them.
 A changed candidate semantics version rebuilds the projection once at first open, linear in heads, including existing format-4 stores.
+An old projection on unwritable storage refuses read-only opens until a writable open upgrades it.
+Engines with different semantics versions that alternate on one store each rebuild at open, linear in heads.
 
-Older binaries reject format 4 on both read-only and writable opens. Before
-migration, quiesce old writers and keep a consistent store copy and its matching
-binary. Binary rollback requires restoring that pre-migration store copy, with
-any subsequent edits handled by the operator; binary-only rollback cannot open
-format 4. No db56e16 projection was installed outside disposable tests, so there
+Binaries older than format 4 reject it on both read-only and writable opens.
+A format-4 binary without the semantics marker can still write; its checkpoint
+makes the present engine rebuild at its next open. Before migrating from format 3,
+quiesce old writers and keep a consistent store copy and its matching binary.
+Rollback to a pre-format-4 binary requires restoring that pre-migration store
+copy, with any subsequent edits handled by the operator; that binary cannot
+open format 4. No db56e16 projection was installed outside disposable tests, so there
 is one migration path from format 3; disposable predecessor projections rebuild
 in that same migration. Do not manually lower the format marker.
 
@@ -317,7 +321,7 @@ and `schema_installs` advance a mutation generation, even through an older
 connection opened before migration. These tables contain every candidate input:
 identity/scope/head, observation values/freshness/pins, and schema bytes including
 grants. `links` and `action_log` are not inputs to candidate membership.
-Native projecting writes record the projected generation in their transaction;
+Native projecting writes record `projected` and `semantics_projected` together in their transaction;
 partial writes refuse if the starting projection is stale. Each candidate page
 compares generations and semantics versions inside its snapshot and refuses `projection_stale`
 on mismatch. Searches do not acquire a write lock or start a rebuild.

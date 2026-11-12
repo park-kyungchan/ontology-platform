@@ -533,6 +533,13 @@ fn hidden_oversized_head_changes_no_set_read_answer_or_counter() {
 
 #[test]
 fn legacy_projection_semantics_upgrade_excludes_oversized_heads() {
+    assert_old_projection_upgrade(true);
+}
+#[test]
+fn old_engine_checkpoint_reopen_excludes_oversized_heads() {
+    assert_old_projection_upgrade(false);
+}
+fn assert_old_projection_upgrade(remove_version_marker: bool) {
     let mut t = Temp::new();
     t.schema["version"] = json!(2);
     t.schema["views"]["all_nodes"]["filter"] = json!({"eq":["text","not present"]});
@@ -569,7 +576,7 @@ fn legacy_projection_semantics_upgrade_excludes_oversized_heads() {
     db.execute("UPDATE candidate_generation SET projected=mutation", [])
         .unwrap();
     let has_marker: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_version')", [], |r| r.get(0)).unwrap();
-    if has_marker {
+    if remove_version_marker && has_marker {
         db.execute_batch("ALTER TABLE candidate_generation DROP COLUMN semantics_version")
             .unwrap();
     }
@@ -590,6 +597,17 @@ fn legacy_projection_semantics_upgrade_excludes_oversized_heads() {
         .unwrap(),
         resolved
     );
+    if !remove_version_marker {
+        assert_eq!(
+            db.query_row(
+                "SELECT semantics_version FROM candidate_generation",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
     drop(db);
     // One ordinary read-only open must upgrade an existing format-4 store.
     drop(Store::open_schema_existing(&t.path()).unwrap());

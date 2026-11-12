@@ -18,25 +18,29 @@ pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
 // Bump whenever posting meaning changes; generation equality alone cannot
 // certify a projection built by an older engine. Zero/missing means unversioned.
 const SEMANTICS_VERSION: i64 = 1;
-fn has_semantics_version(c: &Connection) -> Result<bool, StoreRefusal> {
+fn has_generation_column(c: &Connection, name: &str) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_version')",
-        [], |r| r.get(0),
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name=?1)",
+        [name],
+        |r| r.get(0),
     ))
 }
 pub(super) fn semantics_current(c: &Connection) -> Result<bool, StoreRefusal> {
-    if !exists(c)? || !has_semantics_version(c)? {
+    if !exists(c)?
+        || !has_generation_column(c, "semantics_version")?
+        || !has_generation_column(c, "semantics_projected")?
+    {
         return Ok(false);
     }
     let recorded = map_db(
         c.query_row(
-            "SELECT semantics_version FROM candidate_generation WHERE singleton=1",
+            "SELECT semantics_version,semantics_projected=projected FROM candidate_generation WHERE singleton=1",
             [],
-            |r| r.get::<_, i64>(0),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
         )
         .optional(),
     )?;
-    Ok(recorded == Some(SEMANTICS_VERSION))
+    Ok(recorded == Some((SEMANTICS_VERSION, true)))
 }
 pub(super) type TriggerCache = std::cell::Cell<Option<(i64, bool)>>;
 fn triggers() -> impl Iterator<Item = (String, String)> {
@@ -84,8 +88,7 @@ pub(super) fn repair_triggers(c: &Connection) -> Result<(), StoreRefusal> {
     }
     Ok(())
 }
-const GENERATION_CHECK: &str =
-    "SELECT mutation=projected,semantics_version FROM candidate_generation WHERE singleton=1";
+const GENERATION_CHECK: &str = "SELECT mutation=projected AND semantics_projected=projected,semantics_version FROM candidate_generation WHERE singleton=1";
 pub(super) fn current(c: &Connection, cache: &TriggerCache) -> Result<bool, StoreRefusal> {
     if !protected(c, cache)? {
         return Ok(false);
@@ -104,7 +107,7 @@ pub(super) fn require_current(c: &Connection, cache: &TriggerCache) -> Result<()
 }
 pub(super) fn checkpoint(c: &Connection) -> Result<(), StoreRefusal> {
     map_db(c.execute(
-        "UPDATE candidate_generation SET projected=mutation,semantics_version=?1 WHERE singleton=1",
+        "UPDATE candidate_generation SET projected=mutation,semantics_projected=mutation,semantics_version=?1 WHERE singleton=1",
         [SEMANTICS_VERSION],
     ))?;
     Ok(())
@@ -273,8 +276,11 @@ pub(super) fn ensure(c: &mut Connection, set: &SchemaSet) -> Result<(), StoreRef
         "INSERT OR IGNORE INTO candidate_generation(singleton,mutation,projected) VALUES(1,0,0)",
         [],
     ))?;
-    if !has_semantics_version(&tx)? {
+    if !has_generation_column(&tx, "semantics_version")? {
         map_db(tx.execute_batch("ALTER TABLE candidate_generation ADD COLUMN semantics_version INTEGER NOT NULL DEFAULT 0 CHECK(semantics_version>=0)"))?;
+    }
+    if !has_generation_column(&tx, "semantics_projected")? {
+        map_db(tx.execute_batch("ALTER TABLE candidate_generation ADD COLUMN semantics_projected INTEGER NOT NULL DEFAULT 0 CHECK(semantics_projected>=0)"))?;
     }
     // Fresh and old-semantic projections use the same projector. DDL, postings,
     // generation and semantics marker commit or roll back in this transaction.

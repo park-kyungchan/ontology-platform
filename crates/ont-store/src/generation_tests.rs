@@ -269,6 +269,34 @@ fn current_projection_open_does_not_rebuild() {
     assert_eq!(copies, 0);
     assert!(armed, "a current projection must not enter rebuild");
     assert_eq!(semantics_marker(&store.connection), Some(1));
+    let certified: bool = store.connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('candidate_generation') WHERE name='semantics_projected')", [], |r| r.get(0)).unwrap();
+    assert!(
+        certified,
+        "native checkpoint must certify its projected generation"
+    );
+    assert!(
+        store
+            .connection
+            .query_row(
+                "SELECT semantics_projected=projected FROM candidate_generation",
+                [],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap()
+    );
+    // A mutation without a checkpoint remains stale; opening must not rebuild it.
+    let mutation = Connection::open(&f.path).unwrap();
+    mutation
+        .execute("UPDATE objects SET head=head", [])
+        .unwrap();
+    INTERRUPT_REBUILD.set(true);
+    let reopened = Store::open_schema_existing(&f.path).unwrap();
+    assert!(
+        INTERRUPT_REBUILD.replace(false),
+        "compare with projected, not mutation"
+    );
+    assert!(!current(&reopened.connection, &reopened.candidate_triggers).unwrap());
+    drop(reopened);
     // A preopened reader must not consume a projection relabelled by another engine.
     let other = Connection::open(&f.path).unwrap();
     other
@@ -330,4 +358,53 @@ fn semantics_rebuild_failure_preserves_projection_and_version() {
             4
         );
     }
+}
+
+#[test]
+fn old_engine_checkpoint_stales_preopened_reader() {
+    let f = SemanticsFixture::new("old-checkpoint-reader");
+    let mut reader = Store::open_schema_existing(&f.path).unwrap();
+    let head = reader.scan_heads("record", 1, None).unwrap().remove(0);
+    let id = head.id.clone();
+    let mut obs = head.head.observation.clone();
+    obs.supersedes = Some(obs.revision.clone());
+    obs.revision = "old-oversized".into();
+    obs.change = Change::Update;
+    obs.fields.insert(
+        "status".into(),
+        Knowledge::Value(Value::String("x".repeat(MAX_OBSERVATION_BYTES))),
+    );
+    obs.validate().unwrap();
+    let payload = serde_json::to_string(&obs).unwrap();
+    assert!(payload.len() > MAX_OBSERVATION_BYTES);
+    let resolved = format!(
+        "v{}",
+        match obs.fields.get("status").unwrap() {
+            Knowledge::Value(v) => v,
+            _ => unreachable!(),
+        }
+    );
+    let old = Connection::open(&f.path).unwrap();
+    old.execute_batch("BEGIN IMMEDIATE").unwrap();
+    old.execute("INSERT INTO observations(object_type,instance,account,native_key,revision,ordinal,payload,ingested_at,schema_domain,schema_version,change_kind) SELECT ?1,?2,?3,?4,?5,COALESCE(MAX(ordinal),-1)+1,?6,2,?7,?8,'update' FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,obs.revision,payload,head.schema_pin.domain,head.schema_pin.version]).unwrap();
+    old.execute("UPDATE objects SET head=?5 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,obs.revision]).unwrap();
+    assert_eq!(old.execute("UPDATE head_candidates SET value=?5 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 AND property='status'", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,resolved]).unwrap(),1);
+    old.execute("UPDATE candidate_generation SET projected=mutation", [])
+        .unwrap();
+    old.execute_batch("COMMIT").unwrap();
+    let condition = CandidateCondition {
+        property: "status".into(),
+        values: vec![Value::String("not present".into())],
+        used: BTreeSet::from(["status".into()]),
+    };
+    let result = reader
+        .read_schema(|tx| {
+            tx.candidate_access("record", Some(&condition), 10, 100, None, &[head.scope])
+        })
+        .unwrap();
+    eprintln!(
+        "preopened_reader_result={}",
+        result.as_ref().err().map_or("ok", |e| e.code)
+    );
+    assert_eq!(result.unwrap_err().code, "projection_stale");
 }
