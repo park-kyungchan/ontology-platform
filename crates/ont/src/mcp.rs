@@ -169,7 +169,7 @@ fn tools() -> Vec<Tool> {
         Tool {
             op: ToolOp::Read(Op::Get),
             spec: json!({"name":"ont_get",
-         "description":"One object's full history. id: objects[].id from ont_search. Hidden and missing both return unavailable. Includes schema pins and authorization_revision.",
+         "description":"Head and newest 100 observations in append order, head last; result.basis.older_omitted counts older ones left out. id: objects[].id from ont_search. Hidden and missing both return unavailable. Includes schema pins and authorization_revision.",
          "inputSchema":{"type":"object","required":["id"],"properties":{"id":id}}}),
         },
         Tool {
