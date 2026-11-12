@@ -35,6 +35,7 @@ pub enum Error {
     RetryForbidden,
     SchemaViolation,
     StoreBusy,
+    ObservationTooLarge,
 }
 impl Error {
     pub fn code(self) -> &'static str {
@@ -58,6 +59,7 @@ impl Error {
             Self::RetryForbidden => "retry_forbidden",
             Self::SchemaViolation => "schema_violation",
             Self::StoreBusy => "store_busy",
+            Self::ObservationTooLarge => "observation_too_large",
         }
     }
 }
@@ -146,6 +148,53 @@ pub struct Observation {
     pub coverage: Coverage,
     pub fields: BTreeMap<String, Knowledge>,
     pub lineage: Lineage,
+}
+/// Maximum canonical UTF-8 JSON bytes in one persisted observation.
+pub const MAX_OBSERVATION_BYTES: usize = 65_536;
+/// Maximum items in any array, including nested arrays, in an observation.
+pub const MAX_OBSERVATION_ARRAY_ITEMS: usize = 1_024;
+
+/// The shared write boundary: produce exactly the bytes to persist, with a
+/// bounded allocation, and check every array before a writer changes any row.
+pub fn observation_payload(observation: &Observation) -> Result<String, Error> {
+    struct Payload(Vec<u8>);
+    impl std::io::Write for Payload {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_OBSERVATION_BYTES - self.0.len() {
+                return Err(std::io::ErrorKind::FileTooLarge.into());
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut payload = Payload(Vec::new());
+    serde_json::to_writer(&mut payload, observation).map_err(|_| Error::ObservationTooLarge)?;
+    // JSON arrays can occur only inside value-state fields. The serialized
+    // byte bound above also bounds this walk and its stack; no values are cloned.
+    let mut values: Vec<_> = observation
+        .fields
+        .values()
+        .filter_map(|k| match k {
+            Knowledge::Value(v) => Some(v),
+            _ => None,
+        })
+        .collect();
+    while let Some(value) = values.pop() {
+        match value {
+            Value::Array(a) => {
+                if a.len() > MAX_OBSERVATION_ARRAY_ITEMS {
+                    return Err(Error::ObservationTooLarge);
+                }
+                values.extend(a);
+            }
+            Value::Object(o) => values.extend(o.values()),
+            _ => {}
+        }
+    }
+    String::from_utf8(payload.0).map_err(|_| Error::InvalidEvidence)
 }
 impl Observation {
     pub fn validate(&self) -> Result<(), Error> {

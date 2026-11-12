@@ -230,6 +230,27 @@ shares its per-type allowance across all hops. Numeric limits:
 | `around` | 10,000 unique admitted heads per type across all hops; candidates at first hop | 1-3 hops, 10,000 reference entries, 1-1,000 rows (default 100) |
 | `aggregate` | 10,000 admitted candidates per operation | 2 group keys, 1 count metric, 1,000 buckets, 1,024 bytes/group value |
 | `render` | 10,000 admitted candidates across all pages | 1-1,000 displayed rows, default 200; exact omitted count |
+| One observation | `ont_core::MAX_OBSERVATION_BYTES` = 65,536 canonical UTF-8 JSON bytes | `ont_core::MAX_OBSERVATION_ARRAY_ITEMS` = 1,024 items in every array, including nested arrays |
+| `get` history | `ont_store::schema_mode::MAX_HISTORY_OBSERVATIONS` = 100 observations | Larger history refuses `result_too_large` before copying any payload; no continuation |
+
+All observation writers share `ont_core::observation_payload` before writing any
+row of that observation. Either bound refuses `observation_too_large`. Indexed
+ingest rolls back the entire source transaction (reported as `source_failed`
+with that code); action apply rolls back all edits and the action-log row in its
+existing IMMEDIATE transaction. Other sources in an index run remain independent.
+
+Schema-mode loads check SQL `octet_length(payload)` from column metadata before
+loading the body: `length(TEXT)` counts characters, while a cast to BLOB first
+materializes the body. This check counts UTF-8 bytes without that allocation.
+A short-circuit SQL guard also checks every array before returning the payload.
+Legacy over-bound heads are excluded by `search`, `around` and `aggregate`:
+`basis.oversized_excluded` counts admitted excluded heads, forces `qualified:false`,
+and each consumes the scan allowance (`around` counts each unique head once).
+Hidden heads affect no visible count. `get` admits metadata before loading history
+and refuses `observation_too_large` for any over-bound historical observation.
+An identical-schema projection rebuild preserves uncertain postings for these
+heads, so equality-filtered reads also count their exclusion without loading them.
+These bounds change neither schema format nor store format 4.
 
 Candidate selection and search pagination:
 
@@ -243,7 +264,7 @@ Candidate selection and search pagination:
 - Unresolved used properties, historical schema pins, partial coverage and stale
   heads remain candidates even if the selected equality cannot match, preserving
   their existing qualification/exclusion effects. `scanned` counts candidates;
-  aggregate `oldest_observed_at` is the minimum timestamp of admitted candidates,
+  aggregate `oldest_observed_at` is the minimum timestamp of loadable admitted candidates,
   not excluded fresh/complete heads. Other basis fields keep their definitions.
 - Filter bounds remain depth 8, 64 leaves, 100 `in` values; request bytes remain
   bounded as documented above. No payload is loaded before metadata admission.
@@ -527,7 +548,7 @@ and a usable declaration, independently of the stored rows:
 | Decimal, including non-enum value types | Unbounded spelling without `max_bytes`; admitted with `max_bytes <=1022` (plus two quotes). |
 | String, including non-enum value types | Unbounded without `max_bytes`; admitted with `max_bytes <=170` (up to six encoded bytes per input byte, plus two quotes). Pattern-derived bounds are not inferred. |
 | Reference | Id fields have length limits, but their worst-case escaped representation exceeds 1,024 bytes; refused. |
-| Array | No declared item-count limit; refused. |
+| Array | The global 1,024-item cap does not establish a fitting 1,024-byte group bound; refused. |
 | Struct | Admitted if field-name overhead plus every field's recursively declared bound fits; inner strings have no `max_bytes` declaration. |
 
 Bucket order compares keys in `group_by` order: enum components follow declared

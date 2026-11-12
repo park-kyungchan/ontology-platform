@@ -197,7 +197,7 @@ fn around_named_target_type_head_cap_is_independent_of_start_and_reference_budge
     store.read_schema(|tx| {
         let principal=Principal::bind(tx.schema_set()).unwrap();
         let admission=principal.authority().admit(principal.session()).unwrap();
-        let mut reader=Reader {tx,admission:&admission,now:10,loaded:BTreeMap::new(),counts:BTreeMap::new(),basis:Basis::default()};
+        let mut reader=Reader {tx,admission:&admission,now:10,loaded:BTreeMap::new(),counts:BTreeMap::new(),oversized:BTreeSet::new(),basis:Basis::default()};
         assert!(reader.named(&id("node","a")).unwrap().is_some());
         for i in 0..SCAN_LIMIT { assert!(reader.named(&id("leaf",&i.to_string())).unwrap().is_some()); }
         assert_eq!(reader.basis.scanned,SCAN_LIMIT+1);
@@ -206,28 +206,14 @@ fn around_named_target_type_head_cap_is_independent_of_start_and_reference_budge
 }
 
 #[test]
-fn around_reference_limit_refuses_before_missing_target_lookups() {
+fn around_reference_limit_refuses_before_iteration() {
     let mut store = memory(false);
-    let mut update = row("node", "a", false);
-    update.observation.revision = "r1".into();
-    update.observation.change = Change::Update;
-    update.observation.supersedes = Some("r0".into());
-    update.observation.fields.insert(
-        "edges".into(),
-        Knowledge::Value(json!(vec![id("node", "z"); MAX_REFERENCE_ENTRIES + 1])),
-    );
-    store.append_schema(&[update], 10).unwrap();
-    store
-        .read_schema(|tx| {
-            let probe = Probe::new(tx, None);
-            let answer = crate::cli::render(read_around(&ctx(), &request(&["next"]), &probe), 10);
-            let answer: serde_json::Value = serde_json::from_str(&answer.stdout).unwrap();
-            assert_eq!(answer["code"], "result_too_large");
-            assert_eq!(answer["max_reference_entries"], MAX_REFERENCE_ENTRIES);
-            assert_eq!(probe.named_reads.get(), 0);
-            assert_eq!(*probe.payload_reads.borrow(), vec![id("node", "a")]);
-        })
-        .unwrap();
+    store.read_schema(|tx| {
+        let head = tx.head_after_access(&tx.head_access(&id("node", "a")).unwrap().unwrap()).unwrap().unwrap();
+        let mut examined = MAX_REFERENCE_ENTRIES;
+        assert!(matches!(refs(&head, "edges", &mut examined), Err(Failure::Refused(r)) if r.code == "result_too_large"));
+        assert_eq!(examined, MAX_REFERENCE_ENTRIES);
+    }).unwrap();
 }
 
 #[test]

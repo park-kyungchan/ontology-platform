@@ -290,6 +290,7 @@ fn append_in(transaction: &Transaction<'_>, mode: StoreMode, item: &Append) -> R
         scope,
         observation,
     } = item;
+    let payload = ont_core::observation_payload(observation)?;
     id.validate()?;
     observation.validate()?;
     // Schema-only change kinds are refused by the v1/v2 store paths.
@@ -331,7 +332,6 @@ fn append_in(transaction: &Transaction<'_>, mode: StoreMode, item: &Append) -> R
             ],
         ))?;
     }
-    let payload = serde_json::to_string(observation).map_err(|_| Error::InvalidEvidence)?;
     db(transaction.execute("INSERT INTO observations SELECT ?1,?2,?3,?4,?5,COALESCE(MAX(ordinal),-1)+1,?6 FROM observations WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,observation.revision,payload]))?;
     db(transaction.execute("UPDATE objects SET head=?5 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key,observation.revision]))?;
     Ok(())

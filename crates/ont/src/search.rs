@@ -519,8 +519,15 @@ pub(crate) fn read_search(
             if basis.scanned == scan_limit as u64 {
                 return Err(Refusal::new("result_too_large").into());
             }
-            let Some(head) = st!(tx.head_after_access(&access)) else {
-                continue;
+            let head = match tx.head_after_access(&access) {
+                Ok(Some(head)) => head,
+                Ok(None) => continue,
+                Err(e) if e.code == ont_core::Error::ObservationTooLarge.code() => {
+                    basis.scanned += 1;
+                    basis.oversized_excluded += 1;
+                    continue;
+                }
+                Err(e) => return Err(crate::refusal::store_err(e)),
             };
             let obs = &head.head.observation;
             let object = Object {
@@ -591,7 +598,8 @@ pub(crate) fn read_search(
     let qualified = basis.stale == 0
         && basis.partial == 0
         && basis.unresolved_excluded == 0
-        && !basis.used_unresolved;
+        && !basis.used_unresolved
+        && basis.oversized_excluded == 0;
     let pins: BTreeMap<_, _> = set
         .pin(&schema.domain)
         .map(|p| (schema.domain.clone(), p.clone()))
@@ -607,6 +615,7 @@ pub(crate) fn read_search(
                 "scanned":basis.scanned,
                 "matched":basis.matched,
                 "unresolved_excluded":basis.unresolved_excluded,
+                "oversized_excluded":basis.oversized_excluded,
                 "stale":basis.stale,
                 "partial":basis.partial,
                 "qualified":qualified,
@@ -621,6 +630,7 @@ pub(crate) fn read_search(
 struct Basis {
     scanned: u64,
     matched: u64,
+    oversized_excluded: u64,
     unresolved_excluded: u64,
     stale: u64,
     partial: u64,

@@ -199,7 +199,7 @@ fn unresolved_stale_partial_and_historical_heads_remain_candidates() {
     assert_eq!(ans["status"], "ok", "{ans}");
     assert_eq!(
         ans["result"]["basis"],
-        json!({"scanned":4,"matched":1,"unresolved_excluded":1,"stale":1,"partial":1,"qualified":false,"stale_sources":[]})
+        json!({"scanned":4,"matched":1,"unresolved_excluded":1,"oversized_excluded":0,"stale":1,"partial":1,"qualified":false,"stale_sources":[]})
     );
     let mut upgraded = schema(2);
     upgraded["object_types"]["record"]["properties"]["status"]["type"] = json!("integer");
@@ -258,7 +258,7 @@ fn all_preserves_other_unresolved_properties_and_unsupported_forms_stay_raw() {
 }
 
 #[test]
-fn previous_binary_store_migrates_once_and_complete_answer_is_unchanged() {
+fn previous_binary_store_migrates_once_and_preserves_existing_answer_fields() {
     let f = Fixture::new();
     std::fs::write(f.path(), include_bytes!("fixtures/o22-previous.sqlite")).unwrap();
     let before = std::fs::read(f.path()).unwrap();
@@ -272,8 +272,10 @@ fn previous_binary_store_migrates_once_and_complete_answer_is_unchanged() {
     assert_eq!(migrated, std::fs::read(f.path()).unwrap());
     assert_eq!(answer["result"]["basis"]["scanned"], 1);
     answer["result"]["basis"]["scanned"] = json!(2);
-    let old: Value =
+    let mut old: Value =
         serde_json::from_str(include_str!("fixtures/o22-previous-answer.json")).unwrap();
+    // The retained old-engine fixture stays immutable; O21 adds one zero counter.
+    old["result"]["basis"]["oversized_excluded"] = json!(0);
     assert_eq!(answer.to_string(), old.to_string());
 }
 

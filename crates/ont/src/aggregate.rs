@@ -280,6 +280,7 @@ fn read_aggregate(
         expand(&json!({}), &mut groups)?;
     }
     let (mut scanned, mut excluded, mut stale, mut partial) = (0, 0, 0, 0);
+    let mut oversized_excluded = 0;
     let mut oldest: Option<u64> = None;
     let mut stale_sources = BTreeSet::new();
     let condition = search::candidate_condition(req.filter.as_ref(), &used);
@@ -335,8 +336,15 @@ fn read_aggregate(
             if scanned == SCAN_LIMIT {
                 return Err(Refusal::new("result_too_large").into());
             }
-            let Some(head) = st!(tx.head_after_access(&access)) else {
-                continue;
+            let head = match tx.head_after_access(&access) {
+                Ok(Some(head)) => head,
+                Ok(None) => continue,
+                Err(e) if e.code == ont_core::Error::ObservationTooLarge.code() => {
+                    scanned += 1;
+                    oversized_excluded += 1;
+                    continue;
+                }
+                Err(e) => return Err(crate::refusal::store_err(e)),
             };
             scanned += 1;
             let obs = &head.head.observation;
@@ -434,8 +442,8 @@ fn read_aggregate(
             .collect(),
         revision: principal.revision()?,
         result: json!({"kind":"aggregation","groups":groups,"basis":{
-            "scanned":scanned,"unresolved_excluded":excluded,"stale":stale,"partial":partial,"oldest_observed_at":oldest,
-            "qualified":excluded == 0 && stale == 0 && partial == 0 && !used_unresolved,"stale_sources":stale_sources}}),
+            "scanned":scanned,"unresolved_excluded":excluded,"oversized_excluded":oversized_excluded,"stale":stale,"partial":partial,"oldest_observed_at":oldest,
+            "qualified":excluded == 0 && stale == 0 && partial == 0 && !used_unresolved && oversized_excluded == 0,"stale_sources":stale_sources}}),
     })
 }
 

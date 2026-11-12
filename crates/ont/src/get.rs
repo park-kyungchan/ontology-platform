@@ -1,4 +1,4 @@
-//! `get`: the full history of one object, admitted for the principal. An
+//! `get`: at most 100 historical observations, after principal admission. An
 //! object the principal may not read and an object that does not exist give
 //! the same answer (`unavailable`).
 use crate::principal::Principal;
@@ -49,11 +49,40 @@ fn not_found() -> Failure {
 
 pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
-    let history = match st!(store.history(&req.id)) {
+    st!(store.read_schema(|tx| read_get(ctx, req, tx)))
+}
+fn read_get(
+    ctx: &Context,
+    req: &GetRequest,
+    tx: &ont_store::schema_mode::SchemaRead<'_>,
+) -> Result<Answer, Failure> {
+    let set = tx.schema_set();
+    let principal = Principal::bind(set)?;
+    let admission = principal
+        .authority()
+        .admit(principal.session())
+        .map_err(|_| Failure::Internal(internal!("authority_failure")))?;
+    let access = st!(tx.head_access(&req.id)).ok_or_else(not_found)?;
+    let metadata = Object {
+        id: access.id.clone(),
+        scope: access.scope,
+        head: String::new(),
+        observations: vec![],
+    };
+    match admission.query(
+        &OneObject(Some(metadata)),
+        Query::Get { id: req.id.clone() },
+        ctx.now,
+    ) {
+        Ok(Response::Ok { .. }) => {}
+        Err(ont_core::Error::InvalidRequest) => return Err(invalid_id(req)),
+        Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => return Err(not_found()),
+        _ => return Err(Failure::Internal(internal!("authority_failure"))),
+    }
+    let history = match st!(tx.history(&req.id)) {
         Some(h) => h,
         None => return Err(not_found()),
     };
-    let set = st!(store.schema_set()).clone();
     let object = Object {
         id: history.id.clone(),
         scope: history.scope.clone(),
@@ -64,11 +93,6 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
             .map(|o| o.observation.clone())
             .collect(),
     };
-    let principal = Principal::bind(&set)?;
-    let admission = principal
-        .authority()
-        .admit(principal.session())
-        .map_err(|_| Failure::Internal(internal!("authority_failure")))?;
     let response = admission.query(
         &OneObject(Some(object)),
         Query::Get { id: req.id.clone() },
@@ -85,23 +109,7 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
         Ok(Response::Refused { .. }) | Err(ont_core::Error::Unavailable) => {
             return Err(not_found());
         }
-        Err(ont_core::Error::InvalidRequest) => {
-            let (field, _) = [
-                ("/id/object_type", &req.id.object_type),
-                ("/id/namespace/instance", &req.id.namespace.instance),
-                ("/id/namespace/account", &req.id.namespace.account),
-                ("/id/native_key", &req.id.native_key),
-            ]
-            .into_iter()
-            .find(|(_, v)| v.is_empty() || v.len() > 512)
-            .unwrap_or(("/id", &req.id.native_key));
-            return Err(Refusal::input(
-                "invalid_request",
-                field,
-                "each id component is a nonempty string of at most 512 UTF-8 bytes",
-            )
-            .into());
-        }
+        Err(ont_core::Error::InvalidRequest) => return Err(invalid_id(req)),
         Err(_) => return Err(Failure::Internal(internal!("authority_failure"))),
     };
     let policy_revision = principal.revision()?;
@@ -145,4 +153,22 @@ pub fn get(ctx: &Context, req: &GetRequest) -> Result<Answer, Failure> {
         revision: policy_revision,
         result,
     })
+}
+
+fn invalid_id(req: &GetRequest) -> Failure {
+    let (field, _) = [
+        ("/id/object_type", &req.id.object_type),
+        ("/id/namespace/instance", &req.id.namespace.instance),
+        ("/id/namespace/account", &req.id.namespace.account),
+        ("/id/native_key", &req.id.native_key),
+    ]
+    .into_iter()
+    .find(|(_, v)| v.is_empty() || v.len() > 512)
+    .unwrap_or(("/id", &req.id.native_key));
+    Refusal::input(
+        "invalid_request",
+        field,
+        "each id component is a nonempty string of at most 512 UTF-8 bytes",
+    )
+    .into()
 }

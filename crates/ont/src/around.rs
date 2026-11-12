@@ -120,6 +120,7 @@ fn plan(
 #[derive(Default)]
 struct Basis {
     scanned: usize,
+    oversized_excluded: usize,
     dangling: usize,
     stale: usize,
     partial: usize,
@@ -169,6 +170,7 @@ struct Reader<'a, 'b> {
     now: u64,
     loaded: BTreeMap<Id, Arc<SchemaHead>>,
     counts: BTreeMap<String, usize>,
+    oversized: BTreeSet<Id>,
     basis: Basis,
 }
 impl Reader<'_, '_> {
@@ -193,6 +195,9 @@ impl Reader<'_, '_> {
         if access.retracted || !self.allowed(&access.id, &access.scope)? {
             return Ok(None);
         }
+        if self.oversized.contains(&access.id) {
+            return Ok(None);
+        }
         if let Some(head) = self.loaded.get(&access.id) {
             return Ok(Some(head.clone()));
         }
@@ -203,8 +208,17 @@ impl Reader<'_, '_> {
         if *count == SCAN_LIMIT {
             return Err(Refusal::new("result_too_large").into());
         }
-        let Some(head) = st!(self.tx.head_after_access(&access)) else {
-            return Ok(None);
+        let head = match self.tx.head_after_access(&access) {
+            Ok(Some(head)) => head,
+            Ok(None) => return Ok(None),
+            Err(e) if e.code == ont_core::Error::ObservationTooLarge.code() => {
+                *count += 1;
+                self.basis.scanned += 1;
+                self.basis.oversized_excluded += 1;
+                self.oversized.insert(access.id);
+                return Ok(None);
+            }
+            Err(e) => return Err(crate::refusal::store_err(e)),
         };
         *count += 1;
         self.basis.scanned += 1;
@@ -382,6 +396,7 @@ fn read_around(
         now: ctx.now,
         loaded: BTreeMap::new(),
         counts: BTreeMap::new(),
+        oversized: BTreeSet::new(),
         basis: Basis::default(),
     };
     let mut current = BTreeMap::new();
@@ -489,7 +504,8 @@ fn read_around(
         && b.partial == 0
         && b.unresolved_excluded == 0
         && !b.used_unresolved
-        && b.dangling == 0;
+        && b.dangling == 0
+        && b.oversized_excluded == 0;
     let pins = domains
         .into_iter()
         .filter_map(|d| set.pin(&d).map(|p| (d, p.clone())))
@@ -499,7 +515,7 @@ fn read_around(
         revision,
         result: json!({"kind":"object_set","objects":objects,"continuation":null,
             "basis":{"hops":hops.len(),"scanned":b.scanned,"matched":matched,"dangling":b.dangling,"stale":b.stale,"partial":b.partial,
-                "unresolved_excluded":b.unresolved_excluded,"qualified":qualified,"stale_sources":b.stale_sources}}),
+                "unresolved_excluded":b.unresolved_excluded,"oversized_excluded":b.oversized_excluded,"qualified":qualified,"stale_sources":b.stale_sources}}),
     })
 }
 

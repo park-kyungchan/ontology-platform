@@ -87,12 +87,28 @@ pub(super) fn project(
     set: &SchemaSet,
     head: &SchemaHead,
 ) -> Result<(), StoreRefusal> {
-    let id = &head.id;
+    project_access(
+        c,
+        set,
+        &HeadAccess {
+            id: head.id.clone(),
+            scope: head.scope.clone(),
+            retracted: head.retracted,
+        },
+        Some((&head.head.observation, &head.schema_pin)),
+    )
+}
+fn project_access(
+    c: &Connection,
+    set: &SchemaSet,
+    access: &HeadAccess,
+    observation: Option<(&Observation, &SchemaPin)>,
+) -> Result<(), StoreRefusal> {
+    let id = &access.id;
     map_db(c.execute("DELETE FROM head_candidates WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4", params![id.object_type,id.namespace.instance,id.namespace.account,id.native_key]))?;
-    if head.retracted {
+    if access.retracted {
         return Ok(());
     }
-    let obs = &head.head.observation;
     let schema = set
         .schema_of(&id.object_type)
         .ok_or_else(StoreRefusal::store_failure)?;
@@ -107,24 +123,27 @@ pub(super) fn project(
             grant.scope.clone(),
         )
         .map_err(StoreRefusal::from)?;
-        if grant.read.contains(&id.object_type) && scope.matches(&head.scope) {
+        if grant.read.contains(&id.object_type) && scope.matches(&access.scope) {
             visibility
                 .insert(serde_json::to_string(&scope).map_err(|_| StoreRefusal::store_failure())?);
         }
     }
-    let scope_keys = match &head.scope {
+    let scope_keys = match &access.scope {
         Scope::Domain { keys, .. } => json_text(keys)?,
         _ => return Err(StoreRefusal::store_failure()),
     };
     let mut postings = vec![(String::new(), String::new())];
     if let Some(props) = set.properties(&id.object_type) {
         for p in props.keys() {
-            let value = match obs.fields.get(p) {
-                Some(Knowledge::Value(v))
+            let value = match observation {
+                Some((obs, pin))
                     if obs.coverage == ont_core::Coverage::Complete
-                        && set.pin(&head.schema_pin.domain) == Some(&head.schema_pin) =>
+                        && set.pin(&pin.domain) == Some(pin) =>
                 {
-                    format!("v{v}")
+                    match obs.fields.get(p) {
+                        Some(Knowledge::Value(v)) => format!("v{v}"),
+                        _ => "?".into(),
+                    }
                 }
                 _ => "?".into(),
             };
@@ -133,7 +152,10 @@ pub(super) fn project(
     }
     // Sixteen radix prefixes per expiry permit an ordered range to be read
     // as <=240 disjoint equality streams, each already in object-key order.
-    let expiry = format!("{:016x}", obs.fresh_until);
+    let expiry = format!(
+        "{:016x}",
+        observation.map_or(u64::MAX, |(obs, _)| obs.fresh_until)
+    );
     for n in 1..=16 {
         postings.push(("$stale".into(), expiry[..n].into()));
     }
@@ -165,13 +187,26 @@ pub(super) fn rebuild(c: &Connection, set: &SchemaSet) -> Result<(), StoreRefusa
         for ty in schema.object_types.keys() {
             let mut after = None;
             loop {
-                let heads = scan_in(c, set, ty, 256, after.as_ref())?;
+                let heads = access_in(c, None, ty, 256, after.as_ref())?;
                 if heads.is_empty() {
                     break;
                 }
                 after = heads.last().map(|h| h.id.clone());
-                for head in heads {
-                    project(c, set, &head)?;
+                for access in heads {
+                    if access.retracted {
+                        continue;
+                    }
+                    match head_after_access_in(c, &access) {
+                        Ok(Some(head)) => project(c, set, &head)?,
+                        // Preserve a visible uncertain posting for every property:
+                        // set reads must see and count an excluded legacy head,
+                        // including under an equality filter, without loading it.
+                        Err(e) if e.code == Error::ObservationTooLarge.code() => {
+                            project_access(c, set, &access, None)?
+                        }
+                        Err(e) => return Err(e),
+                        Ok(None) => return Err(StoreRefusal::store_failure()),
+                    }
                 }
             }
         }
