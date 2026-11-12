@@ -1,0 +1,654 @@
+{
+  "format": "effect-vectors/v2",
+  "selection": "first_matching_row",
+  "states": [
+    "unrecorded",
+    "pre_effect_recorded",
+    "dispatch_possible",
+    "answer_returned",
+    "answer_lost",
+    "timeout_returned",
+    "async_accepted",
+    "rejected",
+    "applied",
+    "not_applied",
+    "conflict",
+    "not_observable",
+    "manual_reconciliation"
+  ],
+  "evidence_kinds": [
+    "target_token",
+    "returned_value",
+    "operation_record",
+    "complete_absence",
+    "none"
+  ],
+  "domains": {
+    "stage": [
+      "absent",
+      "prepared",
+      "fenced",
+      "settled"
+    ],
+    "saved_state": [
+      null,
+      "applied",
+      "not_applied",
+      "rejected",
+      "conflict"
+    ],
+    "answer": [
+      "none",
+      "lost",
+      "returned_ack",
+      "completed_returned",
+      "returned_timeout",
+      "accepted",
+      "rejected_no_effect",
+      "completed_no_effect"
+    ],
+    "later_read": [
+      "not_read",
+      "unavailable",
+      "desired",
+      "before",
+      "other",
+      "token_applied_current",
+      "token_applied_diverged",
+      "token_sealed",
+      "token_rejected",
+      "token_conflict_no_effect",
+      "operation_pending",
+      "operation_applied_verified",
+      "operation_no_effect",
+      "operation_conflict_no_effect",
+      "operation_rejected",
+      "operation_done_unverified",
+      "operation_unobservable",
+      "absence_desired_closed",
+      "absence_undesired_closed",
+      "absence_open",
+      "incomplete_absence",
+      "identity_mismatch",
+      "contradictory",
+      "budget_exhausted"
+    ]
+  },
+  "allowed_next_steps": [
+    "nothing",
+    "read_again",
+    "new_attempt_new_identity",
+    "never_retry",
+    "ask_person"
+  ],
+  "rows": [
+    {
+      "id": "R01",
+      "recorded_facts": {
+        "stage": "settled",
+        "evidence_kind": "*",
+        "saved_state": "applied"
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "applied",
+      "allowed_next_step": "nothing",
+      "reason": "Return immutable saved outcome; later drift is a separate observation."
+    },
+    {
+      "id": "R02",
+      "recorded_facts": {
+        "stage": "settled",
+        "evidence_kind": "*",
+        "saved_state": "not_applied"
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "not_applied",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Return immutable saved outcome; later drift is a separate observation."
+    },
+    {
+      "id": "R03",
+      "recorded_facts": {
+        "stage": "settled",
+        "evidence_kind": "*",
+        "saved_state": "rejected"
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "rejected",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Return immutable saved outcome; later drift is a separate observation."
+    },
+    {
+      "id": "R04",
+      "recorded_facts": {
+        "stage": "settled",
+        "evidence_kind": "*",
+        "saved_state": "conflict"
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "conflict",
+      "allowed_next_step": "never_retry",
+      "reason": "Return immutable saved outcome; later drift is a separate observation."
+    },
+    {
+      "id": "R05",
+      "recorded_facts": {
+        "stage": "absent",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "none",
+      "later_read": [
+        "not_read",
+        "unavailable",
+        "desired",
+        "before",
+        "other"
+      ],
+      "expected_state": "unrecorded",
+      "allowed_next_step": "nothing",
+      "reason": "No durable pre-effect record or dispatch evidence; ordinary value reads remain domain observations."
+    },
+    {
+      "id": "R06",
+      "recorded_facts": {
+        "stage": "absent",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "External activity without its required pre-effect record is an integrity fault."
+    },
+    {
+      "id": "R07",
+      "recorded_facts": {
+        "stage": "prepared",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "none",
+      "later_read": [
+        "not_read",
+        "unavailable",
+        "desired",
+        "before",
+        "other"
+      ],
+      "expected_state": "pre_effect_recorded",
+      "allowed_next_step": "nothing",
+      "reason": "No fence committed; revalidate approval before the first dispatch."
+    },
+    {
+      "id": "R08",
+      "recorded_facts": {
+        "stage": "prepared",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "*",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Answer or dispatch evidence without a fence is an integrity fault."
+    },
+    {
+      "id": "R09",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": [
+        "identity_mismatch",
+        "contradictory",
+        "budget_exhausted"
+      ],
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Wrong identity, contradictory facts or exhausted reconciliation budget cannot release a fence."
+    },
+    {
+      "id": "R10",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": [
+        "rejected_no_effect",
+        "completed_no_effect"
+      ],
+      "later_read": [
+        "token_applied_current",
+        "token_applied_diverged",
+        "operation_applied_verified",
+        "operation_pending",
+        "operation_done_unverified"
+      ],
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "A no-effect answer contradicts positive evidence for this exact attempt."
+    },
+    {
+      "id": "R11",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "target_token",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "token_applied_current",
+      "expected_state": "applied",
+      "allowed_next_step": "nothing",
+      "reason": "Bound token proves application and the authoritative current value/version agrees."
+    },
+    {
+      "id": "R12",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "target_token",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "token_applied_diverged",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Token proves application but subsequent value/version drift retains the fence."
+    },
+    {
+      "id": "R13",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "target_token",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "token_sealed",
+      "expected_state": "not_applied",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Durable seal excludes both a past and a future dispatch of this token."
+    },
+    {
+      "id": "R14",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "target_token",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "token_rejected",
+      "expected_state": "rejected",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Durable target token records terminal rejection with no effect."
+    },
+    {
+      "id": "R15",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "target_token",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "token_conflict_no_effect",
+      "expected_state": "conflict",
+      "allowed_next_step": "never_retry",
+      "reason": "Bound token proves another writer conflict with no effect by this attempt."
+    },
+    {
+      "id": "R16",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "operation_applied_verified",
+      "expected_state": "applied",
+      "allowed_next_step": "nothing",
+      "reason": "Bound terminal operation and all required projection/read-port barriers agree."
+    },
+    {
+      "id": "R17",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "operation_no_effect",
+      "expected_state": "not_applied",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Bound terminal operation proves zero partial effect and no remaining work."
+    },
+    {
+      "id": "R18",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "operation_conflict_no_effect",
+      "expected_state": "conflict",
+      "allowed_next_step": "never_retry",
+      "reason": "Bound operation proves another writer conflict; new intent requires a fresh review."
+    },
+    {
+      "id": "R19",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "operation_rejected",
+      "expected_state": "rejected",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Bound terminal operation rejection excludes partial and delayed effects."
+    },
+    {
+      "id": "R20",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "operation_pending",
+      "expected_state": "async_accepted",
+      "allowed_next_step": "read_again",
+      "reason": "The bound operation exists and may still execute; poll only."
+    },
+    {
+      "id": "R21",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": [
+        "operation_done_unverified",
+        "operation_unobservable"
+      ],
+      "expected_state": "not_observable",
+      "allowed_next_step": "read_again",
+      "reason": "Terminal success alone or an unreadable operation is insufficient for required projections."
+    },
+    {
+      "id": "R22",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "complete_absence",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "absence_desired_closed",
+      "expected_state": "applied",
+      "allowed_next_step": "nothing",
+      "reason": "Complete closed read proves desired deletion/convergence, without causal attribution."
+    },
+    {
+      "id": "R23",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "complete_absence",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": "absence_undesired_closed",
+      "expected_state": "not_applied",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Complete closed read proves no effect for a creation, including no delayed work."
+    },
+    {
+      "id": "R24",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": [
+        "token_applied_current",
+        "token_applied_diverged",
+        "token_sealed",
+        "token_rejected",
+        "token_conflict_no_effect",
+        "operation_pending",
+        "operation_applied_verified",
+        "operation_no_effect",
+        "operation_conflict_no_effect",
+        "operation_rejected",
+        "operation_done_unverified",
+        "operation_unobservable",
+        "absence_desired_closed",
+        "absence_undesired_closed"
+      ],
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Proof not supported by the pinned target evidence kind must not be promoted."
+    },
+    {
+      "id": "R25",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "rejected_no_effect",
+      "later_read": "*",
+      "expected_state": "rejected",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Durably bound final target rejection guarantees no partial or delayed effect."
+    },
+    {
+      "id": "R26",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "completed_no_effect",
+      "later_read": "*",
+      "expected_state": "not_applied",
+      "allowed_next_step": "new_attempt_new_identity",
+      "reason": "Durably bound final target answer explicitly guarantees no effect."
+    },
+    {
+      "id": "R27",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "returned_value",
+        "saved_state": null
+      },
+      "answer": "completed_returned",
+      "later_read": "desired",
+      "expected_state": "applied",
+      "allowed_next_step": "nothing",
+      "reason": "Final returned answer plus fresh authoritative equality proves convergence only."
+    },
+    {
+      "id": "R28",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "returned_value",
+        "saved_state": null
+      },
+      "answer": "completed_returned",
+      "later_read": "before",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Old value alone cannot exclude application followed by an overwrite or reversal."
+    },
+    {
+      "id": "R29",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "returned_value",
+        "saved_state": null
+      },
+      "answer": "completed_returned",
+      "later_read": "other",
+      "expected_state": "conflict",
+      "allowed_next_step": "never_retry",
+      "reason": "Final answer and a third value show conflicting current state, not no-effect causality."
+    },
+    {
+      "id": "R30",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "returned_value",
+        "saved_state": null
+      },
+      "answer": [
+        "none",
+        "lost"
+      ],
+      "later_read": "desired",
+      "expected_state": "answer_lost",
+      "allowed_next_step": "read_again",
+      "reason": "Desired equality after a lost answer does not establish completion or exclude a late write."
+    },
+    {
+      "id": "R31",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "returned_value",
+        "saved_state": null
+      },
+      "answer": "returned_timeout",
+      "later_read": "desired",
+      "expected_state": "timeout_returned",
+      "allowed_next_step": "read_again",
+      "reason": "A returned timeout is an answer, but does not promise execution stopped."
+    },
+    {
+      "id": "R32",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "*",
+      "later_read": [
+        "unavailable",
+        "absence_open",
+        "incomplete_absence"
+      ],
+      "expected_state": "not_observable",
+      "allowed_next_step": "read_again",
+      "reason": "Unavailable, incomplete or still-open read cannot prove absence or release a fence."
+    },
+    {
+      "id": "R33",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "operation_record",
+        "saved_state": null
+      },
+      "answer": "accepted",
+      "later_read": [
+        "not_read",
+        "desired",
+        "before",
+        "other"
+      ],
+      "expected_state": "async_accepted",
+      "allowed_next_step": "read_again",
+      "reason": "Accepted answer includes a durably recorded bound operation identifier; do not resubmit."
+    },
+    {
+      "id": "R34",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "accepted",
+      "later_read": "*",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Accepted work without an operation-record capability cannot be tracked safely."
+    },
+    {
+      "id": "R35",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "returned_timeout",
+      "later_read": "*",
+      "expected_state": "timeout_returned",
+      "allowed_next_step": "read_again",
+      "reason": "Record the returned timeout distinctly from a lost answer; reconcile without dispatch."
+    },
+    {
+      "id": "R36",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "lost",
+      "later_read": "*",
+      "expected_state": "answer_lost",
+      "allowed_next_step": "read_again",
+      "reason": "Transport reported loss; target effect remains possible."
+    },
+    {
+      "id": "R37",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": "none",
+      "later_read": "*",
+      "expected_state": "dispatch_possible",
+      "allowed_next_step": "read_again",
+      "reason": "Fence survived but an answer record did not; this includes a crash before dispatch."
+    },
+    {
+      "id": "R38",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": [
+        "returned_ack",
+        "completed_returned"
+      ],
+      "later_read": "not_read",
+      "expected_state": "answer_returned",
+      "allowed_next_step": "read_again",
+      "reason": "Persist the returned answer; acknowledgement alone is not application evidence."
+    },
+    {
+      "id": "R39",
+      "recorded_facts": {
+        "stage": "fenced",
+        "evidence_kind": "*",
+        "saved_state": null
+      },
+      "answer": [
+        "returned_ack",
+        "completed_returned"
+      ],
+      "later_read": "*",
+      "expected_state": "manual_reconciliation",
+      "allowed_next_step": "ask_person",
+      "reason": "Unqualified values cannot settle the attempt; do not infer no effect from an old value."
+    }
+  ]
+}
