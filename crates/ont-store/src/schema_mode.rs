@@ -865,6 +865,19 @@ impl Store {
         access_in(&self.connection, None, ty, limit, after)
     }
 
+    /// Read visible posting candidates in a current, refreshed read snapshot.
+    pub fn candidate_access(
+        &mut self,
+        ty: &str,
+        condition: Option<&CandidateCondition>,
+        now: u64,
+        limit: usize,
+        after: Option<&Id>,
+        scopes: &[Scope],
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        self.read_schema(|tx| tx.candidate_access(ty, condition, now, limit, after, scopes))?
+    }
+
     /// The full history of one object, in append order.
     pub fn history(&mut self, id: &Id) -> Result<Option<SchemaHistory>, StoreRefusal> {
         self.require_schema()?;

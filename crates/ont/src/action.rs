@@ -1966,21 +1966,21 @@ fn collect_linked_scans(
     snap: &Snapshot,
     params: &BTreeMap<String, Value>,
     c: &Condition,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeSet<(String, String, Id)>,
 ) {
     match c {
         Condition::Linked(link) => {
             for schema in set.pins().keys().filter_map(|d| set.schema(d)) {
                 for lt in schema.link_types.values() {
                     if lt.names.reverse == link.link
-                        && link
+                        && let Some(id) = link
                             .from
                             .strip_prefix('$')
                             .and_then(|p| params.get(p))
                             .and_then(id_from_value)
-                            .is_some_and(|id| snap.live(&id).is_some())
+                        && snap.live(&id).is_some()
                     {
-                        out.insert(lt.from.clone());
+                        out.insert((lt.from.clone(), lt.via.clone(), id));
                     }
                 }
             }
@@ -2003,6 +2003,17 @@ fn collect_linked_scans(
 trait SnapshotSource {
     fn fetch_access(&mut self, id: &Id) -> Result<Option<HeadAccess>, Failure>;
     fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure>;
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_linked(
+        &mut self,
+        ty: &str,
+        via: &str,
+        target: &Id,
+        scopes: &[Scope],
+        now: u64,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, Failure>;
     fn fetch_scan(
         &mut self,
         ty: &str,
@@ -2016,6 +2027,26 @@ impl SnapshotSource for ont_store::Store {
     }
     fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
         self.head_after_access(access).map_err(store_err)
+    }
+    fn fetch_linked(
+        &mut self,
+        ty: &str,
+        via: &str,
+        target: &Id,
+        scopes: &[Scope],
+        now: u64,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, Failure> {
+        let condition = ont_store::schema_mode::CandidateCondition {
+            property: via.into(),
+            values: vec![
+                serde_json::to_value(target).map_err(|_| Refusal::new("invalid_request"))?,
+            ],
+            used: BTreeSet::new(),
+        };
+        self.candidate_access(ty, Some(&condition), now, limit, after, scopes)
+            .map_err(store_err)
     }
     fn fetch_scan(
         &mut self,
@@ -2032,6 +2063,26 @@ impl SnapshotSource for ont_store::schema_mode::SchemaWrite<'_> {
     }
     fn fetch_head(&mut self, access: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
         self.head_after_access(access).map_err(store_err)
+    }
+    fn fetch_linked(
+        &mut self,
+        ty: &str,
+        via: &str,
+        target: &Id,
+        scopes: &[Scope],
+        now: u64,
+        limit: usize,
+        after: Option<&Id>,
+    ) -> Result<Vec<HeadAccess>, Failure> {
+        let condition = ont_store::schema_mode::CandidateCondition {
+            property: via.into(),
+            values: vec![
+                serde_json::to_value(target).map_err(|_| Refusal::new("invalid_request"))?,
+            ],
+            used: BTreeSet::new(),
+        };
+        self.candidate_access(ty, Some(&condition), now, limit, after, scopes)
+            .map_err(store_err)
     }
     fn fetch_scan(
         &mut self,
@@ -2273,7 +2324,7 @@ fn load_snapshot(
     for id in &hop {
         load_named(&mut snap, id, principal, ctx.now, max, source)?;
     }
-    // Reverse `linked` conditions scan by type, paged until exhausted.
+    // Reverse `linked` conditions page candidates; list references retain type scans.
     let mut scan_types = BTreeSet::new();
     for crit in &at.submission_criteria {
         for cs in [&crit.all, &crit.any, &crit.none].into_iter().flatten() {
@@ -2282,10 +2333,19 @@ fn load_snapshot(
             }
         }
     }
-    for ty in &scan_types {
+    for (ty, via, target) in &scan_types {
+        let list_reference = set
+            .properties(ty)
+            .and_then(|props| props.get(via))
+            .is_some_and(|prop| matches!(prop.ty, ont_core::schema::PropertyType::Array(_)));
+        let scopes = crate::search::read_scopes(principal, ty);
         let mut after: Option<Id> = None;
         loop {
-            let heads = source.fetch_scan(ty, page, after.as_ref())?;
+            let heads = if list_reference {
+                source.fetch_scan(ty, page, after.as_ref())?
+            } else {
+                source.fetch_linked(ty, via, target, &scopes, ctx.now, page, after.as_ref())?
+            };
             let full = heads.len() == page;
             after = heads.last().map(|h| h.id.clone());
             for h in heads {
@@ -2795,6 +2855,19 @@ mod tests {
         fn fetch_head(&mut self, _: &HeadAccess) -> Result<Option<SchemaHead>, Failure> {
             self.payload_reads += 1;
             panic!("unadmitted payload read")
+        }
+        fn fetch_linked(
+            &mut self,
+            _: &str,
+            _: &str,
+            _: &Id,
+            _: &[Scope],
+            _: u64,
+            _: usize,
+            _: Option<&Id>,
+        ) -> Result<Vec<HeadAccess>, Failure> {
+            self.scans += 1;
+            panic!("scan from unadmitted source")
         }
         fn fetch_scan(
             &mut self,
