@@ -123,6 +123,17 @@ fn compact_keeps_every_row() {
     let before_markers = markers();
     let mut store = Store::open_schema_existing(&t.path()).unwrap();
     let checksum = ont::compact::checksum(&mut store).unwrap();
+    let mut canonical = Sha256::new();
+    store
+        .for_each_row_canonical(&["head_candidates", "candidate_generation"], &mut |bytes| {
+            canonical.update(bytes)
+        })
+        .unwrap();
+    assert_eq!(
+        checksum,
+        format!("{:x}", canonical.finalize()),
+        "checksum covers every authoritative table"
+    );
     let condition = CandidateCondition {
         property: "label".into(),
         values: vec![json!("ready")],
@@ -186,6 +197,11 @@ fn compact_keeps_every_row() {
     );
     assert_eq!(search["result"]["objects"].as_array().unwrap().len(), 1);
     assert_eq!(create_tag(&t, "after")["result"]["outcome"], "applied");
+    assert_ne!(
+        ont::compact::checksum(&mut store).unwrap(),
+        checksum,
+        "an applied action changes the authoritative checksum"
+    );
     let backups_before = backups(&t);
     let file_before = std::fs::read(t.path()).unwrap();
     let answer = ok(&t, &["compact"], json!({}));
@@ -195,6 +211,75 @@ fn compact_keeps_every_row() {
     );
     assert_eq!(backups(&t), backups_before);
     assert_eq!(std::fs::read(t.path()).unwrap(), file_before);
+}
+#[test]
+fn compact_reports_a_row_changed_during_the_run() {
+    use std::time::{Duration, Instant};
+    let t = Temp::new();
+    drop(old_store(&t));
+    create_tag(&t, "before");
+    let sql = rusqlite::Connection::open(t.path()).unwrap();
+    sql.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let outcome = std::thread::scope(|scope| {
+        let compact = scope.spawn(|| {
+            ont::run(
+                &[
+                    "--store".into(),
+                    t.path().display().to_string(),
+                    "--now".into(),
+                    "1000".into(),
+                    "compact".into(),
+                ],
+                b"{}".as_slice(),
+                0,
+                0,
+            )
+        });
+        // The backup precedes the first checksum and the blocked write transaction.
+        // Allow the tiny fixture's checksum to finish while retaining the write lock.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !t.0.join("backup").exists() || backups(&t).is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "compact did not start its backup"
+            );
+            assert!(
+                !compact.is_finished(),
+                "compact returned before waiting for the writer"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!compact.is_finished(), "compact must wait for the writer");
+        sql.execute_batch(
+            "INSERT INTO action_log (action_id,action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome)
+             SELECT 'concurrent-row',action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome FROM action_log LIMIT 1;
+             COMMIT;",
+        ).unwrap();
+        compact.join().unwrap()
+    });
+    assert_eq!(outcome.code, 1, "{} {}", outcome.stdout, outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with("compact_rows_changed@"),
+        "{}",
+        outcome.stderr
+    );
+    let mut store = Store::open_schema_existing(&t.path()).unwrap();
+    assert_eq!(store.page_size().unwrap(), 16384);
+    let count = |connection: &rusqlite::Connection| -> u64 {
+        connection
+            .query_row(
+                "SELECT count(*) FROM action_log WHERE action_id='concurrent-row'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count(&sql), 1, "the concurrent authoritative row is kept");
+    let copies = backups(&t);
+    assert_eq!(copies.len(), 1, "the run took a backup");
+    let copy = rusqlite::Connection::open(&copies[0]).unwrap();
+    assert_eq!(count(&copy), 0, "the backup predates the concurrent row");
 }
 #[test]
 fn compact_refuses_while_busy() {
