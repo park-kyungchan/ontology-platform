@@ -983,8 +983,8 @@ pub struct ActionType {
 
 impl ActionType {
     /// Resolve a pointer-key source from declarations, never runtime value order.
-    /// Exactly one required parameter must be a reference to the created type
-    /// or a struct declaring the pointer path. Optional parameters cannot own keys.
+    /// Exactly one required parameter must declare the pointer path as a struct,
+    /// or reference the created type for /native_key. Optionals cannot own keys.
     pub fn create_key_parameter(&self, object_type: &str, pointer: &str) -> Option<&str> {
         fn declares_path(ty: &PropertyType, pointer: &str) -> bool {
             let mut ty = ty;
@@ -1007,7 +1007,7 @@ impl ActionType {
         let mut candidates = self.parameters.iter().filter(|(_, p)| {
             p.required
                 && match &p.ty {
-                    PropertyType::Ref(r) => r.target == object_type,
+                    PropertyType::Ref(r) => pointer == "/native_key" && r.target == object_type,
                     PropertyType::Struct(_) => declares_path(&p.ty, pointer),
                     _ => false,
                 }

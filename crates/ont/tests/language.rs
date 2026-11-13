@@ -3041,3 +3041,31 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
     assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["result"]["edits"][0]["id"], id);
 }
+
+#[test]
+fn pointer_create_key_reference_cannot_supply_custom_member() {
+    let t = Temp::new();
+    let mut s = pointer_key_schema();
+    s["object_types"]["record"]["primary_key"]["from"] = json!("/key");
+    s["action_types"]["write_record"]["parameters"] = json!({
+        "a_spec":{"type":{"struct":{"key":"string"}},"required":false},
+        "z_record":{"type":{"ref":"record"},"required":true}
+    });
+    t.refuses_schema(
+        s.clone(),
+        "ambiguous_create_key",
+        "/action_types/write_record",
+    );
+    // A required struct can supply /key; a required reference cannot compete.
+    s["action_types"]["write_record"]["parameters"]["a_spec"]["required"] = json!(true);
+    t.install(s);
+    let id = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"X"});
+    let result = t.call(
+        false,
+        "apply",
+        json!({"action_type":"write_record","parameters":{"a_spec":{"key":"X"},"z_record":id}}),
+        NOW,
+    );
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["result"]["edits"][0]["id"], id);
+}

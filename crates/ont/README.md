@@ -40,8 +40,10 @@ Ordinary ports and local paths remain intact.
 
 For `create_object` and `create_or_modify_object` on an Ontology-owned type
 whose `primary_key.from` starts with `/`, the action must declare exactly one
-eligible **required** parameter: a reference to the created object type, or a
-struct that declares the pointer path (JSON Pointer escapes are decoded).
+eligible **required** parameter: a struct that declares the pointer path
+(JSON Pointer escapes are decoded), or, only for `/native_key`, a reference to
+the created object type. An object id carries `native_key`, not an arbitrary
+key member such as `/key`; for other pointers a reference is never eligible.
 The key is the string at that pointer in that parameter's submitted value.
 Optional parameters, references to other types, and parameter name order never
 select the key. For example, with `/native_key`, required `z_record: ref(record)`
