@@ -70,6 +70,7 @@ pub mod codes {
     pub const TEMPLATE_FIELD_NOT_STRING: &str = "template_field_not_string";
     pub const REFERENCE_ARRAY_FROM_SOURCE_UNSUPPORTED: &str =
         "reference_array_from_source_unsupported";
+    pub const RECORDS_SOURCE_OWNER: &str = "records_source_owner";
     pub const ALL: &[&str] = &[
         INVALID_FORMAT,
         INVALID_VERSION,
@@ -129,6 +130,7 @@ pub mod codes {
         INVALID_TEMPLATE,
         TEMPLATE_FIELD_NOT_STRING,
         REFERENCE_ARRAY_FROM_SOURCE_UNSUPPORTED,
+        RECORDS_SOURCE_OWNER,
     ];
 }
 const SOURCE_KINDS: &[&str] = &[
@@ -138,6 +140,7 @@ const SOURCE_KINDS: &[&str] = &[
     "git_local",
     "github_api",
     "json_records",
+    "records",
     "command",
 ];
 
@@ -622,6 +625,9 @@ fn segments_match(segments: &[GlobSegment], parts: &[&str]) -> bool {
 pub enum FileSourceKind {
     MarkdownFields,
     FileDigest,
+    /// Every line of every matched file is one JSON record that carries
+    /// its own time (see `RecordsOptions`).
+    Records,
 }
 /// The parsed options of a `markdown_fields` or `file_digest` source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -636,6 +642,15 @@ pub struct FileSourceSpec {
     pub complete_listing: bool,
     pub fresh_for_s: u64,
 }
+/// The options only a `records` source has: the top-level member that holds
+/// the record's time (whole seconds since 1970) and, optionally, the member
+/// that must name the owning object type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordsOptions {
+    pub time_member: String,
+    pub type_member: Option<String>,
+}
+
 /// An option that is missing, mistyped or out of range: the refusal code
 /// and the JSON pointer below the source (`/glob`, `/paths/2`, ...).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -658,7 +673,14 @@ impl FileSourceKind {
                 "fields",
             ],
             Self::FileDigest => &["path", "sha256", "size", "mtime", "mode"],
+            // The members of a record are the file's own, not a fixed list.
+            Self::Records => &[],
         }
+    }
+    /// Whether `record_fields()` is the complete list of members a mapping
+    /// may point into.
+    pub fn has_fixed_fields(self) -> bool {
+        !matches!(self, Self::Records)
     }
     /// The record fields of `record_fields()` whose value is a string for
     /// this kind; the only fields a template placeholder may name.
@@ -668,16 +690,59 @@ impl FileSourceKind {
                 "path", "dir", "dir_path", "stem", "stem_id", "sha256", "line1",
             ],
             Self::FileDigest => &["path", "sha256"],
+            Self::Records => &[],
         }
     }
 }
 
+/// A member name of a `records` option: 1 to 128 bytes, no NUL.
+const MAX_MEMBER_NAME: usize = 128;
+
 impl SourceDef {
+    /// The options of a `records` source; `Ok(None)` for any other kind.
+    pub fn records_options(&self) -> Result<Option<RecordsOptions>, SourceOptionError> {
+        if self.kind != "records" {
+            return Ok(None);
+        }
+        let member = |key: &str| -> Result<Option<String>, SourceOptionError> {
+            match self.options.get(key) {
+                None => Ok(None),
+                Some(Value::String(s))
+                    if !s.is_empty() && s.len() <= MAX_MEMBER_NAME && !s.contains('\0') =>
+                {
+                    Ok(Some(s.clone()))
+                }
+                Some(_) => Err(SourceOptionError {
+                    code: codes::INVALID_SOURCE_OPTION,
+                    pointer: format!("/{key}"),
+                }),
+            }
+        };
+        let Some(time_member) = member("time_member")? else {
+            return Err(SourceOptionError {
+                code: codes::INVALID_SOURCE_OPTION,
+                pointer: "/time_member".to_string(),
+            });
+        };
+        let type_member = member("type_member")?;
+        if type_member.as_deref() == Some(time_member.as_str()) {
+            return Err(SourceOptionError {
+                code: codes::INVALID_SOURCE_OPTION,
+                pointer: "/type_member".to_string(),
+            });
+        }
+        Ok(Some(RecordsOptions {
+            time_member,
+            type_member,
+        }))
+    }
+
     /// `Ok(None)` for a kind that has no compiled file reader here.
     pub fn file_spec(&self) -> Result<Option<FileSourceSpec>, SourceOptionError> {
         let kind = match self.kind.as_str() {
             "markdown_fields" => FileSourceKind::MarkdownFields,
             "file_digest" => FileSourceKind::FileDigest,
+            "records" => FileSourceKind::Records,
             _ => return Ok(None),
         };
         let err = |code: &'static str, pointer: &str| SourceOptionError {
@@ -693,6 +758,14 @@ impl SourceDef {
                 "fresh_for_s",
             ],
             FileSourceKind::FileDigest => &["paths", "exclude", "complete_listing", "fresh_for_s"],
+            FileSourceKind::Records => &[
+                "glob",
+                "exclude",
+                "complete_listing",
+                "fresh_for_s",
+                "time_member",
+                "type_member",
+            ],
         };
         if let Some(key) = self.options.keys().find(|k| !allowed.contains(&k.as_str())) {
             return Err(err(codes::INVALID_SOURCE_OPTION, &format!("/{}", esc(key))));
@@ -715,29 +788,35 @@ impl SourceDef {
                 }
                 Ok(out)
             };
+        if kind == FileSourceKind::Records {
+            self.records_options()?;
+        }
         let globs = match kind {
-            FileSourceKind::MarkdownFields => match self.options.get("glob") {
-                Some(Value::String(text)) => {
-                    vec![Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, "/glob"))?]
-                }
-                Some(Value::Array(items)) => {
-                    if items.is_empty() || items.len() > MAX_SOURCE_GLOBS {
-                        return Err(err(codes::INVALID_SOURCE_OPTION, "/glob"));
+            FileSourceKind::MarkdownFields | FileSourceKind::Records => {
+                match self.options.get("glob") {
+                    Some(Value::String(text)) => {
+                        vec![Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, "/glob"))?]
                     }
-                    let mut out = Vec::new();
-                    for (i, item) in items.iter().enumerate() {
-                        let pointer = format!("/glob/{i}");
-                        let Some(text) = item.as_str() else {
-                            return Err(err(codes::INVALID_SOURCE_OPTION, &pointer));
-                        };
-                        out.push(
-                            Glob::parse(text).map_err(|_| err(codes::INVALID_GLOB, &pointer))?,
-                        );
+                    Some(Value::Array(items)) => {
+                        if items.is_empty() || items.len() > MAX_SOURCE_GLOBS {
+                            return Err(err(codes::INVALID_SOURCE_OPTION, "/glob"));
+                        }
+                        let mut out = Vec::new();
+                        for (i, item) in items.iter().enumerate() {
+                            let pointer = format!("/glob/{i}");
+                            let Some(text) = item.as_str() else {
+                                return Err(err(codes::INVALID_SOURCE_OPTION, &pointer));
+                            };
+                            out.push(
+                                Glob::parse(text)
+                                    .map_err(|_| err(codes::INVALID_GLOB, &pointer))?,
+                            );
+                        }
+                        out
                     }
-                    out
+                    _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/glob")),
                 }
-                _ => return Err(err(codes::INVALID_SOURCE_OPTION, "/glob")),
-            },
+            }
             FileSourceKind::FileDigest => match self.options.get("paths") {
                 Some(v) => glob_list(v, "paths", 1)?,
                 None => return Err(err(codes::INVALID_SOURCE_OPTION, "/paths")),
@@ -1194,7 +1273,10 @@ fn check_views(schema: &Schema) -> Vec<Violation> {
             if col.header.contains(['|', '\n', '\r']) {
                 bad(codes::INVALID_SCHEMA, "/columns");
             }
-            if col.property != "$key" && !ty.properties.contains_key(&col.property) {
+            if col.property != "$key"
+                && col.property != "$observed_at"
+                && !ty.properties.contains_key(&col.property)
+            {
                 bad(codes::UNKNOWN_PROPERTY, "/columns");
             }
         }
@@ -1712,6 +1794,20 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
+        if src.kind == "records"
+            && schema
+                .object_types
+                .values()
+                .filter(|t| t.owner == Owner::Source(name.clone()))
+                .count()
+                != 1
+        {
+            v(
+                codes::RECORDS_SOURCE_OWNER,
+                format!("/sources/{}", esc(name)),
+                &mut out,
+            );
+        }
     }
     for (name, ty) in &schema.object_types {
         let base = format!("/object_types/{}", esc(name));
@@ -1739,6 +1835,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
         };
         let known_fields: Option<(&[&str], &[&str])> = file_spec
             .as_ref()
+            .filter(|spec| spec.kind.has_fixed_fields())
             .map(|spec| (spec.kind.record_fields(), spec.kind.string_record_fields()));
         if let Some(spec) = &file_spec {
             if !schema.scope_keys.is_empty() {
@@ -1758,8 +1855,10 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 })
             };
             let known = spec.kind.record_fields();
+            let fixed = spec.kind.has_fixed_fields();
             if let Some(pk) = &ty.primary_key.from
                 && pk != "$action_id"
+                && fixed
                 && first(pk).is_some_and(|f| !known.contains(&f.as_str()))
             {
                 v(
@@ -1770,6 +1869,7 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
             }
             for (pname, prop) in &ty.properties {
                 if let Some(from) = &prop.from
+                    && fixed
                     && first(from).is_some_and(|f| !known.contains(&f.as_str()))
                 {
                     v(

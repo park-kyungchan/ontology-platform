@@ -7,7 +7,9 @@
 //! transaction: no head or a retracted head is `initial`; different values
 //! are `update`; equal values with changed bytes, coverage or schema pin are `refresh`;
 //! unchanged stale heads are renewed in place; equal values
-//! with a fresh head append nothing. With `complete_listing` a non-retracted
+//! with a fresh head append nothing. A `records` source carries its own time
+//! per record (`T`): see `README.md`, "records", for the rule that replaces
+//! `now` as the observation time. With `complete_listing` a non-retracted
 //! head whose key is absent from the listing gets a `retraction`.
 //!
 //! Revision form: `r<N>@<written_at>`, where `N` is 0 for the first
@@ -21,7 +23,7 @@ use crate::principal::fresh_revision;
 use crate::refusal::{open_store, st, store_err};
 use crate::sources::{self, Listing, Record};
 use crate::{Answer, Context, Failure, Refusal};
-use ont_core::schema::{ObjectType, Owner, PropertyType, Schema, Transform};
+use ont_core::schema::{FileSourceKind, ObjectType, Owner, PropertyType, Schema, Transform};
 use ont_core::{Change, Coverage, Id, Knowledge, Lineage, Observation, Scope};
 use ont_store::Append;
 use ont_store::schema_mode::{SchemaHead, StoreRefusal};
@@ -92,6 +94,10 @@ struct Mapped {
     fields: BTreeMap<String, Knowledge>,
     coverage: Coverage,
     sha256: String,
+    /// The record's own time (`records` sources only).
+    time: Option<u64>,
+    /// `path` or `path:line`, for a failure cause.
+    place: String,
 }
 
 pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
@@ -256,10 +262,24 @@ fn run_source(
         .iter()
         .filter(|(_, t)| t.owner == Owner::Source(name.to_string()))
         .collect();
+    let read = match (spec.kind, def.records_options()) {
+        (FileSourceKind::Records, Ok(Some(opts))) => match owned.as_slice() {
+            [(owner_type, _)] => {
+                sources::read_records(&spec, &opts, owner_type, &sources::Bounds::default())
+            }
+            _ => {
+                return Ok(Err(Failed::new(
+                    "records_source_owner",
+                    format!("/sources/{name}"),
+                )));
+            }
+        },
+        _ => sources::read_files(&spec),
+    };
     let Listing {
         records,
         skipped_symlinks,
-    } = match sources::read_files(&spec) {
+    } = match read {
         Ok(l) => l,
         Err(e) => return Ok(Err(Failed::new(e.code, e.at))),
     };
@@ -294,11 +314,14 @@ fn run_source(
             match map_record(schema, type_name, ty, record) {
                 Ok(m) => {
                     if !seen.insert(m.id.clone()) {
-                        return fail("duplicate_key", record.path.clone());
+                        return fail("duplicate_key", record.place());
+                    }
+                    if m.time.is_some_and(|t| t > now) {
+                        return fail("record_time_in_future", record.place());
                     }
                     mapped.push(m);
                 }
-                Err(code) => return fail(code, record.path.clone()),
+                Err(code) => return fail(code, record.place()),
             }
         }
     }
@@ -341,8 +364,11 @@ fn run_source(
         for m in &mapped {
             keys.insert(&m.id);
             let head = tx.head(&m.id)?;
-            let (change, supersedes, n) = match &head {
-                None => (Change::Initial, None, 0),
+            // The time of the observation this record makes: the run's time,
+            // or for a `records` source the record's own time `T`.
+            let at = m.time.unwrap_or(now);
+            let (change, supersedes, n, observed_at) = match &head {
+                None => (Change::Initial, None, 0, at),
                 Some(h) => {
                     let obs = &h.head.observation;
                     let Some(n) = revision_number(&obs.revision).and_then(|n| n.checked_add(1))
@@ -351,16 +377,31 @@ fn run_source(
                         return Err(StoreRefusal::new("index_aborted"));
                     };
                     if h.retracted {
-                        (Change::Initial, None, n)
+                        (Change::Initial, None, n, at)
                     } else if obs.fields != m.fields {
-                        (Change::Update, Some(obs.revision.clone()), n)
+                        if m.time.is_some() && at < obs.observed_at {
+                            // Older content over newer: the source fails.
+                            aborted = Some(("record_older_than_head".into(), m.place.clone()));
+                            return Err(StoreRefusal::new("index_aborted"));
+                        }
+                        (Change::Update, Some(obs.revision.clone()), n, at)
                     } else if obs.lineage.artifact_sha256 != m.sha256
                         || obs.coverage != m.coverage
                         || Some(&h.schema_pin) != store_pin.as_ref()
                     {
-                        (Change::Refresh, Some(obs.revision.clone()), n)
-                    } else if now > obs.fresh_until {
-                        tx.renew(&m.id, now, fresh_until)?;
+                        let later = if m.time.is_some() {
+                            at.max(obs.observed_at)
+                        } else {
+                            at
+                        };
+                        (Change::Refresh, Some(obs.revision.clone()), n, later)
+                    } else if now > obs.fresh_until || (m.time.is_some() && at > obs.observed_at) {
+                        let later = if m.time.is_some() {
+                            at.max(obs.observed_at)
+                        } else {
+                            at
+                        };
+                        tx.renew(&m.id, later, fresh_until)?;
                         counts.renewed += 1;
                         continue;
                     } else {
@@ -380,7 +421,7 @@ fn run_source(
                 observation: Observation {
                     revision: format!("r{n}@{now}"),
                     source_revision: m.sha256.clone(),
-                    observed_at: now,
+                    observed_at,
                     fresh_until,
                     change,
                     supersedes,
@@ -525,6 +566,8 @@ fn map_record(
         fields,
         coverage,
         sha256: record.sha256.clone(),
+        time: record.time,
+        place: record.place(),
     })
 }
 
