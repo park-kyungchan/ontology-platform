@@ -1263,3 +1263,65 @@ fn n1b_two_diverged_repairs_leave_two_asides() {
         .collect();
     assert_eq!(asides.len(), 2, "{asides:?}");
 }
+
+#[test]
+fn g2a_earlier_changed_line_is_left_by_a_write_and_found_by_verify() {
+    let t = setup();
+    for title in ["one", "two", "three"] {
+        make_note(&t, title);
+    }
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    std::fs::write(t.edits(), text.replacen("one", "eno", 1)).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"four","task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits_log"], "written");
+    let asides = || {
+        std::fs::read_dir(&t.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("edits.jsonl.diverged-")
+            })
+            .count()
+    };
+    assert_eq!(asides(), 0);
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), 4);
+    assert_ne!(text.lines().next().unwrap(), log_line(log[0].0, &log[0].1));
+    for ((seq, e), line) in log.iter().skip(1).zip(text.lines().skip(1)) {
+        assert_eq!(line, log_line(*seq, e));
+    }
+    assert_eq!(
+        ont::action::verify_edits_file(&t.store_path()),
+        ont::action::EditsLogStatus::Rebuilt
+    );
+    assert_eq!(asides(), 1);
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), 4);
+    for ((seq, e), line) in log.iter().zip(text.lines()) {
+        assert_eq!(line, log_line(*seq, e));
+    }
+}
+#[test]
+fn g2a_rows_missing_after_the_tail_are_appended() {
+    let t = setup();
+    make_note(&t, "one");
+    make_note(&t, "two");
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    std::fs::write(t.edits(), format!("{}\n", text.lines().next().unwrap())).unwrap();
+    make_note(&t, "three");
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    assert_eq!(text.lines().count(), 3);
+    for ((seq, e), line) in log.iter().zip(text.lines()) {
+        assert_eq!(line, log_line(*seq, e));
+    }
+}
