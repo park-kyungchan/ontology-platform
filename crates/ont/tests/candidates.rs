@@ -454,8 +454,9 @@ fn reader_text(f: &Fixture, command: &str, filtered: bool) -> String {
     out.stdout
 }
 fn reader_parity(command: &str) {
-    static LARGE: std::sync::OnceLock<Fixture> = std::sync::OnceLock::new();
-    let large = LARGE.get_or_init(|| {
+    // A static OnceLock never drops its value at process exit. Own the fixture
+    // in the test so both successful returns and unwinding remove its store.
+    let large = {
         let f = Fixture::new();
         let mut rows: Vec<_> = (0..10001)
             .map(|i| row(&format!("z-{i:05}"), status("superseded"), false, false))
@@ -466,7 +467,7 @@ fn reader_parity(command: &str) {
         );
         f.append(rows);
         f
-    });
+    };
     let small = Fixture::new();
     small.append(
         (0..201)
@@ -476,8 +477,8 @@ fn reader_parity(command: &str) {
     let expected = reader_text(&small, command, true);
     let answer: Value = serde_json::from_str(&expected).unwrap();
     assert_eq!(answer["status"], "ok", "{answer}");
-    assert_eq!(reader_text(large, command, true), expected);
-    let raw: Value = serde_json::from_str(&reader_text(large, command, false)).unwrap();
+    assert_eq!(reader_text(&large, command, true), expected);
+    let raw: Value = serde_json::from_str(&reader_text(&large, command, false)).unwrap();
     assert_eq!(raw["code"], "result_too_large", "{raw}");
     if command == "render" {
         assert_eq!(answer["rows"], 201);
