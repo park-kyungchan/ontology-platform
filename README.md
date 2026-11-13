@@ -10,20 +10,20 @@ The Ontology engine of this host: one generic engine, no domain knowledge. A dom
 | `ont-store` | The store: one SQLite file per store, atomic appends, snapshot reads |
 | `ont` | The command `ont` and its library: `schema check`, `schema install`, `describe`, `get`, `search`, `around`, `aggregate`, `render`, `index`, `action list`, `action validate`, `action apply`, `backup`, `compact`, and `mcp` (the same reads and actions as an MCP server over standard input and output) |
 
-Every command reads one JSON request on standard input and prints one JSON answer; `ont --help` lists the request fields. The contract of each command is in [crates/ont/README.md](crates/ont/README.md).
+The reads and the action commands (`describe`, `get`, `search`, `around`, `aggregate`, `render`, `action ...`) read one JSON request on standard input and print one JSON answer; `schema check`, `schema install`, `index`, `backup` and `compact` take arguments only; `mcp` speaks the MCP protocol. `ont --help` lists every form and the request fields. The contract of each command is in [crates/ont/README.md](crates/ont/README.md).
 
 ## Who uses it
 
 - Agents of every CLI on this host, through the installed command `ont` and its MCP server.
 - `agent-platform`: its schema `ontology/work.schema.json` and the command `ap`, which calls the installed `ont`.
-- Domain crates in other repositories, which pin this repository by Git revision and link `ont`, `ont-core` and `ont-store` as libraries.
+- Domain crates in other repositories, which pin this repository by Git revision and link `ont`, `ont-core` and `ont-store` as libraries. The first is `edu-academy-ontology` of `education-platform`, on a branch that is not merged yet.
 
 A change of an answer's shape or of the schema language is a change of a contract those users rely on.
 
 ## Check, install
 
 - `./check` is the one check: format, lints as errors, all tests, the test of the install script. The CI job `rust` runs the same file and is the required check of `main`.
-- `scripts/install-ont.sh install <commit>` builds and installs the command from a clean checkout of a commit on `main`; `check` compares the installed binary with it; `rollback` restores the previous one. It installs no schema and runs no index.
+- `scripts/install-ont.sh install <commit>` builds and installs the command from a clean checkout of a commit on `main`; `check` compares the installed files with the record that install wrote (sha256 and commit); `rollback` restores the previous one. It installs no schema and runs no index.
 
 ## What else is in the tree
 

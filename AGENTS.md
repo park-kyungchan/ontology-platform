@@ -19,7 +19,7 @@ Shared rules of this host: `/root/.agents/AGENTS.md`. This page adds only what i
 | The schema language | `crates/ont-core`, described in `crates/ont/README.md` | Every installed schema |
 | The JSON answers of each command and of the MCP tools | `crates/ont/README.md` | `ap` in `agent-platform`, every agent that reads an answer |
 | The store format | `crates/ont-store`; `crates/ont/README.md` section "compact" | Every store file on the host; a format change needs an upgrade path and a design note before the build |
-| The library boundary (`ont`, `ont-core`, `ont-store` as dependencies) | The crates' public items | Domain crates that pin a revision of this repository |
+| The library boundary (`ont`, `ont-core`, `ont-store` as dependencies) | The crates' public items | Domain crates that pin a revision of this repository (the first, in `education-platform`, is on a branch) |
 
 A change of one of these says so in the pull request and comes with the test that fails on the old behaviour.
 

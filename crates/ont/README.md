@@ -543,9 +543,10 @@ hides a real block from the parser.
 ## History
 
 O17 renamed the composition crate and synthetic CLI from `ontd` to `ont-daemon`
-(Rust import `ont_daemon`). It remains the consumer of `ont-core`/`ont-store`
-used by `ont-program-pilot`, `ont-local-fake` and the synthetic integration tests.
-The operational command is `ont`. The crate `ont-daemon` was later removed from the workspace because nothing consumed it; its source is in Git history. Pinned contracts, recorded diagnostics and
+(Rust import `ont_daemon`). It was the consumer of `ont-core`/`ont-store`
+used by `ont-program-pilot`, `ont-local-fake` and the synthetic integration tests,
+until the crate was removed from the workspace because nothing consumed it; its source is in Git history.
+The operational command is `ont`. Pinned contracts, recorded diagnostics and
 commands over archived source retain their historical names. References in the immutable
 `conformance/` evidence and the out-of-scope root README retain the earlier name.
 

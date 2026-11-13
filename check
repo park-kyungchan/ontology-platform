@@ -4,8 +4,9 @@
 # takes that lock (one Cargo build at a time on the host) and refuses to build
 # when the file system has less than 10,240 MiB free.
 set -euo pipefail
-cd "$(dirname "$0")"
-if [ -z "${CI:-}" ] && [ -z "${CHECK_LOCKED:-}" ]; then
+self=$(realpath "$0")
+cd "$(dirname "$self")"
+if [ "${CI:-}" != true ] && [ -z "${CHECK_LOCKED:-}" ]; then
   lock=${HOST_CARGO_LOCK:-/home/palantirkc/work/ws-replan/wt/.host-cargo.lock}
   if [ -e "$lock" ]; then
     free=$(df -BM --output=avail . | tail -n 1 | tr -dc 0-9)
@@ -15,7 +16,7 @@ if [ -z "${CI:-}" ] && [ -z "${CHECK_LOCKED:-}" ]; then
     fi
     export CHECK_LOCKED=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
-    exec flock "$lock" "$0" "$@"
+    exec flock "$lock" "$self" "$@"
   fi
 fi
 cargo fmt --all -- --check

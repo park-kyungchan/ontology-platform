@@ -12,7 +12,7 @@ For the one reviewer session of a pull request (and for the automatic reviewer).
 
 ## Not blocking (at most five notes)
 
-A test gap, a surviving mutant, a sentence in a document, a name, a preference for another structure, hardening against a same-user adversary. Do not write mutants by hand.
+A test gap, a surviving mutant, a sentence in a document, a name, a preference for another structure, hardening against a same-user adversary. Do not write mutants by hand. A change that deletes the only tests of code that stays says so in the pull request; when it does not, that is a finding of kind 3.
 
 ## Form
 
