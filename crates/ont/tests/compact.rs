@@ -138,6 +138,7 @@ fn compact_keeps_every_row() {
         property: "label".into(),
         values: vec![json!("ready")],
         used: BTreeSet::new(),
+        absent: true,
     };
     let scope = ont_core::Scope::domain(
         ont_core::Namespace {

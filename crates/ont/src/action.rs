@@ -2044,6 +2044,8 @@ impl SnapshotSource for ont_store::Store {
                 serde_json::to_value(target).map_err(|_| Refusal::new("invalid_request"))?,
             ],
             used: BTreeSet::new(),
+            // linked already answers not linked when the backing field has no value.
+            absent: false,
         };
         self.candidate_access(ty, Some(&condition), now, limit, after, scopes)
             .map_err(store_err)
@@ -2080,6 +2082,8 @@ impl SnapshotSource for ont_store::schema_mode::SchemaWrite<'_> {
                 serde_json::to_value(target).map_err(|_| Refusal::new("invalid_request"))?,
             ],
             used: BTreeSet::new(),
+            // linked already answers not linked when the backing field has no value.
+            absent: false,
         };
         self.candidate_access(ty, Some(&condition), now, limit, after, scopes)
             .map_err(store_err)
