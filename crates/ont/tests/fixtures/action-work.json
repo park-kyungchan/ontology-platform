@@ -64,7 +64,7 @@
     "widget": {
       "description": "A widget keyed by a pointer into a parameter.",
       "owner": "ontology",
-      "primary_key": {"from": "/key"},
+      "primary_key": {"from": "/native_key"},
       "title": "name",
       "properties": {
         "name": {"type": "string", "required": true}
@@ -221,7 +221,7 @@
     "upsert_widget": {
       "description": "Create or modify a widget by a pointer key.",
       "parameters": {
-        "spec": {"type": {"struct": {"key": "string"}}, "required": true},
+        "spec": {"type": {"ref": "widget"}, "required": true},
         "title": {"type": "string", "required": true}
       },
       "submission_criteria": [],

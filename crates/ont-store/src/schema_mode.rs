@@ -166,7 +166,7 @@ pub(crate) fn load_schema_set(connection: &Connection) -> Result<SchemaSet, Stor
             .filter(|s| s.domain != candidate.domain)
             .flat_map(|s| s.object_types.keys().cloned())
             .collect();
-        let c = Schema::check_bytes(bytes, &others).map_err(|v| {
+        let c = Schema::check_installed_bytes(bytes, &others).map_err(|v| {
             StoreRefusal::schema(
                 v.into_iter()
                     .next()

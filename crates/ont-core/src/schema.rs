@@ -34,6 +34,7 @@ pub mod codes {
     pub const UNKNOWN_SCOPE_KEY: &str = "unknown_scope_key";
     pub const INVALID_PRINCIPAL: &str = "invalid_principal";
     pub const INVALID_GRANT_SCOPE: &str = "invalid_grant_scope";
+    pub const AMBIGUOUS_CREATE_KEY: &str = "ambiguous_create_key";
     pub const INVALID_PRIMARY_KEY: &str = "invalid_primary_key";
     pub const INVALID_FROM_POINTER: &str = "invalid_from_pointer";
     pub const ONTOLOGY_PROPERTY_FROM: &str = "ontology_property_from";
@@ -94,6 +95,7 @@ pub mod codes {
         INVALID_PRINCIPAL,
         INVALID_GRANT_SCOPE,
         INVALID_PRIMARY_KEY,
+        AMBIGUOUS_CREATE_KEY,
         INVALID_FROM_POINTER,
         ONTOLOGY_PROPERTY_FROM,
         REQUIRED_PROPERTY_WITHOUT_FROM,
@@ -979,6 +981,31 @@ pub struct ActionType {
     pub rules: Vec<ActionRule>,
 }
 
+impl ActionType {
+    /// A pointer key comes from exactly one required reference to its created
+    /// type, and one create/upsert rule for that type. Never use value/name order.
+    pub fn create_key_parameter(&self, object_type: &str, pointer: &str) -> Option<&str> {
+        if pointer != "/native_key"
+            || self
+                .rules
+                .iter()
+                .filter(|r| {
+                    r.create_object.as_deref() == Some(object_type)
+                        || r.create_or_modify_object.as_deref() == Some(object_type)
+                })
+                .count()
+                != 1
+        {
+            return None;
+        }
+        let mut candidates = self.parameters.iter().filter(|(_, p)| {
+            p.required && matches!(&p.ty, PropertyType::Ref(r) if r.target == object_type)
+        });
+        let (name, _) = candidates.next()?;
+        candidates.next().is_none().then_some(name.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FunctionDef {
@@ -1233,8 +1260,8 @@ impl SchemaPin {
     }
 }
 
-/// A schema that passed `Schema::check_bytes`, paired with the pin of the
-/// exact bytes it was parsed from. Only `check_bytes` constructs it.
+/// A checked schema paired with the pin of its exact bytes. Installed bytes
+/// may lack a resolvable create key; new admission uses `Schema::check_bytes`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedSchema {
     schema: Schema,
@@ -1256,11 +1283,27 @@ impl Schema {
     pub fn check(&self, other_domains_types: &BTreeSet<String>) -> Vec<Violation> {
         check(self, other_domains_types)
     }
-    /// Parse, check, and pin over the exact bytes. The only way to obtain a
-    /// pinned schema.
+    /// Strictly parse, check, and pin exact bytes for admission of a new schema.
     pub fn check_bytes(
         bytes: &[u8],
         other_domains_types: &BTreeSet<String>,
+    ) -> Result<CheckedSchema, Vec<Violation>> {
+        Self::check_bytes_inner(bytes, other_domains_types, false)
+    }
+
+    /// Reload previously installed bytes, exempting only the create-key rule.
+    /// Never use for admission of a new install; execution must resolve its key.
+    pub fn check_installed_bytes(
+        bytes: &[u8],
+        other_domains_types: &BTreeSet<String>,
+    ) -> Result<CheckedSchema, Vec<Violation>> {
+        Self::check_bytes_inner(bytes, other_domains_types, true)
+    }
+
+    fn check_bytes_inner(
+        bytes: &[u8],
+        other_domains_types: &BTreeSet<String>,
+        installed: bool,
     ) -> Result<CheckedSchema, Vec<Violation>> {
         if let Some(pointer) = duplicate_key_pointer(bytes) {
             return Err(vec![Violation::new(codes::DUPLICATE_FIELD, pointer)]);
@@ -1295,7 +1338,10 @@ impl Schema {
             };
             vec![Violation::new(code, pointer)]
         })?;
-        let violations = check(&schema, other_domains_types);
+        let mut violations = check(&schema, other_domains_types);
+        if installed {
+            violations.retain(|v| v.code != codes::AMBIGUOUS_CREATE_KEY);
+        }
         if violations.is_empty() {
             Ok(CheckedSchema {
                 pin: SchemaPin::for_bytes(&schema.domain, schema.version, bytes),
@@ -1758,6 +1804,18 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                 &mut out,
             );
         }
+        if matches!(ty.owner, Owner::Ontology)
+            && pk
+                .from
+                .as_deref()
+                .is_some_and(|p| p.starts_with('/') && p != "/native_key")
+        {
+            v(
+                codes::AMBIGUOUS_CREATE_KEY,
+                format!("{base}/primary_key/from"),
+                &mut out,
+            );
+        }
         if let Some(tpl) = &pk.template {
             check_template(
                 tpl,
@@ -2009,6 +2067,18 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                     Some(ty) => {
                         if matches!(ty.owner, Owner::Source(_)) {
                             v(codes::ACTION_EDITS_SOURCE_OWNED, tp, &mut out);
+                        }
+                        if matches!(ty.owner, Owner::Ontology)
+                            && (rule.create_object.is_some()
+                                || rule.create_or_modify_object.is_some())
+                            && let Some(pointer) = ty
+                                .primary_key
+                                .from
+                                .as_deref()
+                                .filter(|p| p.starts_with('/'))
+                            && at.create_key_parameter(target, pointer).is_none()
+                        {
+                            v(codes::AMBIGUOUS_CREATE_KEY, base.clone(), &mut out);
                         }
                         for key in rule.set.keys() {
                             if !ty.properties.contains_key(key) {
@@ -2904,8 +2974,10 @@ pub struct SchemaSet {
     pins: BTreeMap<String, SchemaPin>,
 }
 impl SchemaSet {
-    /// Build from schemas that each passed `Schema::check_bytes`; the set
-    /// re-checks them against each other (duplicate domains and type names).
+    /// Compose strictly checked new schemas or compatibility-checked installed
+    /// schemas. Recheck every rule except the create-key admission rule, which
+    /// check_bytes already enforces for new schemas. Existing domains may retain
+    /// that violation during an upgrade; actions still resolve keys at execution.
     pub fn new(checked: Vec<CheckedSchema>) -> Result<Self, Vec<Violation>> {
         Self::build(
             checked
@@ -2943,7 +3015,11 @@ impl SchemaSet {
                 .filter(|(d, _)| d != &schema.domain)
                 .flat_map(|(_, ts)| ts.iter().cloned())
                 .collect();
-            violations.extend(check(&schema, &others));
+            violations.extend(
+                check(&schema, &others)
+                    .into_iter()
+                    .filter(|v| v.code != codes::AMBIGUOUS_CREATE_KEY),
+            );
             if let Some(p) = pin {
                 pins.insert(schema.domain.clone(), p);
             }

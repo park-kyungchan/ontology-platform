@@ -1275,7 +1275,7 @@ fn now_criterion_rejects_non_strings_and_other_contexts_with_pointers() {
     );
     let mut view: Value =
         serde_json::from_slice(include_bytes!("fixtures/render-board.json")).unwrap();
-    view["views"]["clock"] = json!({"object_type":"item","columns":[{"header":"Title","property":"title"}],"order":[],"filter":{"le":["title","$now"]}});
+    view["views"]["clock"] = json!({"object_type":"item","columns":[{"header":"Title","property":"title"}],"order":[{"property":"$key","direction":"asc"}],"filter":{"le":["title","$now"]}});
     t.refuses_schema(view, "invalid_schema", "/views/clock/filter");
 }
 
@@ -2330,7 +2330,7 @@ fn unreadable_creation_occupancy_exception_survives_minimal_bound_cli_and_mcp() 
                         );
                     }
                     let before = std::fs::read(t.store()).unwrap();
-                    let req = json!({"action_type":"upsert_widget","parameters":{"spec":{"key":"occupied"},"title":"created"},"request_id":"occupancy"});
+                    let req = json!({"action_type":"upsert_widget","parameters":{"spec":{"object_type":"widget","namespace":task()["namespace"],"native_key":"occupied"},"title":"created"},"request_id":"occupancy"});
                     let line =
                         ont::__with_snapshot_bounds(1, 1, || t.action_line(mcp, op, req, NOW));
                     let answer: Value = serde_json::from_str(&line).unwrap();
@@ -2475,10 +2475,11 @@ fn present_predecessor_self_reference_validate_apply_cli_and_mcp() {
                 "submission_criteria":[{"code":"self_predecessor","message":"Choose another predecessor.","none":[{"all":[{"present":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}],
                 "rules":[{"create_or_modify_object":"note","set":{"title":"recorded"}}]
             });
-            s["grants"][0]["actions"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!("record_memory"));
+            // This scenario exercises only record_memory; other fixture actions
+            // create notes with action-id keys and do not declare a pointer source.
+            let action = s["action_types"]["record_memory"].clone();
+            s["action_types"] = json!({"record_memory":action});
+            s["grants"][0]["actions"] = json!(["record_memory"]);
             t.install(s);
             let record =
                 json!({"object_type":"note","namespace":task()["namespace"],"native_key":"record"});
@@ -2794,4 +2795,273 @@ fn present_keeps_unrelated_rule_free_of_parameter_reads_and_checks_stale_value_s
             assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
         }
     }
+}
+
+fn pointer_key_schema() -> Value {
+    let mut s = schema();
+    // Keep other action contracts intact: this new type has only this action.
+    s["object_types"]["record"] = json!({"owner":"ontology","primary_key":{"from":"/native_key"},"properties":{"title":{"type":"string","required":true}}});
+    s["action_types"]["write_record"] = json!({
+        "parameters":{"z_record":{"type":{"ref":"record"},"required":true},"a_other":{"type":{"ref":"record"}}},
+        "rules":[{"create_or_modify_object":"record","set":{"title":"written"}}]
+    });
+    for field in ["read", "derive"] {
+        s["grants"][0][field]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("record"));
+    }
+    s["grants"][0]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("write_record"));
+    s
+}
+
+#[test]
+fn pointer_create_key_ignores_other_parameter_name() {
+    for kind in ["create_object", "create_or_modify_object"] {
+        for other_name in ["a_other", "zz_other"] {
+            let t = Temp::new();
+            let mut s = pointer_key_schema();
+            let other = s["action_types"]["write_record"]["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("a_other")
+                .unwrap();
+            s["action_types"]["write_record"]["parameters"][other_name] = other;
+            s["action_types"]["write_record"]["rules"] =
+                json!([{kind:"record","set":{"title":"written"}}]);
+            t.install(s);
+            let target = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"target"});
+            let other = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"other"});
+            put(
+                &t,
+                other.clone(),
+                &[],
+                json!({"title":"untouched"}),
+                NOW + 10,
+                false,
+            );
+            let before = t.cli(&["get"], json!({"id":other}), NOW);
+            let result = t.call(false, "apply", json!({"action_type":"write_record","parameters":{"z_record":target,other_name:other}}), NOW);
+            assert_eq!(result["status"], "ok", "{result}");
+            assert_eq!(result["result"]["edits"][0]["id"], target, "{result}");
+            assert_eq!(t.fields(&target)["title"]["value"], "written");
+            assert_eq!(t.cli(&["get"], json!({"id":other}), NOW), before);
+        }
+    }
+}
+
+#[test]
+fn pointer_create_key_schema_refuses_undetermined_parameter() {
+    for mode in ["two", "none", "optional_only"] {
+        let t = Temp::new();
+        let mut s = pointer_key_schema();
+        let params = &mut s["action_types"]["write_record"]["parameters"];
+        match mode {
+            "two" => params["a_other"]["required"] = json!(true),
+            "none" => *params = json!({}),
+            _ => params["z_record"]["required"] = json!(false),
+        }
+        let p = t.0.join("ambiguous.json");
+        std::fs::write(&p, s.to_string()).unwrap();
+        let answer = t.cli(&["schema", "check", p.to_str().unwrap()], json!({}), NOW);
+        assert_eq!(answer["status"], "refused", "{mode}: {answer}");
+        assert!(
+            answer["violations"].as_array().unwrap().contains(
+                &json!({"code":"ambiguous_create_key","pointer":"/action_types/write_record"})
+            ),
+            "{answer}"
+        );
+    }
+}
+
+// Emulate an earlier engine's install: start with a checked store, then replace
+// only its install bytes/pin with bytes whose sole violation is the new rule.
+// No production unchecked-install API is needed for this synthetic fixture.
+fn replace_installed_schema(t: &Temp, s: &Value) {
+    let bytes = serde_json::to_vec(s).unwrap();
+    let sha = format!("{:x}", Sha256::digest(&bytes));
+    let db = rusqlite::Connection::open(t.store()).unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE schema_installs SET bytes=?1,sha256=?2 WHERE domain=?3 AND version=?4",
+            rusqlite::params![
+                bytes,
+                sha,
+                s["domain"].as_str().unwrap(),
+                s["version"].as_u64().unwrap()
+            ],
+        )
+        .unwrap(),
+        1
+    );
+    // Only action declarations changed; object projections are still identical.
+    // A real earlier-engine install would have acknowledged this generation.
+    db.execute(
+        "UPDATE candidate_generation SET projected=mutation,semantics_projected=mutation",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn installed_ambiguous_key_preserves_store_and_allows_repair() {
+    let t = Temp::new();
+    let mut s = pointer_key_schema();
+    s["action_types"]["write_record"]["parameters"]["a_spec"] =
+        json!({"type":{"ref":"record"},"required":false});
+    s["object_types"]["record"]["properties"]["parent"] = json!({"type":{"ref":"record"}});
+    s["link_types"]["record_parent"] = json!({"from":"record","via":"parent","to":"record","cardinality":"many_to_one","names":{"forward":"parent","reverse":"children"}});
+    s["views"]["records"] = json!({"object_type":"record","columns":[{"header":"Title","property":"title"}],"order":[{"property":"$key","direction":"asc"}]});
+    s["action_types"]["seed_record"] = json!({
+        "parameters":{"spec":{"type":{"ref":"record"},"required":true}},
+        "rules":[{"create_object":"record","set":{"title":"seed"}}]
+    });
+    s["grants"][0]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("seed_record"));
+    t.install(s.clone());
+    let id = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"X"});
+    assert_eq!(
+        t.call(
+            false,
+            "apply",
+            json!({"action_type":"seed_record","parameters":{"spec":id}}),
+            NOW
+        )["status"],
+        "ok"
+    );
+    let before = t.cli(&["get"], json!({"id":id}), NOW)["result"]["objects"][0]["head"].clone();
+    assert!(before.is_string());
+    s["action_types"]["write_record"]["parameters"]["a_spec"]["required"] = json!(true);
+    assert_eq!(
+        Schema::parse(s.to_string().as_bytes())
+            .unwrap()
+            .check(&BTreeSet::new())
+            .iter()
+            .map(|v| (v.code, v.pointer.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("ambiguous_create_key", "/action_types/write_record")]
+    );
+    replace_installed_schema(&t, &s);
+
+    // Read availability includes readers that traverse references and views.
+    for (cmd, body) in [
+        (vec!["describe"], json!({})),
+        (vec!["get"], json!({"id":id})),
+        (vec!["search"], json!({"object_type":"record"})),
+        (
+            vec!["around"],
+            json!({"from":{"object_type":"record"},"path":["parent"]}),
+        ),
+        (
+            vec!["aggregate"],
+            json!({"object_type":"record","metrics":["count"]}),
+        ),
+        (vec!["render"], json!({"view":"records"})),
+        (vec!["action", "list"], json!({})),
+        (vec!["backup"], json!({})),
+        (vec!["compact"], json!({})),
+    ] {
+        let answer = t.cli(&cmd, body, NOW);
+        assert_eq!(answer["status"], "ok", "{cmd:?}: {answer}");
+    }
+    let after = t.cli(&["get"], json!({"id":id}), NOW)["result"].clone();
+    assert_eq!(after["objects"][0]["head"], before);
+    assert_eq!(t.fields(&id)["title"]["value"], "seed");
+    assert_eq!(
+        t.call(
+            false,
+            "apply",
+            json!({"action_type":"seed_record","parameters":{"spec":{"object_type":"record","namespace":task()["namespace"],"native_key":"Y"}}}),
+            NOW
+        )["status"],
+        "ok"
+    );
+    for mcp in [false, true] {
+        for op in ["validate", "apply"] {
+            let heads = t.cli(&["search"], json!({"object_type":"record"}), NOW);
+            let edits = std::fs::read(t.0.join("edits.jsonl")).unwrap();
+            let db = rusqlite::Connection::open(t.store()).unwrap();
+            let count: i64 = db
+                .query_row("SELECT count(*) FROM action_log", [], |r| r.get(0))
+                .unwrap();
+            let answer = t.call(mcp, op, json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":id},"request_id":"ambiguous"}), NOW);
+            assert_eq!(answer["status"], "refused", "{answer}");
+            assert_eq!(answer["code"], "ambiguous_create_key", "{answer}");
+            assert_eq!(answer["pointer"], "/action_types/write_record", "{answer}");
+            assert_eq!(
+                t.cli(&["search"], json!({"object_type":"record"}), NOW),
+                heads
+            );
+            assert_eq!(std::fs::read(t.0.join("edits.jsonl")).unwrap(), edits);
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM action_log", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                count
+            );
+        }
+    }
+    let p = t.0.join("legacy.json");
+    std::fs::write(&p, s.to_string()).unwrap();
+    for op in ["check", "install"] {
+        let answer = t.cli(&["schema", op, p.to_str().unwrap()], json!({}), NOW);
+        assert_eq!(answer["status"], "refused", "{answer}");
+        assert!(
+            answer["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["code"] == "ambiguous_create_key"),
+            "{answer}"
+        );
+    }
+    // A different violation must still block opening, even beside ambiguity.
+    let mut broken = s.clone();
+    broken["action_types"]["write_record"]["rules"][0]["set"]["missing"] = json!("bad");
+    replace_installed_schema(&t, &broken);
+    let refused = t.cli(&["describe"], json!({}), NOW);
+    assert_eq!(
+        refused["violation"]["code"], "unknown_property",
+        "{refused}"
+    );
+    replace_installed_schema(&t, &s);
+    s["version"] = json!(2);
+    s["action_types"]["write_record"]["parameters"]["a_spec"]["required"] = json!(false);
+    t.install(s);
+    assert_eq!(
+        t.cli(&["get"], json!({"id":id}), NOW)["result"]["objects"][0]["head"],
+        before
+    );
+    let result = t.call(
+        false,
+        "apply",
+        json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":id}}),
+        NOW,
+    );
+    assert_eq!(result["status"], "ok", "{result}");
+    assert_eq!(result["result"]["edits"][0]["id"], id);
+}
+
+#[test]
+fn pointer_create_key_reference_cannot_supply_custom_member() {
+    let t = Temp::new();
+    let mut s = pointer_key_schema();
+    s["object_types"]["record"]["primary_key"]["from"] = json!("/key");
+    s["action_types"]["write_record"]["parameters"] = json!({
+        "a_spec":{"type":{"struct":{"key":"string"}},"required":false},
+        "z_record":{"type":{"ref":"record"},"required":true}
+    });
+    t.refuses_schema(
+        s.clone(),
+        "ambiguous_create_key",
+        "/action_types/write_record",
+    );
+    // Struct keys are no longer admitted, even if required.
+    s["action_types"]["write_record"]["parameters"]["a_spec"]["required"] = json!(true);
+    t.refuses_schema(s, "ambiguous_create_key", "/action_types/write_record");
 }

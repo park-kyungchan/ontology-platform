@@ -666,7 +666,11 @@ fn continuation_rule_describes_existing_signed_hex_pairs() {
 #[test]
 fn planned_field_origins_are_request_pointers_cli_and_mcp() {
     for (mode, parameters, field) in [
-        ("key", json!({"spec":{"key":7}}), "/parameters/spec/key"),
+        (
+            "key",
+            json!({"spec":{"object_type":"item","namespace":{"instance":"test","account":"root"},"native_key":7}}),
+            "/parameters/spec",
+        ),
         (
             "property",
             json!({"payload":"too long"}),
@@ -680,8 +684,8 @@ fn planned_field_origins_are_request_pointers_cli_and_mcp() {
         schema["version"] = json!(2);
         match mode {
             "key" => {
-                schema["object_types"]["item"]["primary_key"]["from"] = json!("/key");
-                schema["action_types"]["create_item"] = json!({"parameters":{"spec":{"type":{"struct":{"key":"integer"}},"required":true}},"rules":[{"create_object":"item","set":{"title":"literal"}}]});
+                schema["object_types"]["item"]["primary_key"]["from"] = json!("/native_key");
+                schema["action_types"]["create_item"] = json!({"parameters":{"spec":{"type":{"ref":"item"},"required":true}},"rules":[{"create_object":"item","set":{"title":"literal"}}]});
             }
             "property" => {
                 schema["object_types"]["item"]["properties"]["title"]["max_bytes"] = json!(1);
@@ -706,7 +710,7 @@ fn planned_field_origins_are_request_pointers_cli_and_mcp() {
                 answer
             );
             assert!(request.pointer(answer["field"].as_str().unwrap()).is_some());
-            if mode != "absent_target" {
+            if mode == "property" {
                 assert!(answer["rule"].as_str().unwrap().contains("schema rule"));
             }
         }

@@ -474,6 +474,27 @@ fn validate_parameters(
             }
         }
     }
+    // The validated id supplies the local creation key, so its namespace must
+    // name this domain too. Both entry points and the apply transaction use this.
+    for rule in &at.rules {
+        if let Some(target) = rule
+            .create_object
+            .as_ref()
+            .or(rule.create_or_modify_object.as_ref())
+            && let Some(name) = schema
+                .object_types
+                .get(target)
+                .and_then(|ty| ty.primary_key.from.as_deref())
+                .and_then(|pointer| at.create_key_parameter(target, pointer))
+            && let Some(id) = out.get(name).and_then(id_from_value)
+            && id.namespace != schema.namespace
+        {
+            return Err(invalid_parameter(
+                &format!("{}/namespace", parameter_field(name)),
+                "key reference namespace must equal the action domain namespace",
+            ));
+        }
+    }
     Ok(out)
 }
 
@@ -1145,64 +1166,41 @@ impl<'a> Planner<'a> {
             "/parameters".to_string()
         }
     }
-    fn create_key(
-        &self,
-        at: &ActionType,
-        object_type: &str,
-        set_map: &BTreeMap<String, Value>,
-    ) -> Result<String, Failure> {
+    fn create_key(&self, at: &ActionType, object_type: &str) -> Result<String, Failure> {
         let ty = self
             .schema
             .object_types
             .get(object_type)
             .ok_or_else(|| Failure::from(Refusal::new("unknown_type")))?;
-        let _ = (at, set_map);
         if ty.primary_key.from.as_deref() == Some("$action_id") {
             return Ok(self.action_id.clone());
         }
-        if let Some(from) = &ty.primary_key.from
-            && from.starts_with('/')
-        {
-            // The one pointer form `schema check` accepts for an
-            // Ontology-owned key: a pointer into a parameter value.
-            if let Some(v) = self.params.values().find_map(|pv| {
-                pv.pointer(from)
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string)
-            }) {
-                return Ok(v);
-            }
-            let present: Vec<_> = self
-                .params
-                .iter()
-                .filter(|(_, value)| value.pointer(from).is_some())
-                .collect();
-            let containers: Vec<_> = self
-                .params
-                .iter()
-                .filter(|(_, value)| value.is_object() || value.is_array())
-                .collect();
-            let candidates = if present.is_empty() {
-                &containers
-            } else {
-                &present
-            };
-            let field = if candidates.len() == 1 {
-                let parent = parameter_field(candidates[0].0);
-                if present.is_empty() {
-                    parent
-                } else {
-                    format!("{parent}{from}")
-                }
-            } else {
-                "/parameters".to_string()
-            };
-            return Err(invalid_parameter(
-                &field,
-                "schema rule requires a string at the primary-key pointer in a parameter",
-            ));
-        }
-        Ok(self.action_id.clone())
+        let name = ty
+            .primary_key
+            .from
+            .as_deref()
+            .and_then(|pointer| at.create_key_parameter(object_type, pointer))
+            .ok_or_else(|| {
+                invalid_parameter(
+                    "/parameters",
+                    "schema does not determine the primary-key parameter",
+                )
+            })?;
+        let value = self.params.get(name).and_then(|v| v.get("native_key"));
+        value
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                let parent = parameter_field(name);
+                invalid_parameter(
+                    &if value.is_some() {
+                        format!("{parent}/native_key")
+                    } else {
+                        parent
+                    },
+                    "schema rule requires native_key in its designated reference parameter",
+                )
+            })
     }
     // Snapshot contains only admitted live heads; hidden parameters equal missing.
     fn scope_for_create(&self, at: &ActionType, object_type: &str) -> Scope {
@@ -1315,18 +1313,29 @@ impl<'a> Planner<'a> {
             if let Some(t) = &rule.create_object {
                 edits.push(self.do_create(at, t, &set_map, false)?);
             } else if let Some(t) = &rule.create_or_modify_object {
-                // If a live target exists, modify; else create.
-                if let Some(id) = self.ref_target_typed(at, t)
-                    && self.snap.unreadable_occupied.contains(&Snapshot::key(&id))
+                // Pointer keys designate the upsert target as well as new keys.
+                if self
+                    .schema
+                    .object_types
+                    .get(t)
+                    .and_then(|ty| ty.primary_key.from.as_deref())
+                    .is_some_and(|p| p.starts_with('/'))
                 {
-                    return Err(Refusal::new("rule_reference_unavailable").into());
-                }
-                if let Some(id) = self.ref_target_typed(at, t)
-                    && self.state(&id).is_some_and(|(_, _, r, _)| !r)
-                {
-                    edits.push(self.do_modify(at, t, &set_map, Some(id))?);
-                } else {
                     edits.push(self.do_create(at, t, &set_map, true)?);
+                } else {
+                    // Action-id keyed types retain their reference-target behavior.
+                    if let Some(id) = self.ref_target_typed(at, t)
+                        && self.snap.unreadable_occupied.contains(&Snapshot::key(&id))
+                    {
+                        return Err(Refusal::new("rule_reference_unavailable").into());
+                    }
+                    if let Some(id) = self.ref_target_typed(at, t)
+                        && self.state(&id).is_some_and(|(_, _, r, _)| !r)
+                    {
+                        edits.push(self.do_modify(at, t, &set_map, Some(id))?);
+                    } else {
+                        edits.push(self.do_create(at, t, &set_map, true)?);
+                    }
                 }
             } else if let Some(t) = &rule.modify_object {
                 edits.push(self.do_modify(at, t, &set_map, None)?);
@@ -1378,7 +1387,7 @@ impl<'a> Planner<'a> {
         set_map: &BTreeMap<String, Value>,
         or_modify: bool,
     ) -> Result<Value, Failure> {
-        let key = self.create_key(at, t, set_map)?;
+        let key = self.create_key(at, t)?;
         let id = Id {
             object_type: t.to_string(),
             namespace: self.schema.namespace.clone(),
@@ -2370,7 +2379,14 @@ fn augment_planner(
 ) -> Result<(), Failure> {
     let mut targets: Vec<(String, String)> = Vec::new();
     for rule in &at.rules {
+        // Action-id upserts retain their existing reference-target behavior.
+        // Pointer-key targets below come only from the designated key parameter.
         if let Some(t) = &rule.create_or_modify_object
+            && planner
+                .schema
+                .object_types
+                .get(t)
+                .is_some_and(|ty| ty.primary_key.from.as_deref() == Some("$action_id"))
             && let Some(id) = planner.ref_target_typed(at, t)
         {
             load_creation_target(
@@ -2389,7 +2405,7 @@ fn augment_planner(
         .into_iter()
         .flatten()
         {
-            if let Ok(key) = planner.create_key(at, &t, &BTreeMap::new()) {
+            if let Ok(key) = planner.create_key(at, &t) {
                 targets.push((t, key));
             }
         }
@@ -2485,6 +2501,38 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
     })
 }
 
+// Installed schemas remain readable even if a newer admission rule rejects
+// their key declarations. Refuse only the affected action, after authorization.
+fn check_create_keys(schema: &Schema, at: &ActionType, name: &str) -> Result<(), Failure> {
+    for rule in &at.rules {
+        let Some(target) = rule
+            .create_object
+            .as_ref()
+            .or(rule.create_or_modify_object.as_ref())
+        else {
+            continue;
+        };
+        if let Some(pointer) = schema
+            .object_types
+            .get(target)
+            .and_then(|ty| ty.primary_key.from.as_deref())
+            .filter(|p| p.starts_with('/'))
+            && at.create_key_parameter(target, pointer).is_none()
+        {
+            return Err(Refusal::new("ambiguous_create_key")
+                .with(
+                    "pointer",
+                    json!(format!(
+                        "/action_types/{}",
+                        name.replace('~', "~0").replace('/', "~1")
+                    )),
+                )
+                .into());
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
@@ -2516,6 +2564,7 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         )
         .into());
     }
+    check_create_keys(&schema, &at, &req.action_type)?;
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -2673,6 +2722,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     {
         return Err(Refusal::new("action_forbidden").into());
     }
+    check_create_keys(&schema, &at, &req.action_type)?;
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -2690,6 +2740,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             if !tprincipal.view().action_types(&tschema.domain).contains(&req.action_type) {
                 return Err(Refusal::new("action_forbidden").into());
             }
+            check_create_keys(&tschema, &tat, &req.action_type)?;
             let tparams = validate_parameters(&tschema, &tat, &req.parameters)?;
             // Idempotent retry inside the transaction.
             if let Some(rid) = &req.request_id {
@@ -3151,9 +3202,9 @@ mod tests {
         r
     }
     #[test]
-    fn primary_key_feedback_names_nested_spec_key() {
+    fn primary_key_feedback_names_reference_native_key() {
         with_feedback_planner(
-            BTreeMap::from([("spec".into(), json!({"key":42}))]),
+            BTreeMap::from([("spec".into(), json!({"native_key":42}))]),
             |planner| {
                 let mut schema = planner.schema.clone();
                 schema
@@ -3161,7 +3212,7 @@ mod tests {
                     .get_mut("item")
                     .unwrap()
                     .primary_key
-                    .from = Some("/key".into());
+                    .from = Some("/native_key".into());
                 let key_planner = Planner {
                     schema: &schema,
                     ..Planner {
@@ -3180,12 +3231,11 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &feedback_action(json!({"create_object":"item"})),
+                        &serde_json::from_value(json!({"parameters":{"spec":{"type":{"ref":"item"},"required":true}},"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
-                        &BTreeMap::new(),
                     )
                     .unwrap_err();
-                assert_parameter_field(err, "/parameters/spec/key");
+                assert_parameter_field(err, "/parameters/spec/native_key");
             },
         );
     }
@@ -3345,8 +3395,8 @@ mod tests {
             ),
             (
                 BTreeMap::from([
-                    ("spec".into(), json!({"key":1})),
-                    ("other".into(), json!({"key":2})),
+                    ("spec".into(), json!({"native_key":1})),
+                    ("other".into(), json!({"native_key":2})),
                 ]),
                 "/parameters",
             ),
@@ -3358,7 +3408,7 @@ mod tests {
                     .get_mut("item")
                     .unwrap()
                     .primary_key
-                    .from = Some("/key".into());
+                    .from = Some("/native_key".into());
                 let key_planner = Planner {
                     schema: &schema,
                     principal: planner.principal,
@@ -3374,9 +3424,8 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &feedback_action(json!({"create_object":"item"})),
+                        &serde_json::from_value(json!({"parameters": if expected == "/parameters" { json!({"spec":{"type":{"ref":"item"},"required":true},"other":{"type":{"ref":"item"},"required":true}}) } else { json!({"spec":{"type":{"ref":"item"},"required":true}}) },"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
-                        &BTreeMap::new(),
                     )
                     .unwrap_err();
                 let r = assert_parameter_field(err, expected);

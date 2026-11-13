@@ -943,10 +943,10 @@ fn b4_pattern_optional_and_create_or_modify_pointer_key() {
             .is_none(),
         "{note}"
     );
-    // create_or_modify with a pointer key from a non-reference parameter.
+    // create_or_modify with the key from its required widget reference.
     let (code, ans) = apply(
         &t,
-        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"first"}}),
+        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":id_json("widget", "w1"),"title":"first"}}),
     );
     assert_eq!(code, 0, "{ans}");
     assert_eq!(ans["result"]["edits"][0]["change"], "initial");
@@ -954,13 +954,13 @@ fn b4_pattern_optional_and_create_or_modify_pointer_key() {
     let (code, v) = run_store(
         &t,
         &["action", "validate"],
-        &json!({"op":"validate_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"second"}}),
+        &json!({"op":"validate_action","action_type":"upsert_widget","parameters":{"spec":id_json("widget", "w1"),"title":"second"}}),
     );
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["result"]["edits"][0]["change"], "update");
     let (code, ans) = apply(
         &t,
-        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":{"key":"w1"},"title":"second"}}),
+        json!({"op":"apply_action","action_type":"upsert_widget","parameters":{"spec":id_json("widget", "w1"),"title":"second"}}),
     );
     assert_eq!(code, 0, "{ans}");
     assert_eq!(ans["result"]["edits"][0]["change"], "update");
