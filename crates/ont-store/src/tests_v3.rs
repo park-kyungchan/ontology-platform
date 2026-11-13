@@ -1884,6 +1884,163 @@ fn renewal_preserves_rows_and_payload_except_freshness_and_projects_expiry() {
     assert_eq!(rows(&store), renewed, "refused renewal rolls back");
 }
 
+fn renewal_rows(store: &Store) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut stmt = store
+        .connection
+        .prepare(
+            "SELECT * FROM observations ORDER BY object_type,instance,account,native_key,ordinal",
+        )
+        .unwrap();
+    let columns = stmt.column_count();
+    stmt.query_map([], |r| (0..columns).map(|i| r.get(i)).collect())
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn renewed_row_is_the_shared_payload() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    let mut expected = name_obs("r0", Change::Initial, None, "a");
+    store
+        .append_schema(&[append(&key, expected.clone())], 100)
+        .unwrap();
+    store.write(200, |tx| tx.renew(&key, 200, 300)).unwrap();
+    expected.observed_at = 200;
+    expected.fresh_until = 300;
+    let payload: String = store
+        .connection
+        .query_row("SELECT payload FROM observations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(payload, ont_core::observation_payload(&expected).unwrap());
+}
+
+#[test]
+fn renewal_respects_the_payload_bound() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    let mut observation = name_obs("r0", Change::Initial, None, "");
+    let padding = ont_core::MAX_OBSERVATION_BYTES
+        - 2
+        - ont_core::observation_payload(&observation).unwrap().len();
+    observation
+        .fields
+        .insert("name".into(), Knowledge::Value(json!("x".repeat(padding))));
+    assert_eq!(
+        ont_core::observation_payload(&observation).unwrap().len(),
+        ont_core::MAX_OBSERVATION_BYTES - 2
+    );
+    store
+        .append_schema(&[append(&key, observation.clone())], 100)
+        .unwrap();
+    let before = renewal_rows(&store);
+    let head = store.head(&key).unwrap().unwrap();
+    observation.observed_at = 100_000;
+    observation.fresh_until = 100_010;
+    let append_error = store
+        .append_schema(&[append(&id("thing", "oversized"), observation)], 100_000)
+        .unwrap_err();
+    let error = store
+        .write(100_000, |tx| tx.renew(&key, 100_000, 100_010))
+        .unwrap_err();
+    assert_eq!(error.code, "observation_too_large");
+    assert_eq!(error.code, append_error.code);
+    assert_eq!(
+        renewal_rows(&store),
+        before,
+        "refused renewal keeps all row bytes"
+    );
+    assert_eq!(
+        store.head(&key).unwrap().unwrap(),
+        head,
+        "head stays readable"
+    );
+}
+
+#[test]
+fn renewal_refuses_fresh_until_below_observed_at() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    let mut observation = name_obs("r0", Change::Initial, None, "a");
+    store
+        .append_schema(&[append(&key, observation.clone())], 100)
+        .unwrap();
+    let before = renewal_rows(&store);
+    let head = store.head(&key).unwrap().unwrap();
+    observation.observed_at = 200;
+    observation.fresh_until = 150;
+    let append_error = store
+        .append_schema(&[append(&id("thing", "invalid"), observation)], 200)
+        .unwrap_err();
+    let error = store.write(200, |tx| tx.renew(&key, 200, 150)).unwrap_err();
+    assert_eq!(error.code, ont_core::Error::InvalidEvidence.code());
+    assert_eq!(error.code, append_error.code);
+    assert_eq!(
+        renewal_rows(&store),
+        before,
+        "refused renewal keeps all row bytes"
+    );
+    assert_eq!(store.head(&key).unwrap().unwrap(), head);
+}
+
+#[test]
+fn renewal_touches_only_the_head_row() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    let other = id("thing", "other");
+    store
+        .append_schema(
+            &[
+                append(&key, name_obs("r0", Change::Initial, None, "a")),
+                append(&key, name_obs("r1", Change::Update, Some("r0"), "b")),
+                append(&other, name_obs("r0", Change::Initial, None, "other")),
+            ],
+            100,
+        )
+        .unwrap();
+    let before = renewal_rows(&store);
+    let stmt = store
+        .connection
+        .prepare("SELECT * FROM observations")
+        .unwrap();
+    let payload_index = stmt.column_index("payload").unwrap();
+    let key_index = stmt.column_index("native_key").unwrap();
+    let revision_index = stmt.column_index("revision").unwrap();
+    drop(stmt);
+    store.write(200, |tx| tx.renew(&key, 200, 300)).unwrap();
+    let after = renewal_rows(&store);
+    assert_eq!(before.len(), 3);
+    assert_eq!(after.len(), before.len());
+    let mut changed = 0;
+    for (old, new) in before.iter().zip(&after) {
+        if old[key_index] != rusqlite::types::Value::Text("renew".into())
+            || old[revision_index] != rusqlite::types::Value::Text("r1".into())
+        {
+            assert_eq!(new, old, "every non-head row stays byte-equal");
+            continue;
+        }
+        changed += 1;
+        assert_ne!(new[payload_index], old[payload_index]);
+        for i in 0..old.len() {
+            if i != payload_index {
+                assert_eq!(new[i], old[i], "column {i}");
+            }
+        }
+        let rusqlite::types::Value::Text(text) = &old[payload_index] else {
+            panic!()
+        };
+        let mut expected: Observation = serde_json::from_str(text).unwrap();
+        expected.observed_at = 200;
+        expected.fresh_until = 300;
+        assert_eq!(
+            new[payload_index],
+            rusqlite::types::Value::Text(ont_core::observation_payload(&expected).unwrap())
+        );
+    }
+    assert_eq!(changed, 1, "exactly the head row changes");
+}
+
 #[test]
 fn renewal_refuses_missing_and_retracted_heads() {
     let mut store = store_with_work();

@@ -1784,6 +1784,117 @@ fn unchanged_file_renews_without_revision() {
 }
 
 #[test]
+fn near_bound_renewal_fails_one_source_only() {
+    let t = Temp::new();
+    t.task("good", "# good\nOwner: x\n");
+    let bad = t.0.join("bad");
+    for key in ["a", "z"] {
+        std::fs::create_dir_all(bad.join(key)).unwrap();
+    }
+    let observation = ont_core::Observation {
+        revision: "r0@10".into(),
+        source_revision: "a".repeat(64),
+        observed_at: 10,
+        fresh_until: 20,
+        change: ont_core::Change::Initial,
+        supersedes: None,
+        coverage: ont_core::Coverage::Complete,
+        fields: std::collections::BTreeMap::from([(
+            "text".into(),
+            ont_core::Knowledge::Value(json!("")),
+        )]),
+        lineage: ont_core::Lineage {
+            artifact_sha256: "a".repeat(64),
+            pointer: String::new(),
+        },
+    };
+    let padding = ont_core::MAX_OBSERVATION_BYTES
+        - 2
+        - ont_core::observation_payload(&observation).unwrap().len();
+    std::fs::write(bad.join("a/STATE.md"), "Text: small\n").unwrap();
+    std::fs::write(
+        bad.join("z/STATE.md"),
+        format!("Text: {}\n", "x".repeat(padding)),
+    )
+    .unwrap();
+    let mut s = schema(&t);
+    s["sources"]["bad_states"] = json!({"kind":"markdown_fields",
+        "glob":format!("{}/*/STATE.md", bad.display()),
+        "head_lines":40,"complete_listing":true,"fresh_for_s":10});
+    s["object_types"]["bounded"] = json!({"owner":{"source":"bad_states"},
+        "primary_key":{"from":"/dir"},
+        "properties":{"text":{"type":"string","required":true,"from":"/fields/Text"}}});
+    s["grants"][0]["read"] = json!(["task", "note", "bounded"]);
+    install(&t, &s);
+    let (code, ans) = index(&t, 10, &[]);
+    assert_eq!(code, 0, "{ans}");
+    let rows = || -> Vec<Vec<rusqlite::types::Value>> {
+        let db = rusqlite::Connection::open(t.store()).unwrap();
+        let mut stmt = db.prepare(
+            "SELECT * FROM observations WHERE object_type='bounded' ORDER BY native_key,ordinal"
+        ).unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([], |r| (0..columns).map(|i| r.get(i)).collect())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let before = rows();
+    let bounded_id = |key: &str| {
+        let mut id = task_id(key);
+        id.object_type = "bounded".into();
+        id
+    };
+    let mut store = ont_store::Store::open_schema_existing_writable(Path::new(&t.store())).unwrap();
+    let head = store.head(&bounded_id("z")).unwrap().unwrap();
+    assert_eq!(
+        ont_core::observation_payload(&head.head.observation)
+            .unwrap()
+            .len(),
+        ont_core::MAX_OBSERVATION_BYTES - 2
+    );
+    drop(store);
+    for now in [100_000, 200_000] {
+        let (code, ans) = index(&t, now, &[]);
+        assert_eq!(code, 2, "{ans}");
+        assert_eq!(ans["status"], "source_failed");
+        let sources = ans["result"]["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0]["source"], "bad_states");
+        assert_eq!(sources[0]["status"], "source_failed");
+        assert_eq!(sources[0]["code"], "observation_too_large");
+        assert!(
+            sources[0]["cause"]
+                .as_str()
+                .unwrap()
+                .starts_with("observation_too_large@")
+        );
+        assert_eq!(sources[0]["renewed"], 0);
+        assert_eq!(appended(&sources[0]), [0, 0, 0, 0]);
+        assert_eq!(sources[1]["source"], "task_states");
+        assert_eq!(sources[1]["status"], "ok");
+        assert_eq!(sources[1]["renewed"], 1);
+        assert_eq!(
+            rows(),
+            before,
+            "the whole failed source rolls back, including a's renewal"
+        );
+        let result = command(&t, now, "get", json!({"id":bounded_id("z")}));
+        assert_eq!(
+            result["objects"][0]["observations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(result["objects"][0]["observations"][0]["observed_at"], 10);
+        let good = command(&t, now, "get", json!({"id":task_id("good")}));
+        assert_eq!(good["objects"][0]["observations"][0]["observed_at"], now);
+        assert_eq!(observation_count(&t), 3);
+    }
+}
+
+#[test]
 fn changed_bytes_coverage_or_pin_still_refresh() {
     for cause in ["bytes", "coverage", "pin"] {
         let t = Temp::new();
