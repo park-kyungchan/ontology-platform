@@ -54,6 +54,18 @@ The designated value missing the pointer or holding a non-string refuses
 keys retain their existing behavior. This rule changes no stored schema bytes
 or store format; installed `work` version 7 already has one eligible parameter.
 
+Installed bytes are loaded with `Schema::check_installed_bytes`: parsing,
+all other semantic checks and exact-byte pin verification still run, but
+`ambiguous_create_key` does not prevent opening an existing store. Schema-set
+composition likewise rechecks all other rules. Reads, backup, compact and
+unaffected actions remain available. After authorization, `action validate`
+and `action apply` refuse an affected action with `ambiguous_create_key` and
+`pointer: /action_types/<action>`, without writing (apply checks again inside
+its transaction, before idempotent replay). `schema check` and admission of
+new installs still use strict `Schema::check_bytes`. To repair an installed
+schema, install a higher version with unambiguous required key declarations;
+other domains may remain installed while they await their own repair.
+
 ## Action values and parameter descriptions
 
 A rule's `set` value or `set_reference.value` may use `$parameter.property`

@@ -2479,6 +2479,38 @@ pub fn list_actions(ctx: &Context, req: &ListActionsRequest) -> Result<Answer, F
     })
 }
 
+// Installed schemas remain readable even if a newer admission rule rejects
+// their key declarations. Refuse only the affected action, after authorization.
+fn check_create_keys(schema: &Schema, at: &ActionType, name: &str) -> Result<(), Failure> {
+    for rule in &at.rules {
+        let Some(target) = rule
+            .create_object
+            .as_ref()
+            .or(rule.create_or_modify_object.as_ref())
+        else {
+            continue;
+        };
+        if let Some(pointer) = schema
+            .object_types
+            .get(target)
+            .and_then(|ty| ty.primary_key.from.as_deref())
+            .filter(|p| p.starts_with('/'))
+            && at.create_key_parameter(target, pointer).is_none()
+        {
+            return Err(Refusal::new("ambiguous_create_key")
+                .with(
+                    "pointer",
+                    json!(format!(
+                        "/action_types/{}",
+                        name.replace('~', "~0").replace('/', "~1")
+                    )),
+                )
+                .into());
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     let set = st!(store.schema_set()).clone();
@@ -2510,6 +2542,7 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
         )
         .into());
     }
+    check_create_keys(&schema, &at, &req.action_type)?;
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -2667,6 +2700,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
     {
         return Err(Refusal::new("action_forbidden").into());
     }
+    check_create_keys(&schema, &at, &req.action_type)?;
     let params = validate_parameters(&schema, &at, &req.parameters)?;
     let params_canon = canonical(&Value::Object(
         params.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -2684,6 +2718,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             if !tprincipal.view().action_types(&tschema.domain).contains(&req.action_type) {
                 return Err(Refusal::new("action_forbidden").into());
             }
+            check_create_keys(&tschema, &tat, &req.action_type)?;
             let tparams = validate_parameters(&tschema, &tat, &req.parameters)?;
             // Idempotent retry inside the transaction.
             if let Some(rid) = &req.request_id {
