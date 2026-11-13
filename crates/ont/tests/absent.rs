@@ -268,6 +268,7 @@ fn search_answers_are_unchanged() {
     std::fs::copy(t.path(), copy.path()).unwrap();
     copy.old_rows(false);
     for filter in [
+        json!({"in":["task",[]]}),
         json!({"eq":["task",id("task", "me")]}),
         json!({"ne":["task",id("task", "me")]}),
         json!({"none":[{"eq":["task",id("task", "me")]}]}),

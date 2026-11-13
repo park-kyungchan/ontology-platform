@@ -305,7 +305,8 @@ property of these unreadable legacy heads, so equality-filtered reads also count
 their exclusion without loading them; reverse `linked` reads retain their refusal.
 These bounds change neither schema format nor store format 4.
 
-An older binary does not read `-`, so its `search` over a property without a value counts fewer unresolved heads on a projection written by this code; rows and criteria verdicts are equal.
+A binary older than this change does not read `-`: on a projection written by this code its `search`, `aggregate` and `around` over a property without a value (an `eq` or `in` on it, an empty `in`, or a property the filter only uses) load fewer heads, so `scanned` and `unresolved_excluded` are smaller, `qualified` can be true where this code answers false, and a `continuation` can be absent; rows and criteria verdicts are equal; run one binary per store.
+A store written before this change keeps its earlier `?` postings for fields without a value until its projection is rebuilt (a schema install that changes the schema, or `ont compact` on a store with 4,096-byte pages): until then a reverse link loads those heads as before; heads written afterwards post `-`.
 
 Candidate selection and search pagination:
 

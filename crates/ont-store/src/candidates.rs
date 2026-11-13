@@ -20,8 +20,10 @@ pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
         |r| r.get(0),
     ))
 }
-// Bump whenever posting meaning changes; generation equality alone cannot
-// certify a projection built by an older engine. Zero/missing means unversioned.
+// Raise when a projection written by earlier code would give a wrong answer or
+// verdict under the new readers. A change that only leaves an earlier projection
+// wider (more heads loaded, same answers), such as splitting `?` into `?` and `-`,
+// does not raise the version. Zero/missing means unversioned.
 const SEMANTICS_VERSION: i64 = 1;
 fn has_generation_column(c: &Connection, name: &str) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
