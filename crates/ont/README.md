@@ -291,7 +291,9 @@ Current read admission (type, namespace, domain and scope-key equality) is fully
 represented by these partitions; Authority/session checks still run before
 payload loading. No inaccessible head needs a residual per-head work budget.
 
-Equality/uncertain postings and 16 hexadecimal expiry prefixes per live head
+Heads without an observation or with `fresh_until >= NEVER_STALE` (253402300799) have no expiry postings; candidate clocks above `NEVER_STALE` refuse with `clock_out_of_range`.
+
+Equality/uncertain postings and 16 hexadecimal expiry prefixes per finite-expiry live head
 permit at most 240 stale equality streams per readable scope. Every stream uses
 an indexed keyset seek after the previous object key and returns at most 256
 metadata rows. A bounded merge retains only the first 256 unique keys. There is
@@ -302,10 +304,10 @@ postings are read and 201 payloads are loaded. Unsupported filter forms also use
 the visibility-aware admission/lookahead loop: intentionally, hidden tails no
 longer create continuations or consume the old raw-head allowance.
 
-A nominally read-only open of format 3 performs a one-time writable migration,
-then reopens read-only. This preserves automatic upgrade for existing callers;
-unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
-atomically; two openers serialize. Backfill/schema upgrades read live payloads
+A read-only open of format 3 or an older projection refuses with
+`store_upgrade_required`; the owner must upgrade through a writable open.
+DDL, backfill and the format-4 marker commit atomically; two openers serialize.
+Backfill/schema upgrades read live payloads
 in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
 that head's postings in the write transaction; backfills do not replace them.
 A changed candidate semantics version rebuilds the projection once at first open, linear in heads, including existing format-4 stores.

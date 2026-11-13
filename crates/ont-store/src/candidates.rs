@@ -184,12 +184,11 @@ fn project_access(
     }
     // Sixteen radix prefixes per expiry permit an ordered range to be read
     // as <=240 disjoint equality streams, each already in object-key order.
-    let expiry = format!(
-        "{:016x}",
-        observation.map_or(u64::MAX, |(obs, _)| obs.fresh_until)
-    );
-    for n in 1..=16 {
-        postings.push(("$stale".into(), expiry[..n].into()));
+    if let Some((obs, _)) = observation.filter(|(obs, _)| obs.fresh_until < crate::NEVER_STALE) {
+        let expiry = format!("{:016x}", obs.fresh_until);
+        for n in 1..=16 {
+            postings.push(("$stale".into(), expiry[..n].into()));
+        }
     }
     let mut insert =
         map_db(c.prepare_cached("INSERT INTO head_candidates VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"))?;
@@ -358,6 +357,9 @@ fn candidate_access_in(
     after: Option<&Id>,
     scopes: &[Scope],
 ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+    if now > crate::NEVER_STALE {
+        return Err(StoreRefusal::new("clock_out_of_range"));
+    }
     let schema = schemas
         .schema_of(ty)
         .ok_or_else(StoreRefusal::store_failure)?;

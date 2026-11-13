@@ -916,6 +916,22 @@ impl Store {
         result
     }
 
+    /// SQLite page size in bytes, without changing the store.
+    pub fn page_size(&mut self) -> Result<u32, StoreRefusal> {
+        self.require_schema()?;
+        map_db(
+            self.connection
+                .query_row("PRAGMA page_size", [], |r| r.get(0)),
+        )
+    }
+
+    /// Rewrite the existing store with 16-KB pages, outside a transaction.
+    pub fn compact(&mut self) -> Result<(), StoreRefusal> {
+        self.require_schema()?;
+        map_db(self.connection.pragma_update(None, "page_size", 16384))?;
+        map_db(self.connection.execute_batch("VACUUM"))
+    }
+
     /// Copy the whole store to `target` with `VACUUM INTO` (bound
     /// parameter). The target must not exist.
     pub fn backup_to(&mut self, target: &Path) -> Result<(), StoreRefusal> {

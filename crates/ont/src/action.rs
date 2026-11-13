@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-pub const FRESH_UNTIL_MAX: u64 = 253402300799;
+pub use ont_store::NEVER_STALE as FRESH_UNTIL_MAX;
 
 thread_local! {
     #[doc(hidden)]

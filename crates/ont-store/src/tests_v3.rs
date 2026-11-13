@@ -1665,3 +1665,56 @@ fn action_count_and_log_from() {
         store.action_log().unwrap()
     );
 }
+
+#[test]
+fn new_store_has_16k_pages() {
+    let temp = Temp::new();
+    for mode in [StoreMode::Education, StoreMode::Program, StoreMode::Schema] {
+        let path = temp.0.join(format!("mode-{}.sqlite", mode.version()));
+        let mut store = match mode {
+            StoreMode::Education => Store::open(&path).unwrap(),
+            StoreMode::Program => Store::open_program(&path).unwrap(),
+            StoreMode::Schema => Store::open_schema(&path).unwrap(),
+        };
+        let size: u32 = store
+            .connection
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(size, 16384);
+        if mode == StoreMode::Schema {
+            store
+                .install_schema(&work_bytes(1), InstallArgs::default())
+                .unwrap();
+            let rows: Vec<_> = (0..20)
+                .map(|n| {
+                    let mut observation = name_obs("r0", Change::Initial, None, "");
+                    let overhead = serde_json::to_vec(&observation).unwrap().len();
+                    // Size the complete serialized payload, rather than only its string value.
+                    let payload_bytes = 1000 + 900 * (n % 4);
+                    observation.fields.insert(
+                        "name".into(),
+                        Knowledge::Value(json!("x".repeat(payload_bytes - overhead))),
+                    );
+                    assert_eq!(
+                        serde_json::to_vec(&observation).unwrap().len(),
+                        payload_bytes
+                    );
+                    append(&id("thing", &format!("{n}")), observation)
+                })
+                .collect();
+            store.append_schema(&rows, 1).unwrap();
+            let overflow: u64 = store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM dbstat WHERE name='observations' AND pagetype='overflow'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                overflow, 0,
+                "1–4 kB payloads must fit without overflow pages"
+            );
+        }
+    }
+}
