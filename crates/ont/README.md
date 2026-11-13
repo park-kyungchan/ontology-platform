@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 upgrades only on a writable open; a read refuses with `store_upgrade_required`).
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `compact`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 upgrades only on a writable open; a read refuses with `store_upgrade_required`).
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -33,7 +33,6 @@ Ordinary ports and local paths remain intact.
 - `edits.jsonl` beside the store (0600, opened without following a symlink): one canonical JSON line per applied action after the commit, with `fsync`. After the commit the action stands whatever happens to the file: the answer is `"outcome":"applied"` with `"edits_log"` = `written`, `pending` (the append failed; the next write repairs it) or `rebuilt`. Every write takes an exclusive `flock` on `edits.jsonl.lock` beside the store, compares the file's last complete line with its row and appends the rows after it, writes each line with its newline in one write, and truncates an incomplete trailing line before appending. A file that is absent, empty, or whose last complete line does not equal its row (an extra, changed or unparseable last line, invalid UTF-8 in it, or a missing row) is compared in full, renamed to `edits.jsonl.diverged-<UTC yyyymmddThhmmssZ>-<n>` when it diverged (`n` counting up from 0 until the name is free, never replacing an existing aside), and rewritten from the table (the database wins, nothing is lost). A changed line before the last one is found by `ont::action::verify_edits_file`, which runs the full comparison on demand, not by a write. `ont backup` runs this full comparison and reports `edits_log` in its answer. The table is read only after the `flock` is held, so no caller passes a reading taken before the lock. An existing file that is not 0600 owned by the caller is not appended to (`edits_log: pending`, one warning on stderr).
 - `ont backup` opens the store read-only and returns `path`, `sha256`, `retention_failure` and `edits_log` (`written`, `rebuilt` or `pending`) in `result`. A `pending` export status does not fail the backup; the store copy is still taken and reported.
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
-
 - A reverse `linked` condition loads the heads of the link's source type whose backing property has the target as a known value, every head of that type whose value of that property is unresolved (partial coverage, or a schema pin older than the installed one: after a new domain install every earlier head is unresolved until it is written again), and every stale head of that type. The snapshot bound counts these heads; a link backed by a list property retains the scan of the whole type.
 
 - Snapshot: apply and validate load parameter objects (except parameters used only by bare `present` and not needed for rule planning), expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
@@ -223,6 +222,39 @@ A consumer pins `ont-core`, `ont-store` and `ont` to one Git `rev` of this repos
 - Transforms are `"first_word"`, `"parse_integer"`, `{"segment_after":"<absolute prefix ending in />"}` (the first path segment after the prefix; unresolved when the value does not start with the prefix, when nothing follows, or when that segment is `.` or `..`; when nothing but a file name follows the prefix, the segment is that file name) and `{"replace_prefix":["<from>","<to>"]}` (replaces a leading `<from>` by `<to>`; unresolved when the value does not start with `<from>`), for example `"transform":{"segment_after":"/home/palantirkc/work/"}`. Each object-form argument is at most 1,024 bytes (`invalid_transform` at `schema check`); `describe` shows transforms and templates as declared.
 - References from record strings: a property of type `{"ref":T}` on a source-owned type may be filled by `from` or `template`, plus a transform. The indexer builds the one reference representation the store and `get` already use, the full `Id` object `{"object_type":T,"namespace":<the domain namespace>,"native_key":<the resolved string>}`; an empty or unresolved string gives the unresolved (`missing`) state, never a reference to an empty key. A reference whose target object does not exist is stored as it is (the target may be indexed later or by another source): `get` returns the full `Id` object for it and `search` can match it with `eq` on the full `Id` or find its absence with `unresolved`, even while the target object itself is not found. `schema check` refuses such a property when `T` is not declared in the domain (`unknown_type`, as the link checks use). `unresolved` on a reference property means the property has no value, not that its target is absent; a reference to a retracted or never indexed object stays as stored.
 
+## compact
+
+New stores have 16,384-byte SQLite pages. `ont compact` opens an existing store
+read-write without creating one. When its page size is already 16,384 it returns
+`compacted: false` without a backup or rebuild. Otherwise it takes a verified
+backup, rebuilds the candidate projection to remove dead expiry postings, and
+runs `VACUUM` with 16,384-byte pages. A typed canonical SHA-256 stream verifies
+all tables except the derived `head_candidates` and `candidate_generation`
+tables before and after the rewrite.
+
+For `compacted: true`, the result includes `page_size_before` and `page_size`
+(page bytes before and after), `bytes_before` and `bytes` (store file bytes before
+and after), `backup` (copy path), `backup_sha256` (copy digest), and
+`retention_failure` (rotation failure location, or null).
+For `compacted: false`, the result contains only `compacted`, `page_size` and
+`bytes` (the unchanged store's page and file sizes).
+
+An interrupted run can leave SQLite's rollback journal beside the store, after
+which every read-only command answers `store_failure` although no row is lost;
+running `ont compact` again (or any command opening the store read-write) rolls
+the journal back.
+`compact_rows_changed` means the authoritative rows differ between the two
+checksums, which with a concurrent writer means a newer row rather than a loss:
+the store is already rebuilt and vacuumed, and the backup is older than the
+store, so do not restore it without comparing row counts.
+When the store is busy, the command answers `store_busy` after its wait, leaves
+the file unchanged, and the backup already taken has used a rotation slot.
+A format 3 store is upgraded to format 4 by the read-write open before the
+backup, so no format change applies only to a format 4 store.
+The command needs free disk of about three times the store's size (the backup,
+the vacuum's copy and the journal) and no concurrent writer.
+Its backup follows the normal rotation (newest three kept).
+
 ## search
 - `qualified` covers the page returned (the scanned heads of this request), not the whole set when `continuation` is present. `stale` and `partial` count scanned admitted heads; `stale_sources` lists the sources of every stale scanned head. `scanned` now counts admitted candidate heads evaluated on this page; hidden and retracted heads consume neither the scan budget nor lookahead.
 
@@ -292,7 +324,9 @@ Current read admission (type, namespace, domain and scope-key equality) is fully
 represented by these partitions; Authority/session checks still run before
 payload loading. No inaccessible head needs a residual per-head work budget.
 
-Equality/uncertain postings and 16 hexadecimal expiry prefixes per live head
+Heads without an observation or with `fresh_until >= NEVER_STALE` (253402300799) have no expiry postings; candidate clocks above `NEVER_STALE` refuse with `clock_out_of_range`.
+
+Equality/uncertain postings and 16 hexadecimal expiry prefixes per finite-expiry live head
 permit at most 240 stale equality streams per readable scope. Every stream uses
 an indexed keyset seek after the previous object key and returns at most 256
 metadata rows. A bounded merge retains only the first 256 unique keys. There is
@@ -303,10 +337,10 @@ postings are read and 201 payloads are loaded. Unsupported filter forms also use
 the visibility-aware admission/lookahead loop: intentionally, hidden tails no
 longer create continuations or consume the old raw-head allowance.
 
-A nominally read-only open of format 3 performs a one-time writable migration,
-then reopens read-only. This preserves automatic upgrade for existing callers;
-unwritable storage cannot migrate. DDL, backfill and the format-4 marker commit
-atomically; two openers serialize. Backfill/schema upgrades read live payloads
+A read-only open of format 3 or an older projection refuses with
+`store_upgrade_required`; the owner must upgrade through a writable open.
+DDL, backfill and the format-4 marker commit atomically; two openers serialize.
+Backfill/schema upgrades read live payloads
 in 256-head pages. Repeated opens do not rewrite the projection. Appends replace
 that head's postings in the write transaction; backfills do not replace them.
 A changed candidate semantics version rebuilds the projection once at first open, linear in heads, including existing format-4 stores.

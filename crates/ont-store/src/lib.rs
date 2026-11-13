@@ -10,6 +10,9 @@ pub mod actions;
 pub mod fake;
 pub mod schema_mode;
 
+/// Largest supported candidate clock; action-created heads never become stale.
+pub const NEVER_STALE: u64 = 253_402_300_799;
+
 pub const SCHEMA: &str = include_str!("../schema.sql");
 pub(crate) const SCHEMA_V3: &str = include_str!("../schema-v3.sql");
 const APPLICATION_ID: i64 = 1_330_533_430;
@@ -173,6 +176,7 @@ impl Store {
                 // An empty file is not a store: never initialise it here.
                 return Err(Error::StoreFailure);
             }
+            db_mode(connection.pragma_update(None, "page_size", 16384), mode)?;
             let transaction = db_mode(
                 connection.transaction_with_behavior(TransactionBehavior::Immediate),
                 mode,

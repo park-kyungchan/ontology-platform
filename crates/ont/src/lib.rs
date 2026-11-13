@@ -1,4 +1,4 @@
-//! `ont`: schema check/install, describe, get, backup, index and search over
+//! `ont`: schema check/install, describe, get, backup, compact, index and search over
 //! a format 3 store.
 //!
 //! Layout: [`cli`] parses arguments and builds every answer line, exit code
@@ -11,7 +11,7 @@
 //! Opening rule: only `schema install` may create or initialise a store
 //! file (it creates it with mode 0600 before SQLite opens it). Every other
 //! operation opens an existing format 3 file through
-//! `Store::open_schema_existing` (read-only) or, for `index`,
+//! `Store::open_schema_existing` (read-only) or, for `index` and `compact`,
 //! `Store::open_schema_existing_writable`; neither can create or initialise.
 //!
 //! `authorization_revision` is the policy generation of the `Authority`
@@ -29,6 +29,7 @@ pub mod aggregate;
 pub mod around;
 pub mod backup;
 pub mod cli;
+pub mod compact;
 pub mod describe;
 pub mod get;
 pub mod gitread;

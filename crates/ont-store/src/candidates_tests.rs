@@ -200,3 +200,206 @@ fn candidate_access_read_write_parity() {
     assert_eq!(read, write);
     assert_eq!(read, direct);
 }
+
+fn expiry_fixture() -> (Store, Vec<HeadAccess>) {
+    let mut store = Store::memory_schema().unwrap();
+    let schema = serde_json::json!({"format":"ontology-schema/v1","domain":"test","version":1,
+        "namespace":{"instance":"test","account":"root"},"scope_keys":["tenant"],
+        "object_types":{"record":{"owner":"ontology","primary_key":{"from":"$action_id"},
+            "properties":{"status":{"type":"string"},"extra":{"type":"string"}}}},
+        "grants":[{"principal":"agent","scope":{"tenant":"public"},"read":["record"],"derive":[],"actions":[]},
+                  {"principal":"agent","scope":{},"read":["record"],"derive":[],"actions":[]}]});
+    store
+        .install_schema(schema.to_string().as_bytes(), InstallArgs::default())
+        .unwrap();
+    let namespace = ont_core::Namespace {
+        instance: "test".into(),
+        account: "root".into(),
+    };
+    let scope = Scope::domain(
+        namespace.clone(),
+        "test",
+        BTreeMap::from([("tenant".into(), "public".into())]),
+    )
+    .unwrap();
+    let mut heads = Vec::new();
+    for (key, expiry) in [
+        ("finite", 100),
+        ("never-a", crate::NEVER_STALE),
+        ("never-b", u64::MAX),
+    ] {
+        let id = Id {
+            object_type: "record".into(),
+            namespace: namespace.clone(),
+            native_key: key.into(),
+        };
+        let observation = serde_json::from_value(serde_json::json!({"revision":"r0","source_revision":"s0","observed_at":1,"fresh_until":expiry,
+            "change":"initial","supersedes":null,"coverage":"complete","fields":{"status":{"kind":"value","value":"ready"}},
+            "lineage":{"artifact_sha256":"a".repeat(64),"pointer":""}})).unwrap();
+        store
+            .append_schema(
+                &[Append {
+                    id: id.clone(),
+                    scope: scope.clone(),
+                    observation,
+                }],
+                1,
+            )
+            .unwrap();
+        heads.push(HeadAccess {
+            id,
+            scope: scope.clone(),
+            retracted: false,
+        });
+    }
+    // Exercise the projector's no-observation branch directly; no invented row in observations.
+    let absent = HeadAccess {
+        id: Id {
+            object_type: "record".into(),
+            namespace,
+            native_key: "absent".into(),
+        },
+        scope,
+        retracted: false,
+    };
+    project_access(&store.connection, &store.schemas, &absent, None).unwrap();
+    heads.push(absent);
+    (store, heads)
+}
+
+#[test]
+fn never_stale_head_has_no_stale_postings() {
+    let (store, heads) = expiry_fixture();
+    for head in heads {
+        let count: u64 = store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM head_candidates WHERE property='$stale' AND native_key=?1",
+                [&head.id.native_key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count,
+            if head.id.native_key == "finite" {
+                32
+            } else {
+                0
+            },
+            "{}: sixteen per visibility only for finite expiry",
+            head.id.native_key
+        );
+    }
+}
+
+#[test]
+fn candidates_equal_on_old_new_and_mixed_postings() {
+    let (store, heads) = expiry_fixture();
+    store
+        .connection
+        .execute_batch("CREATE TEMP TABLE new_projection AS SELECT * FROM head_candidates")
+        .unwrap();
+    let matching = CandidateCondition {
+        property: "status".into(),
+        values: vec![Value::String("ready".into())],
+        used: BTreeSet::new(),
+    };
+    let missing = CandidateCondition {
+        property: "status".into(),
+        values: vec![Value::String("other".into())],
+        used: BTreeSet::new(),
+    };
+    let uncertain = CandidateCondition {
+        property: "extra".into(),
+        values: vec![Value::String("other".into())],
+        used: BTreeSet::new(),
+    };
+    let wildcard = Scope::domain(heads[0].id.namespace.clone(), "test", BTreeMap::new()).unwrap();
+    let cases = [None, Some(&matching), Some(&missing), Some(&uncertain)];
+    let scopes = [
+        vec![heads[0].scope.clone()],
+        vec![heads[0].scope.clone(), wildcard],
+    ];
+    let collect = || {
+        let mut results = Vec::new();
+        for now in [0, 50, 101, crate::NEVER_STALE] {
+            for condition in cases {
+                for scope in &scopes {
+                    results.push(
+                        candidate_access_in(
+                            &store.connection,
+                            &store.schemas,
+                            "record",
+                            condition,
+                            now,
+                            100,
+                            None,
+                            scope,
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+        }
+        results
+    };
+    let new = collect();
+    for keys in [vec!["never-a", "never-b", "absent"], vec!["never-a"]] {
+        store.connection.execute_batch("DELETE FROM head_candidates; INSERT INTO head_candidates SELECT * FROM new_projection").unwrap();
+        for key in keys {
+            let expiry = format!(
+                "{:016x}",
+                if key == "never-a" {
+                    crate::NEVER_STALE
+                } else {
+                    u64::MAX
+                }
+            );
+            for n in 1..=16 {
+                store.connection.execute("INSERT INTO head_candidates SELECT object_type,visibility,'$stale',?1,instance,account,native_key,scope_keys FROM new_projection WHERE property='' AND native_key=?2", params![&expiry[..n], key]).unwrap();
+            }
+        }
+        assert_eq!(
+            new,
+            collect(),
+            "old/new/mixed projections must return identical heads"
+        );
+    }
+}
+
+#[test]
+fn clock_above_never_stale_is_refused() {
+    let (mut store, heads) = expiry_fixture();
+    for now in [crate::NEVER_STALE + 1, u64::MAX] {
+        assert_eq!(
+            store
+                .candidate_access(
+                    "record",
+                    None,
+                    now,
+                    100,
+                    None,
+                    std::slice::from_ref(&heads[0].scope)
+                )
+                .unwrap_err()
+                .code,
+            "clock_out_of_range"
+        );
+        // Also precedes schema lookup (and any database access) inside the shared reader.
+        assert_eq!(
+            candidate_access_in(
+                &store.connection,
+                &store.schemas,
+                "missing",
+                None,
+                now,
+                1,
+                None,
+                &[]
+            )
+            .unwrap_err()
+            .code,
+            "clock_out_of_range"
+        );
+    }
+}

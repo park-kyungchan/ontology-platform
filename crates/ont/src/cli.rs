@@ -5,6 +5,7 @@ use crate::action::{
     validate_action,
 };
 use crate::backup::{BackupRequest, backup};
+use crate::compact::{CompactRequest, compact};
 use crate::describe::{DescribeRequest, describe};
 use crate::get::{GetRequest, get};
 use crate::index::{IndexRequest, index};
@@ -345,6 +346,7 @@ fn dispatch(cli: &Cli, stdin: impl Read, ctx: &Context) -> Result<Answer, Failur
         Describe => execute(Op::Describe, &read_request(stdin)?, ctx),
         Get => execute(Op::Get, &read_request(stdin)?, ctx),
         Backup => backup(ctx, &BackupRequest::default()),
+        Compact => compact(ctx, &CompactRequest::default()),
         Index => {
             let request = if cli.sources.is_empty() {
                 json!({"op":"index"})

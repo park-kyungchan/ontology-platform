@@ -1665,3 +1665,113 @@ fn action_count_and_log_from() {
         store.action_log().unwrap()
     );
 }
+
+#[test]
+fn new_store_has_16k_pages() {
+    let temp = Temp::new();
+    for mode in [StoreMode::Education, StoreMode::Program, StoreMode::Schema] {
+        let path = temp.0.join(format!("mode-{}.sqlite", mode.version()));
+        let mut store = match mode {
+            StoreMode::Education => Store::open(&path).unwrap(),
+            StoreMode::Program => Store::open_program(&path).unwrap(),
+            StoreMode::Schema => Store::open_schema(&path).unwrap(),
+        };
+        let size: u32 = store
+            .connection
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(size, 16384);
+        if mode == StoreMode::Schema {
+            store
+                .install_schema(&work_bytes(1), InstallArgs::default())
+                .unwrap();
+            let rows: Vec<_> = (0..20)
+                .map(|n| {
+                    let mut observation = name_obs("r0", Change::Initial, None, "");
+                    let overhead = serde_json::to_vec(&observation).unwrap().len();
+                    // Size the complete serialized payload, rather than only its string value.
+                    let payload_bytes = 1000 + 900 * (n % 4);
+                    observation.fields.insert(
+                        "name".into(),
+                        Knowledge::Value(json!("x".repeat(payload_bytes - overhead))),
+                    );
+                    assert_eq!(
+                        serde_json::to_vec(&observation).unwrap().len(),
+                        payload_bytes
+                    );
+                    append(&id("thing", &format!("{n}")), observation)
+                })
+                .collect();
+            store.append_schema(&rows, 1).unwrap();
+            let overflow: u64 = store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM dbstat WHERE name='observations' AND pagetype='overflow'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                overflow, 0,
+                "1–4 kB payloads must fit without overflow pages"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonical_stream_orders_keys_frames_types_and_skips_tables() {
+    let mut store = Store::memory_schema().unwrap();
+    store.connection.execute_batch("CREATE TABLE \"stream\"\"pk\" (a TEXT,b INTEGER,payload BLOB,PRIMARY KEY(b,a)) WITHOUT ROWID;
+        CREATE TABLE stream_no_pk (v);
+        INSERT INTO \"stream\"\"pk\" VALUES ('second',2,x'00ff'),('first',1,NULL);
+        INSERT INTO stream_no_pk VALUES ('text'),(x''),(1.5),(1),(NULL),('');").unwrap();
+    let skip: Vec<String> = store
+        .connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'stream%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let skip: Vec<_> = skip.iter().map(String::as_str).collect();
+    let mut actual = Vec::new();
+    store
+        .for_each_row_canonical(&skip, &mut |b| actual.extend_from_slice(b))
+        .unwrap();
+    let mut expected = Vec::new();
+    fn frame(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
+        out.push(tag);
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+    frame(&mut expected, b't', b"stream\"pk");
+    for (a, b, blob) in [("first", 1_i64, None), ("second", 2, Some(&[0, 255][..]))] {
+        expected.push(b'r');
+        expected.extend_from_slice(&3_u64.to_be_bytes());
+        frame(&mut expected, b's', a.as_bytes());
+        frame(&mut expected, b'i', &b.to_be_bytes());
+        frame(
+            &mut expected,
+            if blob.is_some() { b'b' } else { b'n' },
+            blob.unwrap_or_default(),
+        );
+    }
+    frame(&mut expected, b't', b"stream_no_pk");
+    for (tag, bytes) in [
+        (b'n', vec![]),
+        (b'i', 1_i64.to_be_bytes().to_vec()),
+        (b'f', 1.5_f64.to_bits().to_be_bytes().to_vec()),
+        (b's', vec![]),
+        (b's', b"text".to_vec()),
+        (b'b', vec![]),
+    ] {
+        expected.push(b'r');
+        expected.extend_from_slice(&1_u64.to_be_bytes());
+        frame(&mut expected, tag, &bytes);
+    }
+    assert_eq!(
+        actual, expected,
+        "PK ordinal, all-column fallback, types, lengths, and quoted identifiers"
+    );
+}
