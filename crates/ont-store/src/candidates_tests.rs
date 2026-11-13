@@ -77,6 +77,7 @@ fn visible_keyset_work_is_bounded_with_hidden_and_retracted_heads() {
                     property: "status".into(),
                     values: vec![Value::String("ready".into())],
                     used: BTreeSet::from(["status".into()]),
+                    absent: true,
                 };
                 for condition in [Some(&condition), None] {
                     STEPS.set(0);
@@ -182,6 +183,7 @@ fn candidate_access_read_write_parity() {
         property: "effect".into(),
         values: vec![Value::String("merge".into())],
         used: BTreeSet::new(),
+        absent: true,
     };
     let scopes = [scope];
     let read = store
@@ -303,16 +305,19 @@ fn candidates_equal_on_old_new_and_mixed_postings() {
         property: "status".into(),
         values: vec![Value::String("ready".into())],
         used: BTreeSet::new(),
+        absent: true,
     };
     let missing = CandidateCondition {
         property: "status".into(),
         values: vec![Value::String("other".into())],
         used: BTreeSet::new(),
+        absent: true,
     };
     let uncertain = CandidateCondition {
         property: "extra".into(),
         values: vec![Value::String("other".into())],
         used: BTreeSet::new(),
+        absent: true,
     };
     let wildcard = Scope::domain(heads[0].id.namespace.clone(), "test", BTreeMap::new()).unwrap();
     let cases = [None, Some(&matching), Some(&missing), Some(&uncertain)];
@@ -402,4 +407,131 @@ fn clock_above_never_stale_is_refused() {
             "clock_out_of_range"
         );
     }
+}
+
+#[test]
+fn postings_tell_no_value_from_unposted_value() {
+    let (mut store, heads) = expiry_fixture();
+    let head = head_in(&store.connection, &heads[0].id).unwrap().unwrap();
+    let bytes: Vec<u8> = store
+        .connection
+        .query_row(
+            "SELECT bytes FROM schema_installs WHERE domain='test'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut schema: Value = serde_json::from_slice(&bytes).unwrap();
+    schema["version"] = Value::from(2);
+    store
+        .install_schema(
+            &serde_json::to_vec(&schema).unwrap(),
+            InstallArgs::default(),
+        )
+        .unwrap();
+    // Reuse a real observation and both installed pins, varying projection inputs.
+    for mode in ["current", "older", "partial"] {
+        for (state, field) in [
+            (
+                "value",
+                Some(Knowledge::Value(Value::String("ready".into()))),
+            ),
+            ("absent", None),
+            ("missing", Some(Knowledge::Missing)),
+            ("null", Some(Knowledge::Null)),
+            ("blank", Some(Knowledge::Blank)),
+            ("unknown", Some(Knowledge::Unknown)),
+            ("not_performed", Some(Knowledge::NotPerformed)),
+        ] {
+            let mut obs = head.head.observation.clone();
+            let mut pin = store.schemas.pin("test").unwrap().clone();
+            obs.fields.clear();
+            if let Some(field) = field {
+                obs.fields.insert("status".into(), field);
+            }
+            if mode == "older" {
+                pin = head.schema_pin.clone();
+            }
+            if mode == "partial" {
+                obs.coverage = ont_core::Coverage::Partial;
+            }
+            project_access(
+                &store.connection,
+                &store.schemas,
+                &heads[0],
+                Some((&obs, &pin)),
+            )
+            .unwrap();
+            let posting: String = store.connection.query_row(
+                "SELECT value FROM head_candidates WHERE native_key='finite' AND property='status' LIMIT 1", [], |r| r.get(0)).unwrap();
+            let expected = if state != "value" {
+                "-"
+            } else if mode == "current" {
+                "v\"ready\""
+            } else {
+                "?"
+            };
+            assert_eq!(posting, expected, "{mode}/{state}");
+        }
+    }
+    project_access(&store.connection, &store.schemas, &heads[0], None).unwrap();
+    let postings: Vec<String> = store
+        .connection
+        .prepare("SELECT value FROM head_candidates WHERE native_key='finite' AND property<>''")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!postings.is_empty());
+    assert!(postings.iter().all(|v| v == "?"));
+}
+
+#[test]
+fn readers_see_the_same_candidates() {
+    let (store, heads) = expiry_fixture();
+    // Reconstruct the old writer's rows, record its answers, then rebuild.
+    store
+        .connection
+        .execute("UPDATE head_candidates SET value='?' WHERE value='-'", [])
+        .unwrap();
+    let scope = std::slice::from_ref(&heads[0].scope);
+    let conditions: Vec<_> = ["status", "extra"]
+        .into_iter()
+        .map(|p| CandidateCondition {
+            property: p.into(),
+            values: vec![Value::String("other".into())],
+            used: BTreeSet::from(["extra".into()]),
+            absent: true,
+        })
+        .collect();
+    let collect = || {
+        conditions
+            .iter()
+            .map(|condition| {
+                candidate_access_in(
+                    &store.connection,
+                    &store.schemas,
+                    "record",
+                    Some(condition),
+                    10,
+                    100,
+                    None,
+                    scope,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = collect();
+    rebuild(&store.connection, &store.schemas).unwrap();
+    // The synthetic no-observation head has no authoritative objects row.
+    project_access(
+        &store.connection,
+        &store.schemas,
+        heads.last().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(before, collect());
 }

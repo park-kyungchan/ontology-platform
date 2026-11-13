@@ -34,7 +34,7 @@ Ordinary ports and local paths remain intact.
 - `ont backup` opens the store read-only and returns `path`, `sha256`, `retention_failure` and `edits_log` (`written`, `rebuilt` or `pending`) in `result`. A `pending` export status does not fail the backup; the store copy is still taken and reported.
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
 
-- A reverse `linked` condition loads the heads of the link's source type whose backing property has the target as a known value, every head of that type whose value of that property is unresolved (partial coverage, a missing or null field even in a complete head of the current schema, a legacy head too large to project at rebuild, or a schema pin older than the installed one: after a new domain install every earlier head is unresolved until it is written again), and every stale head of that type. The snapshot bound counts these heads; a link backed by a list property retains the scan of the whole type.
+- A reverse `linked` condition loads the heads of the link's source type whose backing property has the target as a known value, every head of that type whose backing property holds a value that cannot be posted (partial coverage, or a schema pin older than the installed one: after a new domain install every earlier head WITH a value in that property is unresolved until it is written again), every head whose legacy observation is too large to project at rebuild, and every stale head of that type. For a scalar backing property, heads with no value (cleared or never set) are not loaded unless stale. The snapshot bound counts these heads; a link backed by a list property retains the scan of the whole type.
 
 - Snapshot: apply and validate load parameter objects (except parameters used only by bare `present` and not needed for rule planning), expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
 
@@ -300,9 +300,13 @@ out of that window, without backfilling from older rows. This count and
 `observation_too_large`; a valid head superseding a bad old row is readable.
 The task Lead or store operator must repair an over-bound head by hand before
 `get` can read that object. The engine can no longer write an over-bound observation.
-An identical-schema projection rebuild preserves uncertain postings for these
-heads, so equality-filtered reads also count their exclusion without loading them.
+An identical-schema projection rebuild writes uncertain `?` postings for every
+property of these unreadable legacy heads, so equality-filtered reads also count
+their exclusion without loading them; reverse `linked` reads retain their refusal.
 These bounds change neither schema format nor store format 4.
+
+A binary older than this change does not read `-`: on a projection written by this code its `search`, `aggregate` and `around` over a property without a value (an `eq` or `in` on it, an empty `in`, or a property the filter only uses) load fewer heads, so `scanned` and `unresolved_excluded` are smaller, `qualified` can be true where this code answers false, and a `continuation` can be absent; rows and criteria verdicts are equal; run one binary per store.
+A store written before this change keeps its earlier `?` postings for fields without a value until its projection is rebuilt (a schema install that changes the schema, or `ont compact` on a store with 4,096-byte pages): until then a reverse link loads those heads as before; heads written afterwards post `-`.
 
 Candidate selection and search pagination:
 
@@ -330,9 +334,10 @@ Current read admission (type, namespace, domain and scope-key equality) is fully
 represented by these partitions; Authority/session checks still run before
 payload loading. No inaccessible head needs a residual per-head work budget.
 
-Heads without an observation or with `fresh_until >= NEVER_STALE` (253402300799) have no expiry postings; candidate clocks above `NEVER_STALE` refuse with `clock_out_of_range`.
+Heads whose observation cannot be read at rebuild, or with `fresh_until >= NEVER_STALE` (253402300799) have no expiry postings; candidate clocks above `NEVER_STALE` refuse with `clock_out_of_range`.
 
-Equality/uncertain postings and 16 hexadecimal expiry prefixes per finite-expiry live head
+Equality postings (`v<value>`), uncertain postings (`?` for an unposted value or
+an observation too large to read at rebuild, `-` for no value in a present observation), and 16 hexadecimal expiry prefixes per finite-expiry live head
 permit at most 240 stale equality streams per readable scope. Every stream uses
 an indexed keyset seek after the previous object key and returns at most 256
 metadata rows. A bounded merge retains only the first 256 unique keys. There is

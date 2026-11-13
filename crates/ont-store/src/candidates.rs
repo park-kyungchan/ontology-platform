@@ -2,11 +2,16 @@
 use super::*;
 
 /// One necessary equality condition, plus properties whose unresolved states
-/// must remain visible in the basis. Construct only after filter validation.
+/// must remain visible in the basis. `v<value>` posts a complete current-pin
+/// value, `?` an unposted value or an unreadable legacy observation at rebuild,
+/// and `-` no value in a present observation.
+/// Search readers set `absent` to retain no-value basis effects; reverse linked
+/// readers leave it false. Construct only after filter validation.
 pub struct CandidateCondition {
     pub property: String,
     pub values: Vec<Value>,
     pub used: BTreeSet<String>,
+    pub absent: bool,
 }
 pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
@@ -15,8 +20,10 @@ pub(super) fn exists(c: &Connection) -> Result<bool, StoreRefusal> {
         |r| r.get(0),
     ))
 }
-// Bump whenever posting meaning changes; generation equality alone cannot
-// certify a projection built by an older engine. Zero/missing means unversioned.
+// Raise when a projection written by earlier code would give a wrong answer or
+// verdict under the new readers. A change that only leaves an earlier projection
+// wider (more heads loaded, same answers), such as splitting `?` into `?` and `-`,
+// does not raise the version. Zero/missing means unversioned.
 const SEMANTICS_VERSION: i64 = 1;
 fn has_generation_column(c: &Connection, name: &str) -> Result<bool, StoreRefusal> {
     map_db(c.query_row(
@@ -168,16 +175,17 @@ fn project_access(
     if let Some(props) = set.properties(&id.object_type) {
         for p in props.keys() {
             let value = match observation {
-                Some((obs, pin))
-                    if obs.coverage == ont_core::Coverage::Complete
-                        && set.pin(&pin.domain) == Some(pin) =>
-                {
-                    match obs.fields.get(p) {
-                        Some(Knowledge::Value(v)) => format!("v{v}"),
-                        _ => "?".into(),
+                Some((obs, pin)) => match obs.fields.get(p) {
+                    Some(Knowledge::Value(v))
+                        if obs.coverage == ont_core::Coverage::Complete
+                            && set.pin(&pin.domain) == Some(pin) =>
+                    {
+                        format!("v{v}")
                     }
-                }
-                _ => "?".into(),
+                    Some(Knowledge::Value(_)) => "?".into(),
+                    _ => "-".into(),
+                },
+                None => "?".into(),
             };
             postings.push((p.clone(), value));
         }
@@ -374,6 +382,9 @@ fn candidate_access_in(
             .chain(std::iter::once(&condition.property))
         {
             streams.insert((p.clone(), "?".into()));
+            if condition.absent {
+                streams.insert((p.clone(), "-".into()));
+            }
         }
         let clock = format!("{now:016x}");
         for (i, digit) in clock.bytes().enumerate() {

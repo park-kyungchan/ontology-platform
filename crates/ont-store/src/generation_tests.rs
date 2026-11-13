@@ -44,6 +44,7 @@ fn preopened_old_statements_cannot_hide_mutations_and_repair_is_atomic() {
         property: "status".into(),
         values: vec![Value::String("ready".into())],
         used: BTreeSet::from(["status".into()]),
+        absent: true,
     };
     let read = |store: &mut Store| {
         store
@@ -402,6 +403,7 @@ fn old_engine_checkpoint_stales_preopened_reader() {
         property: "status".into(),
         values: vec![Value::String("not present".into())],
         used: BTreeSet::from(["status".into()]),
+        absent: true,
     };
     let result = reader
         .read_schema(|tx| {

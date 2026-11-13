@@ -377,6 +377,7 @@ pub(crate) fn candidate_condition(
         property,
         values,
         used: used.clone(),
+        absent: true,
     })
 }
 
