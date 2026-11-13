@@ -1325,3 +1325,41 @@ fn g2a_rows_missing_after_the_tail_are_appended() {
         assert_eq!(line, log_line(*seq, e));
     }
 }
+
+#[test]
+fn backup_verifies_the_export() {
+    let t = setup();
+    for title in ["one", "two", "three"] {
+        make_note(&t, title);
+    }
+    let text = std::fs::read_to_string(t.edits()).unwrap();
+    let changed = text.replacen("one", "eno", 1);
+    assert_ne!(changed, text);
+    std::fs::write(t.edits(), changed).unwrap();
+    let asides = || {
+        std::fs::read_dir(&t.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("edits.jsonl.diverged-")
+            })
+            .count()
+    };
+    for expected in ["rebuilt", "written"] {
+        let (code, ans) = run_store(&t, &["backup"], &json!({"op":"backup"}));
+        assert_eq!(code, 0, "{ans}");
+        assert_eq!(ans["result"]["edits_log"], expected);
+        assert!(std::path::Path::new(ans["result"]["path"].as_str().unwrap()).is_file());
+        assert_eq!(asides(), 1);
+        let mut store = Store::open_schema(&t.store_path()).unwrap();
+        let log = store.action_log().unwrap();
+        let text = std::fs::read_to_string(t.edits()).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert_eq!(log.len(), 3);
+        for ((seq, entry), line) in log.iter().zip(text.lines()) {
+            assert_eq!(line, log_line(*seq, entry));
+        }
+    }
+}

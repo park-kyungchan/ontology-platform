@@ -21,12 +21,14 @@ pub(crate) struct Taken {
     pub retention_failure: Option<String>,
 }
 
-/// Back up an existing store (opened read-only, never created). No principal
-/// is bound: a backup needs no grant.
+/// Back up an existing store (opened read-only, never created), comparing
+/// and repairing the edits export beside it in full. No principal is bound:
+/// a backup needs no grant.
 pub fn backup(ctx: &Context, _req: &BackupRequest) -> Result<Answer, Failure> {
     let mut store = open_store(&ctx.store, false)?;
     let revision = fresh_revision()?;
     let pins = st!(store.schema_pins());
+    let edits_log = crate::action::verify_edits_file(&ctx.store);
     let taken = take(&mut store, &ctx.store, ctx.now)?;
     Ok(Answer::Enveloped {
         pins,
@@ -34,7 +36,8 @@ pub fn backup(ctx: &Context, _req: &BackupRequest) -> Result<Answer, Failure> {
         result: json!({
             "path":taken.path.display().to_string(),
             "sha256":taken.sha256,
-            "retention_failure":taken.retention_failure
+            "retention_failure":taken.retention_failure,
+            "edits_log":edits_log.as_str()
         }),
     })
 }
