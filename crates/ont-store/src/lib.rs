@@ -113,7 +113,7 @@ pub struct ReadSnapshot<'a> {
     connection: &'a Connection,
     mode: StoreMode,
 }
-/// Trusted ingestion input: not exposed by ont-daemon stdin.
+/// Trusted ingestion input.
 #[derive(Clone)]
 pub struct Append {
     pub id: Id,

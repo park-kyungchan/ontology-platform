@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The one check of this repository. An agent runs it before a push; the CI job
+# `rust` runs it unchanged. Outside CI, on the host that has the build lock, it
+# takes that lock (one Cargo build at a time on the host) and refuses to build
+# when the file system has less than 10,240 MiB free.
+set -euo pipefail
+self=$(realpath "$0")
+cd "$(dirname "$self")"
+if [ "${CI:-}" != true ] && [ -z "${CHECK_LOCKED:-}" ]; then
+  lock=${HOST_CARGO_LOCK:-/home/palantirkc/work/ws-replan/wt/.host-cargo.lock}
+  if [ -e "$lock" ]; then
+    free=$(df -BM --output=avail . | tail -n 1 | tr -dc 0-9)
+    if [ "$free" -lt 10240 ]; then
+      echo "disk_floor@check: ${free} MiB free, 10240 needed" >&2
+      exit 3
+    fi
+    export CHECK_LOCKED=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+    exec flock "$lock" "$self" "$@"
+  fi
+fi
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+sh scripts/test-install-ont.sh
+echo "check: ok"

@@ -206,18 +206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ont-daemon"
-version = "0.1.0"
-dependencies = [
- "ont-core",
- "ont-store",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -39,7 +39,7 @@ cannot satisfy those requirements. [O1]
 
 Current implementation is a bounded synthetic/recorded vertical, not a deployed
 Palantir product or a production-authenticated Ontology service. `ont-store`
-holds an isolated SQLite store; `ont_daemon::Service` holds current `Admission` through
+holds an isolated SQLite store; `ont_daemon::Service` (a crate since removed; Git history) held current `Admission` through
 the store snapshot, derivation and serialization. The embedding owner must
 authenticate before binding a session. A principal string, CLI label, host UID
 or memory tag is not authentication. [O1][O2][O3]
@@ -306,7 +306,7 @@ service calls, runtime tests or Hindsight writes were performed.
 
 [O1]: ../crates/ont-core/src/lib.rs "Current identity, observations, lineage and admission"
 [O2]: ../crates/ont-store/src/lib.rs "Trusted append and transaction-scoped snapshots"
-[O3]: ../crates/ont-daemon/src/lib.rs "Authenticated embedding boundary and guarded serialization"
+[O3]: ../crates/ont-core/src/lib.rs "Authenticated embedding boundary and guarded serialization (the crate ont-daemon that held it was removed; Git history)"
 [H1]: https://github.com/vectorize-io/hindsight/blob/a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5/hindsight-docs/docs/developer/api/documents.mdx "Official documents, mutable IDs, hashes and history"
 [H2]: https://github.com/vectorize-io/hindsight/blob/a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5/hindsight-docs/docs/developer/api/knowledge-pages.mdx "Official knowledge-page IDs, backing mental models and tag filters"
 [H3]: https://github.com/vectorize-io/hindsight/blob/a5a619b5ca59c5c39e0f96be6f7a31fabd136bd5/hindsight-docs/docs/developer/api/mental-models.mdx "Official mental-model scope, refresh and provenance"
