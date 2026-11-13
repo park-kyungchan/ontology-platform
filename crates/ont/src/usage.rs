@@ -288,7 +288,8 @@ mod tests {
     fn usage_and_dispatch_have_the_same_commands_and_options() {
         let help = help(&[]).unwrap_or(Value::Null);
         assert_eq!(help["commands"].as_array().map(Vec::len), Some(SPECS.len()));
-        assert!(help.to_string().len() < 5000);
+        // Help text budget in bytes, raised from 5000 when compact was added (2026-11-13).
+        assert!(help.to_string().len() < 5200);
         for spec in SPECS {
             for files in spec.files {
                 let mut words: Vec<String> = spec.words.iter().map(|s| s.to_string()).collect();
