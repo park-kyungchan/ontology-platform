@@ -1599,3 +1599,29 @@ fn g4_page_merge_keeps_the_smallest_ids() {
     };
     assert_eq!(result["valid"], false, "{result}");
 }
+
+#[test]
+fn g2a_complete_tail_with_unterminated_fragment_is_truncated() {
+    let t = setup();
+    make_note(&t, "one");
+    let mut bytes = std::fs::read(t.edits()).unwrap();
+    bytes.extend_from_slice(b"{\"seq\":");
+    std::fs::write(t.edits(), bytes).unwrap();
+    let (code, ans) = apply(
+        &t,
+        json!({"op":"apply_action","action_type":"record_note","parameters":{"title":"two","task":task_id()}}),
+    );
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(ans["result"]["edits_log"], "written");
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let log = store.action_log().unwrap();
+    let expected: String = log
+        .iter()
+        .map(|(seq, row)| format!("{}\n", log_line(*seq, row)))
+        .collect();
+    assert_eq!(
+        std::fs::read_to_string(t.edits()).unwrap(),
+        expected,
+        "fragment must be removed before appending"
+    );
+}
