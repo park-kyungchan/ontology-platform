@@ -312,99 +312,143 @@ impl SchemaRead<'_> {
         scopes: &[Scope],
     ) -> Result<Vec<HeadAccess>, StoreRefusal> {
         require_current(self.tx, self.trigger_cache)?;
-        let schema = self
-            .schemas
-            .schema_of(ty)
-            .ok_or_else(StoreRefusal::store_failure)?;
-        let mut streams = BTreeSet::new();
-        if let Some(condition) = condition {
-            for value in &condition.values {
-                streams.insert((condition.property.clone(), format!("v{value}")));
-            }
-            for p in condition
-                .used
-                .iter()
-                .chain(std::iter::once(&condition.property))
-            {
-                streams.insert((p.clone(), "?".into()));
-            }
-            let clock = format!("{now:016x}");
-            for (i, digit) in clock.bytes().enumerate() {
-                let digit = (digit as char)
-                    .to_digit(16)
-                    .ok_or_else(StoreRefusal::store_failure)?;
-                for n in 0..digit {
-                    streams.insert(("$stale".into(), format!("{}{:x}", &clock[..i], n)));
-                }
-            }
-        } else {
-            streams.insert((String::new(), String::new()));
-        }
-        let visibility: BTreeSet<_> = scopes.iter().map(json_text).collect::<Result<_, _>>()?;
-        let cursor = after
-            .map(|id| {
-                (
-                    id.namespace.instance.as_str(),
-                    id.namespace.account.as_str(),
-                    id.native_key.as_str(),
-                )
-            })
-            .unwrap_or(("", "", ""));
-        let mut out = BTreeMap::new();
-        for scope in visibility {
-            for (p, v) in &streams {
-                let mut stmt = map_db(self.tx.prepare_cached(POSTING_SQL))?;
-                let rows = map_db(stmt.query_map(
-                    params![
-                        ty,
-                        scope,
-                        p,
-                        v,
-                        cursor.0,
-                        cursor.1,
-                        cursor.2,
-                        to_i64(limit as u64)?
-                    ],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, String>(3)?,
-                        ))
-                    },
-                ))?;
-                for row in rows {
-                    let (instance, account, native_key, keys) = map_db(row)?;
-                    let id = Id {
-                        object_type: ty.into(),
-                        namespace: ont_core::Namespace { instance, account },
-                        native_key,
-                    };
-                    let scope = Scope::domain(
-                        schema.namespace.clone(),
-                        schema.domain.clone(),
-                        decode(&keys).map_err(StoreRefusal::from)?,
-                    )
-                    .map_err(StoreRefusal::from)?;
-                    out.entry(id.clone()).or_insert(HeadAccess {
-                        id,
-                        scope,
-                        retracted: false,
-                    });
-                    if out.len() > limit {
-                        out.pop_last();
-                    }
-                }
-                #[cfg(test)]
-                {
-                    assert_eq!(stmt.get_status(rusqlite::StatementStatus::Sort), 0);
-                    STEPS.set(STEPS.get() + stmt.reset_status(rusqlite::StatementStatus::VmStep));
-                }
-            }
-        }
-        Ok(out.into_values().collect())
+        candidate_access_in(
+            self.tx,
+            &self.schemas,
+            ty,
+            condition,
+            now,
+            limit,
+            after,
+            scopes,
+        )
     }
+}
+impl SchemaWrite<'_> {
+    /// The write transaction already required a current projection at entry.
+    pub fn candidate_access(
+        &self,
+        ty: &str,
+        condition: Option<&CandidateCondition>,
+        now: u64,
+        limit: usize,
+        after: Option<&Id>,
+        scopes: &[Scope],
+    ) -> Result<Vec<HeadAccess>, StoreRefusal> {
+        candidate_access_in(
+            self.tx,
+            &self.schemas,
+            ty,
+            condition,
+            now,
+            limit,
+            after,
+            scopes,
+        )
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn candidate_access_in(
+    c: &Connection,
+    schemas: &SchemaSet,
+    ty: &str,
+    condition: Option<&CandidateCondition>,
+    now: u64,
+    limit: usize,
+    after: Option<&Id>,
+    scopes: &[Scope],
+) -> Result<Vec<HeadAccess>, StoreRefusal> {
+    let schema = schemas
+        .schema_of(ty)
+        .ok_or_else(StoreRefusal::store_failure)?;
+    let mut streams = BTreeSet::new();
+    if let Some(condition) = condition {
+        for value in &condition.values {
+            streams.insert((condition.property.clone(), format!("v{value}")));
+        }
+        for p in condition
+            .used
+            .iter()
+            .chain(std::iter::once(&condition.property))
+        {
+            streams.insert((p.clone(), "?".into()));
+        }
+        let clock = format!("{now:016x}");
+        for (i, digit) in clock.bytes().enumerate() {
+            let digit = (digit as char)
+                .to_digit(16)
+                .ok_or_else(StoreRefusal::store_failure)?;
+            for n in 0..digit {
+                streams.insert(("$stale".into(), format!("{}{:x}", &clock[..i], n)));
+            }
+        }
+    } else {
+        streams.insert((String::new(), String::new()));
+    }
+    let visibility: BTreeSet<_> = scopes.iter().map(json_text).collect::<Result<_, _>>()?;
+    let cursor = after
+        .map(|id| {
+            (
+                id.namespace.instance.as_str(),
+                id.namespace.account.as_str(),
+                id.native_key.as_str(),
+            )
+        })
+        .unwrap_or(("", "", ""));
+    let mut out = BTreeMap::new();
+    for scope in visibility {
+        for (p, v) in &streams {
+            let mut stmt = map_db(c.prepare_cached(POSTING_SQL))?;
+            let rows = map_db(stmt.query_map(
+                params![
+                    ty,
+                    scope,
+                    p,
+                    v,
+                    cursor.0,
+                    cursor.1,
+                    cursor.2,
+                    to_i64(limit as u64)?
+                ],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            ))?;
+            for row in rows {
+                let (instance, account, native_key, keys) = map_db(row)?;
+                let id = Id {
+                    object_type: ty.into(),
+                    namespace: ont_core::Namespace { instance, account },
+                    native_key,
+                };
+                let scope = Scope::domain(
+                    schema.namespace.clone(),
+                    schema.domain.clone(),
+                    decode(&keys).map_err(StoreRefusal::from)?,
+                )
+                .map_err(StoreRefusal::from)?;
+                out.entry(id.clone()).or_insert(HeadAccess {
+                    id,
+                    scope,
+                    retracted: false,
+                });
+                if out.len() > limit {
+                    out.pop_last();
+                }
+            }
+            #[cfg(test)]
+            {
+                assert_eq!(stmt.get_status(rusqlite::StatementStatus::Sort), 0);
+                STEPS.set(STEPS.get() + stmt.reset_status(rusqlite::StatementStatus::VmStep));
+            }
+        }
+    }
+    Ok(out.into_values().collect())
 }
 
 #[cfg(test)]

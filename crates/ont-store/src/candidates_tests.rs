@@ -155,3 +155,48 @@ fn visible_keyset_work_is_bounded_with_hidden_and_retracted_heads() {
     assert_eq!(counts[1], counts[3]);
     assert_eq!(counts[3], counts[5]);
 }
+
+#[test]
+fn candidate_access_read_write_parity() {
+    let mut store = Store::memory_schema().unwrap();
+    let schema = include_bytes!("../../ont/tests/fixtures/action-work.json");
+    store
+        .install_schema(schema, InstallArgs::default())
+        .unwrap();
+    let id: Id = serde_json::from_value(serde_json::json!({"object_type":"hold","namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":"h1"})).unwrap();
+    let scope = Scope::domain(id.namespace.clone(), "work", BTreeMap::new()).unwrap();
+    let observation = serde_json::from_value(serde_json::json!({"revision":"r0","source_revision":"s0","observed_at":1,"fresh_until":100,
+        "change":"initial","supersedes":null,"coverage":"complete","fields":{"effect":{"kind":"value","value":"merge"},"status":{"kind":"value","value":"active"},"until":{"kind":"value","value":"later"},"task":{"kind":"value","value":{"object_type":"task","namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":"t1"}}},
+        "lineage":{"artifact_sha256":"a".repeat(64),"pointer":""}})).unwrap();
+    store
+        .append_schema(
+            &[Append {
+                id,
+                scope: scope.clone(),
+                observation,
+            }],
+            1,
+        )
+        .unwrap();
+    let condition = CandidateCondition {
+        property: "effect".into(),
+        values: vec![Value::String("merge".into())],
+        used: BTreeSet::new(),
+    };
+    let scopes = [scope];
+    let read = store
+        .read_schema(|tx| tx.candidate_access("hold", Some(&condition), 10, 2, None, &scopes))
+        .unwrap()
+        .unwrap();
+    let write = store
+        .write(10, |tx| {
+            tx.candidate_access("hold", Some(&condition), 10, 2, None, &scopes)
+        })
+        .unwrap();
+    let direct = store
+        .candidate_access("hold", Some(&condition), 10, 2, None, &scopes)
+        .unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read, write);
+    assert_eq!(read, direct);
+}

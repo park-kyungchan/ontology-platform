@@ -1363,3 +1363,239 @@ fn backup_verifies_the_export() {
         }
     }
 }
+
+// Use the same typed Append/coverage construction as candidates.rs::row and
+// unresolved_stale_partial_and_historical_heads_remain_candidates.
+fn g4_append_hold(t: &Temp, key: &str, task: Value, partial: bool) {
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let mut observation = store
+        .head(&serde_json::from_value(task_id()).unwrap())
+        .unwrap()
+        .unwrap()
+        .head
+        .observation;
+    observation.coverage = if partial {
+        ont_core::Coverage::Partial
+    } else {
+        ont_core::Coverage::Complete
+    };
+    observation.fields = BTreeMap::from([
+        ("task".into(), ont_core::Knowledge::Value(task)),
+        ("effect".into(), ont_core::Knowledge::Value(json!("merge"))),
+        ("until".into(), ont_core::Knowledge::Value(json!("later"))),
+        ("status".into(), ont_core::Knowledge::Value(json!("active"))),
+    ]);
+    store
+        .append_schema(
+            &[ont_store::Append {
+                id: serde_json::from_value(id_json("hold", key)).unwrap(),
+                scope: ont_core::Scope::domain(ns(), "work", BTreeMap::new()).unwrap(),
+                observation,
+            }],
+            NOW,
+        )
+        .unwrap();
+}
+fn g4_setup() -> Temp {
+    let t = setup();
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let head = store
+        .head(&serde_json::from_value(task_id()).unwrap())
+        .unwrap()
+        .unwrap();
+    store
+        .append_schema(
+            &[ont_store::Append {
+                id: serde_json::from_value(id_json("task", "task2")).unwrap(),
+                scope: head.scope,
+                observation: head.head.observation,
+            }],
+            NOW,
+        )
+        .unwrap();
+    for i in 0..40 {
+        g4_append_hold(&t, &format!("b{i:02}"), id_json("task", "task2"), false);
+    }
+    t
+}
+fn g4_request(task: Value) -> Value {
+    json!({"action_type":"set_hold","parameters":{"task":task,"effect":"merge","until":"later"}})
+}
+#[test]
+fn g4_linked_loads_only_the_targets_heads() {
+    let t = g4_setup();
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    let result = lib_apply(&ctx, g4_request(task_id())).unwrap();
+    assert_eq!(result["outcome"], "applied");
+}
+#[test]
+fn g4_linked_still_refuses_on_a_duplicate() {
+    let t = g4_setup();
+    g4_append_hold(&t, "a", task_id(), false);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    let err = lib_apply(&ctx, g4_request(task_id())).unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+}
+#[test]
+fn g4_partial_or_old_pin_head_is_still_counted() {
+    let t = g4_setup();
+    g4_append_hold(&t, "a-partial", task_id(), true);
+    let connection = rusqlite::Connection::open(t.store_path()).unwrap();
+    let unknown: i64 = connection.query_row(
+        "SELECT count(*) FROM head_candidates WHERE object_type='hold' AND native_key='a-partial' AND property='task' AND value='?'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert!(unknown > 0);
+    drop(connection);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    let err = lib_apply(&ctx, g4_request(task_id())).unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+}
+#[test]
+fn g4_reference_key_order() {
+    let t = g4_setup();
+    g4_append_hold(&t, "a", task_id(), false);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    for raw in [
+        r#"{"object_type":"task","namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":"task1"}"#,
+        r#"{"native_key":"task1","namespace":{"account":"root","instance":"vps://palantirkc"},"object_type":"task"}"#,
+    ] {
+        let err = lib_apply(&ctx, g4_request(serde_json::from_str(raw).unwrap())).unwrap_err();
+        assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+    }
+}
+
+#[test]
+fn g4_list_reference_retains_type_scan() {
+    let t = Temp::new();
+    let mut schema: Value = serde_json::from_slice(FIXTURE).unwrap();
+    schema["object_types"]["hold"]["properties"]["task"]["type"] = json!({"array":{"ref":"task"}});
+    schema["link_types"]["hold_task"]["cardinality"] = json!("many_to_many");
+    schema["action_types"]["set_hold"]["rules"][0]["set"]["task"] = json!(["$task"]);
+    install_bytes(&t, &serde_json::to_vec(&schema).unwrap());
+    append_task(&t);
+    g4_append_hold(&t, "list", json!([task_id()]), false);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    let err = lib_apply(&ctx, g4_request(task_id())).unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+}
+
+#[test]
+fn g4_link_property_differs_from_target_type() {
+    let t = Temp::new();
+    let mut schema: Value = serde_json::from_slice(FIXTURE).unwrap();
+    let property = schema["object_types"]["hold"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("task")
+        .unwrap();
+    schema["object_types"]["hold"]["properties"]["owner_task"] = property;
+    schema["link_types"]["hold_task"]["via"] = json!("owner_task");
+    let value = schema["action_types"]["set_hold"]["rules"][0]["set"]
+        .as_object_mut()
+        .unwrap()
+        .remove("task")
+        .unwrap();
+    schema["action_types"]["set_hold"]["rules"][0]["set"]["owner_task"] = value;
+    install_bytes(&t, &serde_json::to_vec(&schema).unwrap());
+    append_task(&t);
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let head = store
+        .head(&serde_json::from_value(task_id()).unwrap())
+        .unwrap()
+        .unwrap();
+    store
+        .append_schema(
+            &[ont_store::Append {
+                id: serde_json::from_value(id_json("task", "task2")).unwrap(),
+                scope: head.scope.clone(),
+                observation: head.head.observation.clone(),
+            }],
+            NOW,
+        )
+        .unwrap();
+    for i in 0..40 {
+        let mut observation = head.head.observation.clone();
+        observation.fields = BTreeMap::from([
+            (
+                "owner_task".into(),
+                ont_core::Knowledge::Value(id_json("task", "task2")),
+            ),
+            ("effect".into(), ont_core::Knowledge::Value(json!("merge"))),
+            ("until".into(), ont_core::Knowledge::Value(json!("later"))),
+            ("status".into(), ont_core::Knowledge::Value(json!("active"))),
+        ]);
+        store
+            .append_schema(
+                &[ont_store::Append {
+                    id: serde_json::from_value(id_json("hold", &format!("b{i:02}"))).unwrap(),
+                    scope: head.scope.clone(),
+                    observation,
+                }],
+                NOW,
+            )
+            .unwrap();
+    }
+    drop(store);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 3);
+    let result = lib_apply(&ctx, g4_request(task_id())).unwrap();
+    assert_eq!(result["outcome"], "applied");
+    let err = lib_apply(&ctx, g4_request(task_id())).unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+}
+
+#[test]
+fn g4_page_merge_keeps_the_smallest_ids() {
+    let t = setup();
+    let mut store = Store::open_schema(&t.store_path()).unwrap();
+    let head = store
+        .head(&serde_json::from_value(task_id()).unwrap())
+        .unwrap()
+        .unwrap();
+    store
+        .append_schema(
+            &[ont_store::Append {
+                id: serde_json::from_value(id_json("task", "task2")).unwrap(),
+                scope: head.scope.clone(),
+                observation: head.head.observation.clone(),
+            }],
+            NOW,
+        )
+        .unwrap();
+    // The matching stream supplies a0/a1; merging stale s0 must retain a0/a1
+    // on page one and return s0 on page two, rather than skipping a0.
+    for (key, task, effect, fresh_until) in [
+        ("a0", task_id(), "merge", 2000),
+        ("a1", task_id(), "freeze", 2000),
+        ("s0", id_json("task", "task2"), "merge", NOW - 1),
+    ] {
+        let mut observation = head.head.observation.clone();
+        observation.fresh_until = fresh_until;
+        observation.fields = BTreeMap::from([
+            ("task".into(), ont_core::Knowledge::Value(task)),
+            ("effect".into(), ont_core::Knowledge::Value(json!(effect))),
+            ("until".into(), ont_core::Knowledge::Value(json!("later"))),
+            ("status".into(), ont_core::Knowledge::Value(json!("active"))),
+        ]);
+        store
+            .append_schema(
+                &[ont_store::Append {
+                    id: serde_json::from_value(id_json("hold", key)).unwrap(),
+                    scope: head.scope.clone(),
+                    observation,
+                }],
+                NOW,
+            )
+            .unwrap();
+    }
+    drop(store);
+    let ctx = Context::with_snapshot_bounds(t.store_path(), NOW, 2, 100);
+    let err = lib_apply(&ctx, g4_request(task_id())).unwrap_err();
+    assert_eq!(refusal_code(&err), "submission_criteria", "{err:?}");
+    let req = serde_json::from_value(g4_request(task_id())).unwrap();
+    let answer = ont::action::validate_action(&ctx, &req).unwrap();
+    let ont::Answer::Enveloped { result, .. } = answer else {
+        panic!("enveloped")
+    };
+    assert_eq!(result["valid"], false, "{result}");
+}
