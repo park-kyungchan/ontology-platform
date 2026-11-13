@@ -474,6 +474,27 @@ fn validate_parameters(
             }
         }
     }
+    // The validated id supplies the local creation key, so its namespace must
+    // name this domain too. Both entry points and the apply transaction use this.
+    for rule in &at.rules {
+        if let Some(target) = rule
+            .create_object
+            .as_ref()
+            .or(rule.create_or_modify_object.as_ref())
+            && let Some(name) = schema
+                .object_types
+                .get(target)
+                .and_then(|ty| ty.primary_key.from.as_deref())
+                .and_then(|pointer| at.create_key_parameter(target, pointer))
+            && let Some(id) = out.get(name).and_then(id_from_value)
+            && id.namespace != schema.namespace
+        {
+            return Err(invalid_parameter(
+                &format!("{}/namespace", parameter_field(name)),
+                "key reference namespace must equal the action domain namespace",
+            ));
+        }
+    }
     Ok(out)
 }
 
@@ -1145,47 +1166,41 @@ impl<'a> Planner<'a> {
             "/parameters".to_string()
         }
     }
-    fn create_key(
-        &self,
-        at: &ActionType,
-        object_type: &str,
-        set_map: &BTreeMap<String, Value>,
-    ) -> Result<String, Failure> {
+    fn create_key(&self, at: &ActionType, object_type: &str) -> Result<String, Failure> {
         let ty = self
             .schema
             .object_types
             .get(object_type)
             .ok_or_else(|| Failure::from(Refusal::new("unknown_type")))?;
-        let _ = set_map;
         if ty.primary_key.from.as_deref() == Some("$action_id") {
             return Ok(self.action_id.clone());
         }
-        if let Some(from) = &ty.primary_key.from
-            && from.starts_with('/')
-        {
-            let name = at.create_key_parameter(object_type, from).ok_or_else(|| {
+        let name = ty
+            .primary_key
+            .from
+            .as_deref()
+            .and_then(|pointer| at.create_key_parameter(object_type, pointer))
+            .ok_or_else(|| {
                 invalid_parameter(
                     "/parameters",
                     "schema does not determine the primary-key parameter",
                 )
             })?;
-            let value = self.params.get(name);
-            let pointed = value.and_then(|v| v.pointer(from));
-            if let Some(key) = pointed.and_then(Value::as_str) {
-                return Ok(key.to_string());
-            }
-            let parent = parameter_field(name);
-            let field = if pointed.is_some() {
-                format!("{parent}{from}")
-            } else {
-                parent
-            };
-            return Err(invalid_parameter(
-                &field,
-                "schema rule requires a string at the primary-key pointer in its designated parameter",
-            ));
-        }
-        Ok(self.action_id.clone())
+        let value = self.params.get(name).and_then(|v| v.get("native_key"));
+        value
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                let parent = parameter_field(name);
+                invalid_parameter(
+                    &if value.is_some() {
+                        format!("{parent}/native_key")
+                    } else {
+                        parent
+                    },
+                    "schema rule requires native_key in its designated reference parameter",
+                )
+            })
     }
     // Snapshot contains only admitted live heads; hidden parameters equal missing.
     fn scope_for_create(&self, at: &ActionType, object_type: &str) -> Scope {
@@ -1372,7 +1387,7 @@ impl<'a> Planner<'a> {
         set_map: &BTreeMap<String, Value>,
         or_modify: bool,
     ) -> Result<Value, Failure> {
-        let key = self.create_key(at, t, set_map)?;
+        let key = self.create_key(at, t)?;
         let id = Id {
             object_type: t.to_string(),
             namespace: self.schema.namespace.clone(),
@@ -2364,7 +2379,14 @@ fn augment_planner(
 ) -> Result<(), Failure> {
     let mut targets: Vec<(String, String)> = Vec::new();
     for rule in &at.rules {
+        // Action-id upserts retain their existing reference-target behavior.
+        // Pointer-key targets below come only from the designated key parameter.
         if let Some(t) = &rule.create_or_modify_object
+            && planner
+                .schema
+                .object_types
+                .get(t)
+                .is_some_and(|ty| ty.primary_key.from.as_deref() == Some("$action_id"))
             && let Some(id) = planner.ref_target_typed(at, t)
         {
             load_creation_target(
@@ -2383,7 +2405,7 @@ fn augment_planner(
         .into_iter()
         .flatten()
         {
-            if let Ok(key) = planner.create_key(at, &t, &BTreeMap::new()) {
+            if let Ok(key) = planner.create_key(at, &t) {
                 targets.push((t, key));
             }
         }
@@ -3180,9 +3202,9 @@ mod tests {
         r
     }
     #[test]
-    fn primary_key_feedback_names_nested_spec_key() {
+    fn primary_key_feedback_names_reference_native_key() {
         with_feedback_planner(
-            BTreeMap::from([("spec".into(), json!({"key":42}))]),
+            BTreeMap::from([("spec".into(), json!({"native_key":42}))]),
             |planner| {
                 let mut schema = planner.schema.clone();
                 schema
@@ -3190,7 +3212,7 @@ mod tests {
                     .get_mut("item")
                     .unwrap()
                     .primary_key
-                    .from = Some("/key".into());
+                    .from = Some("/native_key".into());
                 let key_planner = Planner {
                     schema: &schema,
                     ..Planner {
@@ -3209,12 +3231,11 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &serde_json::from_value(json!({"parameters":{"spec":{"type":{"struct":{"key":"string"}},"required":true}},"rules":[{"create_object":"item"}]})).unwrap(),
+                        &serde_json::from_value(json!({"parameters":{"spec":{"type":{"ref":"item"},"required":true}},"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
-                        &BTreeMap::new(),
                     )
                     .unwrap_err();
-                assert_parameter_field(err, "/parameters/spec/key");
+                assert_parameter_field(err, "/parameters/spec/native_key");
             },
         );
     }
@@ -3374,8 +3395,8 @@ mod tests {
             ),
             (
                 BTreeMap::from([
-                    ("spec".into(), json!({"key":1})),
-                    ("other".into(), json!({"key":2})),
+                    ("spec".into(), json!({"native_key":1})),
+                    ("other".into(), json!({"native_key":2})),
                 ]),
                 "/parameters",
             ),
@@ -3387,7 +3408,7 @@ mod tests {
                     .get_mut("item")
                     .unwrap()
                     .primary_key
-                    .from = Some("/key".into());
+                    .from = Some("/native_key".into());
                 let key_planner = Planner {
                     schema: &schema,
                     principal: planner.principal,
@@ -3403,9 +3424,8 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &serde_json::from_value(json!({"parameters": if expected == "/parameters" { json!({"spec":{"type":{"struct":{"key":"string"}},"required":true},"other":{"type":{"struct":{"key":"string"}},"required":true}}) } else { json!({"spec":{"type":{"struct":{"key":"string"}},"required":true}}) },"rules":[{"create_object":"item"}]})).unwrap(),
+                        &serde_json::from_value(json!({"parameters": if expected == "/parameters" { json!({"spec":{"type":{"ref":"item"},"required":true},"other":{"type":{"ref":"item"},"required":true}}) } else { json!({"spec":{"type":{"ref":"item"},"required":true}}) },"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
-                        &BTreeMap::new(),
                     )
                     .unwrap_err();
                 let r = assert_parameter_field(err, expected);

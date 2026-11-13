@@ -28,14 +28,14 @@ def version(store):
         return connection.execute("PRAGMA user_version").fetchone()[0]
 
 def action(key, status, request):
-    return {"action_type":"upsert","parameters":{"spec":{"key":key},"status":status},"request_id":request}
+    return {"action_type":"upsert","parameters":{"spec":{"object_type":"record","namespace":{"instance":"test","account":"root"},"native_key":key},"status":status},"request_id":request}
 
 def drop(key, request):
     return {"action_type":"drop","parameters":{"record":{"object_type":"record","namespace":{"instance":"test","account":"root"},"native_key":key}},"request_id":request}
 
 schema = {"format":"ontology-schema/v1","domain":"barrier","version":1,"namespace":{"instance":"test","account":"root"},"scope_keys":[],"sources":{},"value_types":{},
-    "object_types":{"record":{"owner":"ontology","primary_key":{"from":"/key"},"properties":{"status":{"type":"string"}}}},"link_types":{},"functions":{},
-    "action_types":{"upsert":{"parameters":{"spec":{"type":{"struct":{"key":"string"}},"required":True},"status":{"type":"string","required":True}},"rules":[{"create_or_modify_object":"record","set":{"status":"$status"}}]},
+    "object_types":{"record":{"owner":"ontology","primary_key":{"from":"/native_key"},"properties":{"status":{"type":"string"}}}},"link_types":{},"functions":{},
+    "action_types":{"upsert":{"parameters":{"spec":{"type":{"ref":"record"},"required":True},"status":{"type":"string","required":True}},"rules":[{"create_or_modify_object":"record","set":{"status":"$status"}}]},
         "drop":{"parameters":{"record":{"type":{"ref":"record"},"required":True}},"rules":[{"delete_object":"record"}]}},
     "grants":[{"principal":"agent","scope":{},"read":["record"],"derive":[],"actions":["upsert","drop"]}]}
 path = args.directory / "schema.json"

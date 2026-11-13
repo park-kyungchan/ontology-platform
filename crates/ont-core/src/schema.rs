@@ -982,35 +982,24 @@ pub struct ActionType {
 }
 
 impl ActionType {
-    /// Resolve a pointer-key source from declarations, never runtime value order.
-    /// Exactly one required parameter must declare the pointer path as a struct,
-    /// or reference the created type for /native_key. Optionals cannot own keys.
+    /// A pointer key comes from exactly one required reference to its created
+    /// type, and one create/upsert rule for that type. Never use value/name order.
     pub fn create_key_parameter(&self, object_type: &str, pointer: &str) -> Option<&str> {
-        fn declares_path(ty: &PropertyType, pointer: &str) -> bool {
-            let mut ty = ty;
-            for token in pointer
-                .strip_prefix('/')
-                .into_iter()
-                .flat_map(|p| p.split('/'))
-            {
-                let PropertyType::Struct(fields) = ty else {
-                    return false;
-                };
-                let token = token.replace("~1", "/").replace("~0", "~");
-                let Some(next) = fields.struct_.get(&token) else {
-                    return false;
-                };
-                ty = next;
-            }
-            pointer.starts_with('/')
+        if pointer != "/native_key"
+            || self
+                .rules
+                .iter()
+                .filter(|r| {
+                    r.create_object.as_deref() == Some(object_type)
+                        || r.create_or_modify_object.as_deref() == Some(object_type)
+                })
+                .count()
+                != 1
+        {
+            return None;
         }
         let mut candidates = self.parameters.iter().filter(|(_, p)| {
-            p.required
-                && match &p.ty {
-                    PropertyType::Ref(r) => pointer == "/native_key" && r.target == object_type,
-                    PropertyType::Struct(_) => declares_path(&p.ty, pointer),
-                    _ => false,
-                }
+            p.required && matches!(&p.ty, PropertyType::Ref(r) if r.target == object_type)
         });
         let (name, _) = candidates.next()?;
         candidates.next().is_none().then_some(name.as_str())
@@ -1811,6 +1800,18 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
         {
             v(
                 codes::INVALID_PRIMARY_KEY,
+                format!("{base}/primary_key/from"),
+                &mut out,
+            );
+        }
+        if matches!(ty.owner, Owner::Ontology)
+            && pk
+                .from
+                .as_deref()
+                .is_some_and(|p| p.starts_with('/') && p != "/native_key")
+        {
+            v(
+                codes::AMBIGUOUS_CREATE_KEY,
                 format!("{base}/primary_key/from"),
                 &mut out,
             );

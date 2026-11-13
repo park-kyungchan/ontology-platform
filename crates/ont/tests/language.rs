@@ -2330,7 +2330,7 @@ fn unreadable_creation_occupancy_exception_survives_minimal_bound_cli_and_mcp() 
                         );
                     }
                     let before = std::fs::read(t.store()).unwrap();
-                    let req = json!({"action_type":"upsert_widget","parameters":{"spec":{"key":"occupied"},"title":"created"},"request_id":"occupancy"});
+                    let req = json!({"action_type":"upsert_widget","parameters":{"spec":{"object_type":"widget","namespace":task()["namespace"],"native_key":"occupied"},"title":"created"},"request_id":"occupancy"});
                     let line =
                         ont::__with_snapshot_bounds(1, 1, || t.action_line(mcp, op, req, NOW));
                     let answer: Value = serde_json::from_str(&line).unwrap();
@@ -2911,12 +2911,12 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
     let t = Temp::new();
     let mut s = pointer_key_schema();
     s["action_types"]["write_record"]["parameters"]["a_spec"] =
-        json!({"type":{"struct":{"native_key":"string"}},"required":false});
+        json!({"type":{"ref":"record"},"required":false});
     s["object_types"]["record"]["properties"]["parent"] = json!({"type":{"ref":"record"}});
     s["link_types"]["record_parent"] = json!({"from":"record","via":"parent","to":"record","cardinality":"many_to_one","names":{"forward":"parent","reverse":"children"}});
     s["views"]["records"] = json!({"object_type":"record","columns":[{"header":"Title","property":"title"}],"order":[{"property":"$key","direction":"asc"}]});
     s["action_types"]["seed_record"] = json!({
-        "parameters":{"spec":{"type":{"struct":{"native_key":"string"}},"required":true}},
+        "parameters":{"spec":{"type":{"ref":"record"},"required":true}},
         "rules":[{"create_object":"record","set":{"title":"seed"}}]
     });
     s["grants"][0]["actions"]
@@ -2929,7 +2929,7 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
         t.call(
             false,
             "apply",
-            json!({"action_type":"seed_record","parameters":{"spec":{"native_key":"X"}}}),
+            json!({"action_type":"seed_record","parameters":{"spec":id}}),
             NOW
         )["status"],
         "ok"
@@ -2976,7 +2976,7 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
         t.call(
             false,
             "apply",
-            json!({"action_type":"seed_record","parameters":{"spec":{"native_key":"Y"}}}),
+            json!({"action_type":"seed_record","parameters":{"spec":{"object_type":"record","namespace":task()["namespace"],"native_key":"Y"}}}),
             NOW
         )["status"],
         "ok"
@@ -2989,7 +2989,7 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
             let count: i64 = db
                 .query_row("SELECT count(*) FROM action_log", [], |r| r.get(0))
                 .unwrap();
-            let answer = t.call(mcp, op, json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":{"native_key":"X"}},"request_id":"ambiguous"}), NOW);
+            let answer = t.call(mcp, op, json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":id},"request_id":"ambiguous"}), NOW);
             assert_eq!(answer["status"], "refused", "{answer}");
             assert_eq!(answer["code"], "ambiguous_create_key", "{answer}");
             assert_eq!(answer["pointer"], "/action_types/write_record", "{answer}");
@@ -3037,7 +3037,12 @@ fn installed_ambiguous_key_preserves_store_and_allows_repair() {
         t.cli(&["get"], json!({"id":id}), NOW)["result"]["objects"][0]["head"],
         before
     );
-    let result = t.call(false, "apply", json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":{"native_key":"ignored"}}}), NOW);
+    let result = t.call(
+        false,
+        "apply",
+        json!({"action_type":"write_record","parameters":{"z_record":id,"a_spec":id}}),
+        NOW,
+    );
     assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["result"]["edits"][0]["id"], id);
 }
@@ -3056,16 +3061,7 @@ fn pointer_create_key_reference_cannot_supply_custom_member() {
         "ambiguous_create_key",
         "/action_types/write_record",
     );
-    // A required struct can supply /key; a required reference cannot compete.
+    // Struct keys are no longer admitted, even if required.
     s["action_types"]["write_record"]["parameters"]["a_spec"]["required"] = json!(true);
-    t.install(s);
-    let id = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"X"});
-    let result = t.call(
-        false,
-        "apply",
-        json!({"action_type":"write_record","parameters":{"a_spec":{"key":"X"},"z_record":id}}),
-        NOW,
-    );
-    assert_eq!(result["status"], "ok", "{result}");
-    assert_eq!(result["result"]["edits"][0]["id"], id);
+    t.refuses_schema(s, "ambiguous_create_key", "/action_types/write_record");
 }

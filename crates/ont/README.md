@@ -38,35 +38,41 @@ Ordinary ports and local paths remain intact.
 
 - Snapshot: apply and validate load parameter objects (except parameters used only by bare `present` and not needed for rule planning), expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
 
-For `create_object` and `create_or_modify_object` on an Ontology-owned type
-whose `primary_key.from` starts with `/`, the action must declare exactly one
-eligible **required** parameter: a struct that declares the pointer path
-(JSON Pointer escapes are decoded), or, only for `/native_key`, a reference to
-the created object type. An object id carries `native_key`, not an arbitrary
-key member such as `/key`; for other pointers a reference is never eligible.
-The key is the string at that pointer in that parameter's submitted value.
-Optional parameters, references to other types, and parameter name order never
-select the key. For example, with `/native_key`, required `z_record: ref(record)`
-and optional `a_predecessor: ref(record)`, `z_record.native_key` supplies the key.
-Zero or multiple eligible parameters refuse `schema check` with
-`ambiguous_create_key` at `/action_types/<action>`; schemas previously relying
-on optional-only or ambiguous key sources must disambiguate their declarations.
-The designated value missing the pointer or holding a non-string refuses
-`invalid_parameter` at runtime, without trying another parameter. `$action_id`
-keys retain their existing behavior. This rule changes no stored schema bytes
-or store format; installed `work` version 7 already has one eligible parameter.
+For Ontology-owned types, `primary_key.from` is `$action_id` or `/native_key`.
+Other pointers refuse `schema check` with `ambiguous_create_key` at the type's
+`/object_types/<type>/primary_key/from`. Source-owned key extraction is unchanged.
+For `create_object` and `create_or_modify_object` with `/native_key`, exactly one
+**required reference to the created type** supplies its `native_key`. Structs,
+scalars, arrays, value types, optional references and references to another type
+never supply the key. Zero or multiple required references refuse with
+`ambiguous_create_key` at `/action_types/<action>`. Parameter names never select
+keys: with required `z_record: ref(record)` and optional `a_predecessor: ref(record)`,
+`z_record.native_key` is the key.
 
-Installed bytes are loaded with `Schema::check_installed_bytes`: parsing,
-all other semantic checks and exact-byte pin verification still run, but
-`ambiguous_create_key` does not prevent opening an existing store. Schema-set
-composition likewise rechecks all other rules. Reads, backup, compact and
-unaffected actions remain available. After authorization, `action validate`
-and `action apply` refuse an affected action with `ambiguous_create_key` and
-`pointer: /action_types/<action>`, without writing (apply checks again inside
-its transaction, before idempotent replay). `schema check` and admission of
-new installs still use strict `Schema::check_bytes`. To repair an installed
-schema, install a higher version with unambiguous required key declarations;
-other domains may remain installed while they await their own repair.
+Three constraints keep schema admission and execution consistent:
+- The key reference's namespace must equal the domain namespace. Both validate
+  and apply refuse a foreign namespace with `invalid_parameter` at
+  `/parameters/<key-parameter>/namespace`, without writing.
+- An action has at most one create/upsert rule for a given pointer-keyed type;
+  a second rule refuses `ambiguous_create_key` at the action.
+- Id parameter validation ensures `native_key` is a string of 1 to 512 bytes,
+  so a key accepted by validate is also usable by apply. Other criteria and
+  revision conflicts may still prevent apply. Upsert modifies the live object
+  under that key, or creates it if missing or retracted.
+
+Installed bytes load through `Schema::check_installed_bytes`: parsing, all other
+semantic checks and exact-byte pin verification still run, but only
+`ambiguous_create_key` is exempted. Reads, backup, compact and unaffected actions
+remain available. After authorization, validate/apply of an affected action
+refuse `ambiguous_create_key` with `pointer: /action_types/<action>`, without
+writing. Apply checks again inside its transaction, before idempotent replay.
+Schema-set composition rechecks every other rule. Strict `Schema::check_bytes`
+is required for every new install, including identical-byte reinstall and
+provenance-only updates of a schema with this violation. To repair, install a
+higher version using `/native_key` and exactly one required reference to the
+created type and one create/upsert rule per type. Other affected domains can
+await their own upgrades. No store format change; installed `work` version 7
+already uses the admitted shape. `$action_id` behavior is unchanged.
 
 ## Action values and parameter descriptions
 
