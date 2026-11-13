@@ -386,14 +386,20 @@ impl SchemaWrite<'_> {
     pub fn action_log(&self) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
         action_log_in(self.tx)
     }
+    /// Number of applied actions inside this transaction.
+    pub fn action_count(&self) -> Result<usize, StoreRefusal> {
+        action_count_in(self.tx)
+    }
     /// One action-log row by its action id, inside this transaction.
     pub fn find_action(
         &self,
         action_id: &str,
     ) -> Result<Option<(i64, ActionLogEntry)>, StoreRefusal> {
-        Ok(action_log_in(self.tx)?
-            .into_iter()
-            .find(|(_, e)| e.action_id == action_id))
+        let mut stmt = map_db(self.tx.prepare(
+            "SELECT seq,action_id,action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome FROM action_log WHERE action_id=?1",
+        ))?;
+        let mut rows = map_db(stmt.query(params![action_id]))?;
+        map_db(rows.next())?.map(action_log_row).transpose()
     }
     pub fn schema_set(&self) -> &SchemaSet {
         &self.schemas
@@ -923,6 +929,33 @@ impl Store {
         }
         result
     }
+    pub fn action_count(&mut self) -> Result<usize, StoreRefusal> {
+        self.require_schema()?;
+        let cached = self.schemas.clone();
+        let tx = self.read_tx()?;
+        let set = refreshed_set(&cached, &tx)?;
+        let result = action_count_in(&tx);
+        drop(tx);
+        if result.is_ok() {
+            self.schemas = set;
+        }
+        result
+    }
+    pub fn action_log_from(
+        &mut self,
+        first_seq: i64,
+    ) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
+        self.require_schema()?;
+        let cached = self.schemas.clone();
+        let tx = self.read_tx()?;
+        let set = refreshed_set(&cached, &tx)?;
+        let result = action_log_from_in(&tx, first_seq);
+        drop(tx);
+        if result.is_ok() {
+            self.schemas = set;
+        }
+        result
+    }
 }
 
 fn decode_scope(raw: &str) -> Result<Scope, StoreRefusal> {
@@ -1224,58 +1257,47 @@ fn scan_in(
     Ok(out)
 }
 
+fn action_log_row(r: &rusqlite::Row<'_>) -> Result<(i64, ActionLogEntry), StoreRefusal> {
+    Ok((
+        map_db(r.get(0))?,
+        ActionLogEntry {
+            action_id: map_db(r.get(1))?,
+            action_type: map_db(r.get(2))?,
+            domain: map_db(r.get(3))?,
+            schema_domain: map_db(r.get(4))?,
+            schema_version: to_u64(map_db(r.get(5))?)?,
+            actor: decode(&map_db(r.get::<_, String>(6))?).map_err(StoreRefusal::from)?,
+            submitted_at: to_u64(map_db(r.get(7))?)?,
+            parameters: decode(&map_db(r.get::<_, String>(8))?).map_err(StoreRefusal::from)?,
+            basis: decode(&map_db(r.get::<_, String>(9))?).map_err(StoreRefusal::from)?,
+            edits: decode(&map_db(r.get::<_, String>(10))?).map_err(StoreRefusal::from)?,
+            outcome: map_db(r.get(11))?,
+        },
+    ))
+}
+fn action_count_in(connection: &Connection) -> Result<usize, StoreRefusal> {
+    let count: i64 =
+        map_db(connection.query_row("SELECT COUNT(*) FROM action_log", [], |r| r.get(0)))?;
+    usize::try_from(count).map_err(|_| StoreRefusal::from(Error::StoreFailure))
+}
 fn action_log_in(connection: &Connection) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
-    let mut stmt = map_db(connection.prepare(
-        "SELECT seq,action_id,action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome FROM action_log ORDER BY seq",
-    ))?;
-    let rows = map_db(stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, String>(6)?,
-            r.get::<_, i64>(7)?,
-            r.get::<_, String>(8)?,
-            r.get::<_, String>(9)?,
-            r.get::<_, String>(10)?,
-            r.get::<_, String>(11)?,
-        ))
-    }))?;
+    let mut stmt = map_db(connection.prepare("SELECT seq,action_id,action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome FROM action_log ORDER BY seq"))?;
+    let mut rows = map_db(stmt.query([]))?;
     let mut out = Vec::new();
-    for row in rows {
-        let (
-            seq,
-            action_id,
-            action_type,
-            domain,
-            schema_domain,
-            schema_version,
-            actor,
-            at,
-            params,
-            basis,
-            edits,
-            outcome,
-        ) = map_db(row)?;
-        out.push((
-            seq,
-            ActionLogEntry {
-                action_id,
-                action_type,
-                domain,
-                schema_domain,
-                schema_version: to_u64(schema_version)?,
-                actor: decode(&actor).map_err(StoreRefusal::from)?,
-                submitted_at: to_u64(at)?,
-                parameters: decode(&params).map_err(StoreRefusal::from)?,
-                basis: decode(&basis).map_err(StoreRefusal::from)?,
-                edits: decode(&edits).map_err(StoreRefusal::from)?,
-                outcome,
-            },
-        ));
+    while let Some(row) = map_db(rows.next())? {
+        out.push(action_log_row(row)?);
+    }
+    Ok(out)
+}
+fn action_log_from_in(
+    connection: &Connection,
+    first_seq: i64,
+) -> Result<Vec<(i64, ActionLogEntry)>, StoreRefusal> {
+    let mut stmt = map_db(connection.prepare("SELECT seq,action_id,action_type,domain,schema_domain,schema_version,actor,submitted_at,parameters,basis,edits,outcome FROM action_log WHERE seq>=?1 ORDER BY seq"))?;
+    let mut rows = map_db(stmt.query(params![first_seq]))?;
+    let mut out = Vec::new();
+    while let Some(row) = map_db(rows.next())? {
+        out.push(action_log_row(row)?);
     }
     Ok(out)
 }

@@ -1631,3 +1631,37 @@ fn admission_queries_seek_exact_keys_and_page_cursor_ranges() {
         }
     }
 }
+
+#[test]
+fn find_action_reads_one_row() {
+    let mut store = store_with_work();
+    for id in ["act-1", "act-2", "act-3"] {
+        store.append_action_log(&log_entry(id)).unwrap();
+    }
+    store
+        .write(100, |tx| {
+            assert_eq!(tx.find_action("act-2")?, Some((2, log_entry("act-2"))));
+            assert_eq!(tx.find_action("unknown")?, None);
+            assert_eq!(tx.action_count()?, 3);
+            Ok(())
+        })
+        .unwrap();
+}
+#[test]
+fn action_count_and_log_from() {
+    let mut store = store_with_work();
+    assert_eq!(store.action_count().unwrap(), 0);
+    for id in ["act-1", "act-2", "act-3"] {
+        store.append_action_log(&log_entry(id)).unwrap();
+    }
+    assert_eq!(store.action_count().unwrap(), 3);
+    assert_eq!(
+        store.action_log_from(2).unwrap(),
+        vec![(2, log_entry("act-2")), (3, log_entry("act-3"))]
+    );
+    assert!(store.action_log_from(4).unwrap().is_empty());
+    assert_eq!(
+        store.action_log_from(0).unwrap(),
+        store.action_log().unwrap()
+    );
+}

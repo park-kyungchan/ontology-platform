@@ -1667,7 +1667,14 @@ fn rename_aside(path: &std::path::Path, dir: &std::path::Path) -> bool {
     false
 }
 pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    sync_edits_file_with(store_path, false)
+}
+/// Compare every exported line against the authoritative table, repairing divergence.
+pub fn verify_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
+    sync_edits_file_with(store_path, true)
+}
+fn sync_edits_file_with(store_path: &std::path::Path, verify: bool) -> EditsLogStatus {
+    use std::os::unix::fs::OpenOptionsExt;
     let path = edits_path(store_path);
     let dir = path
         .parent()
@@ -1686,6 +1693,18 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
     if rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).is_err() {
         return EditsLogStatus::Pending;
     }
+    if verify {
+        full_sync_locked(store_path, &path, &dir)
+    } else {
+        tail_sync_locked(store_path, &path, &dir)
+    }
+}
+fn full_sync_locked(
+    store_path: &std::path::Path,
+    path: &std::path::Path,
+    dir: &std::path::Path,
+) -> EditsLogStatus {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     // Read the committed table only after the lock is held, so the
     // comparison never uses a snapshot taken before another writer's
     // commit and sync.
@@ -1706,7 +1725,7 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
             .custom_flags(
                 (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32,
             )
-            .open(&path);
+            .open(path);
         let Ok(mut f) = created else { return pending };
         for line in &expected {
             if f.write_all(format!("{line}\n").as_bytes()).is_err() {
@@ -1716,14 +1735,14 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
         if f.sync_all().is_err() {
             return pending;
         }
-        fsync_dir(&dir);
+        fsync_dir(dir);
         return EditsLogStatus::Written;
     }
     let opened = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32)
-        .open(&path);
+        .open(path);
     let Ok(mut file) = opened else { return pending };
     let Ok(meta) = file.metadata() else {
         return pending;
@@ -1755,7 +1774,7 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
             .custom_flags(
                 (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32,
             )
-            .open(&path);
+            .open(path);
         let Ok(mut f) = created else {
             return EditsLogStatus::Pending;
         };
@@ -1767,11 +1786,11 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
         if f.sync_all().is_err() {
             return EditsLogStatus::Pending;
         }
-        fsync_dir(&dir);
+        fsync_dir(dir);
         EditsLogStatus::Rebuilt
     };
     let Ok(complete_text) = std::str::from_utf8(&bytes[..complete_len]) else {
-        if !rename_aside(&path, &dir) {
+        if !rename_aside(path, dir) {
             return pending;
         }
         return make_fresh(&expected);
@@ -1784,7 +1803,7 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
             .collect()
     };
     if lines.len() > expected.len() || lines.iter().enumerate().any(|(i, l)| *l != expected[i]) {
-        if !rename_aside(&path, &dir) {
+        if !rename_aside(path, dir) {
             return pending;
         }
         return make_fresh(&expected);
@@ -1802,6 +1821,111 @@ pub fn sync_edits_file(store_path: &std::path::Path) -> EditsLogStatus {
     }
     if file.sync_all().is_err() {
         return pending;
+    }
+    EditsLogStatus::Written
+}
+/// Return the start and bytes (without newline) of the last complete line.
+fn last_complete_line(
+    file: &mut std::fs::File,
+    len: u64,
+) -> std::io::Result<Option<(u64, Vec<u8>)>> {
+    let mut window = 65_536u64;
+    loop {
+        let start = len.saturating_sub(window);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.take(len - start).read_to_end(&mut bytes)?;
+        if let Some(end) = bytes.iter().rposition(|b| *b == b'\n') {
+            if let Some(previous) = bytes[..end].iter().rposition(|b| *b == b'\n') {
+                return Ok(Some((
+                    start + previous as u64 + 1,
+                    bytes[previous + 1..end].to_vec(),
+                )));
+            }
+            if start == 0 {
+                return Ok(Some((0, bytes[..end].to_vec())));
+            }
+        } else if start == 0 {
+            return Ok(None);
+        }
+        window = window.saturating_mul(4);
+    }
+}
+fn tail_sync_locked(
+    store_path: &std::path::Path,
+    path: &std::path::Path,
+    dir: &std::path::Path,
+) -> EditsLogStatus {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    if path.symlink_metadata().is_err() {
+        return full_sync_locked(store_path, path, dir);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32)
+        .open(path)
+    else {
+        return EditsLogStatus::Pending;
+    };
+    let Ok(meta) = file.metadata() else {
+        return EditsLogStatus::Pending;
+    };
+    let caller_uid = std::fs::metadata("/proc/self")
+        .map(|m| m.uid())
+        .unwrap_or(u32::MAX);
+    if meta.permissions().mode() & 0o777 != 0o600 || meta.uid() != caller_uid {
+        eprintln!(
+            "warning: edits_log_pending@crates/ont/src/action.rs:{} edits.jsonl is not 0600 owned by the caller",
+            line!()
+        );
+        return EditsLogStatus::Pending;
+    }
+    if meta.len() == 0 {
+        return full_sync_locked(store_path, path, dir);
+    }
+    let tail = match last_complete_line(&mut file, meta.len()) {
+        Ok(Some(tail)) => tail,
+        Ok(None) => return full_sync_locked(store_path, path, dir),
+        Err(_) => return EditsLogStatus::Pending,
+    };
+    let seq = std::str::from_utf8(&tail.1)
+        .ok()
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .and_then(|value| value.as_object()?.get("seq")?.as_i64());
+    let Some(seq) = seq else {
+        return full_sync_locked(store_path, path, dir);
+    };
+    // The caller holds the flock before opening the table, including on retries.
+    let log = match ont_store::Store::open_schema_existing(store_path) {
+        Ok(mut store) => match store.action_log_from(seq) {
+            Ok(log) => log,
+            Err(_) => return EditsLogStatus::Pending,
+        },
+        Err(_) => return EditsLogStatus::Pending,
+    };
+    if log.first().is_none_or(|(row_seq, entry)| {
+        *row_seq != seq || log_line(*row_seq, entry).as_bytes() != tail.1
+    }) {
+        return full_sync_locked(store_path, path, dir);
+    }
+    let complete_len = tail.0 + tail.1.len() as u64 + 1;
+    if complete_len < meta.len() && file.set_len(complete_len).is_err() {
+        return EditsLogStatus::Pending;
+    }
+    if file.seek(SeekFrom::End(0)).is_err() {
+        return EditsLogStatus::Pending;
+    }
+    for (seq, entry) in &log[1..] {
+        if file
+            .write_all(format!("{}\n", log_line(*seq, entry)).as_bytes())
+            .is_err()
+        {
+            return EditsLogStatus::Pending;
+        }
+    }
+    if file.sync_all().is_err() {
+        return EditsLogStatus::Pending;
     }
     EditsLogStatus::Written
 }
@@ -2369,7 +2493,7 @@ pub fn validate_action(ctx: &Context, req: &ValidateActionRequest) -> Result<Ans
     let valid = failed.is_empty() && !stale;
     let mut edits = Vec::new();
     if valid {
-        let log_len = st!(store.action_log()).len();
+        let log_len = st!(store.action_count());
         let basis_json = Value::Array(basis.clone());
         let request_action_id = req.request_id.as_ref().map(|r| {
             derive_request_action_id(
@@ -2536,7 +2660,7 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
             for b in basis_map.values() { if !basis.contains(b) { basis.push(b.clone()); } }
             for b in expected_basis { if !basis.contains(&b) { basis.push(b); } }
             let basis_json = Value::Array(basis.clone());
-            let log_len = tx.action_log().map_err(store_err)?.len();
+            let log_len = tx.action_count().map_err(store_err)?;
             let request_action_id = req.request_id.as_ref().map(|r| {
                 derive_request_action_id(
                     &effective_client(ctx),
@@ -2607,6 +2731,55 @@ pub fn apply_action(ctx: &Context, req: &ApplyActionRequest) -> Result<Answer, F
 mod tests {
     use super::*;
     use ont_core::schema::{ActionRule, Schema};
+
+    fn check_tail(bytes: &[u8], expected: Option<(u64, Vec<u8>)>) {
+        let path = std::env::temp_dir().join(format!(
+            "ont-tail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        file.write_all(bytes).unwrap();
+        let actual = last_complete_line(&mut file, bytes.len() as u64).unwrap();
+        assert_eq!(
+            actual.as_ref().map(|(offset, line)| (*offset, line.len())),
+            expected
+                .as_ref()
+                .map(|(offset, line)| (*offset, line.len()))
+        );
+        assert_eq!(actual, expected);
+    }
+    #[test]
+    fn last_complete_line_long_line() {
+        let mut bytes = b"first\n".to_vec();
+        bytes.extend(vec![b'x'; 200_000]);
+        bytes.push(b'\n');
+        check_tail(&bytes, Some((6, vec![b'x'; 200_000])));
+    }
+    #[test]
+    fn last_complete_line_no_newline() {
+        check_tail(&vec![b'x'; 200_000], None);
+    }
+    #[test]
+    fn last_complete_line_incomplete_fragment() {
+        check_tail(b"first\nlast\nfragment", Some((6, b"last".to_vec())));
+        let mut bytes = b"first\nlast\n".to_vec();
+        bytes.extend(vec![b'x'; 200_000]);
+        check_tail(&bytes, Some((6, b"last".to_vec())));
+    }
+    #[test]
+    fn last_complete_line_empty() {
+        check_tail(b"", None);
+    }
 
     struct CountingSource {
         access: Option<HeadAccess>,
