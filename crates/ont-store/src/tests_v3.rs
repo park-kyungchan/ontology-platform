@@ -1775,3 +1775,177 @@ fn canonical_stream_orders_keys_frames_types_and_skips_tables() {
         "PK ordinal, all-column fallback, types, lengths, and quoted identifiers"
     );
 }
+
+#[test]
+fn renewal_preserves_rows_and_payload_except_freshness_and_projects_expiry() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    store
+        .append_schema(
+            &[append(&key, name_obs("r0", Change::Initial, None, "a"))],
+            100,
+        )
+        .unwrap();
+    let rows = |store: &Store| -> Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt = store
+            .connection
+            .prepare("SELECT * FROM observations")
+            .unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([], |r| (0..columns).map(|i| r.get(i)).collect())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let before = rows(&store);
+    let object_before: String = store
+        .connection
+        .query_row("SELECT head FROM objects", [], |r| r.get(0))
+        .unwrap();
+    let before_head = store.head(&key).unwrap().unwrap();
+    store.write(200, |tx| tx.renew(&key, 200, 300)).unwrap();
+    let after = rows(&store);
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "renewal must not append an observation"
+    );
+    let payload_index = store
+        .connection
+        .prepare("SELECT * FROM observations")
+        .unwrap()
+        .column_index("payload")
+        .unwrap();
+    for i in 0..before[0].len() {
+        if i != payload_index {
+            assert_eq!(after[0][i], before[0][i], "column {i}");
+        }
+    }
+    let payload = |row: &[rusqlite::types::Value]| -> Value {
+        let rusqlite::types::Value::Text(text) = &row[payload_index] else {
+            panic!("payload is not text")
+        };
+        serde_json::from_str(text).unwrap()
+    };
+    let mut expected = payload(&before[0]);
+    expected["observed_at"] = json!(200);
+    expected["fresh_until"] = json!(300);
+    assert_eq!(
+        payload(&after[0]),
+        expected,
+        "only the two freshness members change"
+    );
+    let object_after: String = store
+        .connection
+        .query_row("SELECT head FROM objects", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(object_after, object_before);
+    let mut expected_head = before_head;
+    expected_head.head.observation.observed_at = 200;
+    expected_head.head.observation.fresh_until = 300;
+    assert_eq!(store.head(&key).unwrap().unwrap(), expected_head);
+    let prefixes: Vec<String> = store
+        .connection
+        .prepare("SELECT value FROM head_candidates WHERE property='$stale' ORDER BY length(value)")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let expiry = format!("{:016x}", 300);
+    assert_eq!(
+        prefixes,
+        (1..=16)
+            .map(|n| expiry[..n].to_string())
+            .collect::<Vec<_>>(),
+        "postings must use renewed expiry"
+    );
+    store
+        .read_schema(|tx| tx.candidate_access("thing", None, 250, 10, None, &[scope()]))
+        .unwrap()
+        .unwrap();
+    let generation: (i64, i64) = store
+        .connection
+        .query_row(
+            "SELECT mutation,projected FROM candidate_generation",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(generation.0, generation.1, "projection is current");
+    let renewed = rows(&store);
+    assert_eq!(
+        store
+            .write(199, |tx| tx.renew(&key, 199, 400))
+            .unwrap_err()
+            .code,
+        "renewal_goes_back"
+    );
+    assert_eq!(rows(&store), renewed, "refused renewal rolls back");
+}
+
+#[test]
+fn renewal_refuses_missing_and_retracted_heads() {
+    let mut store = store_with_work();
+    let key = id("thing", "renew");
+    assert_eq!(
+        store
+            .write(100, |tx| tx.renew(&key, 100, 200))
+            .unwrap_err()
+            .code,
+        "revision_conflict"
+    );
+    store
+        .append_schema(
+            &[
+                append(&key, name_obs("r0", Change::Initial, None, "a")),
+                append(
+                    &key,
+                    obs("r1", Change::Retraction, Some("r0"), BTreeMap::new()),
+                ),
+            ],
+            100,
+        )
+        .unwrap();
+    let before = store.history(&key).unwrap();
+    assert_eq!(
+        store
+            .write(100, |tx| tx.renew(&key, 100, 200))
+            .unwrap_err()
+            .code,
+        "revision_conflict"
+    );
+    assert_eq!(store.history(&key).unwrap(), before);
+}
+
+#[test]
+fn action_log_queries_use_indexes() {
+    let store = store_with_work();
+    // The exact SQL of SchemaWrite::find_action, action_count_in and
+    // action_log_from_in, read from their definitions rather than substitutes.
+    let source = include_str!("schema_mode.rs");
+    for (function, required) in [
+        (
+            "pub fn find_action(",
+            "USING INDEX sqlite_autoindex_action_log_1",
+        ),
+        ("fn action_count_in(", "USING COVERING INDEX"),
+        ("fn action_log_from_in(", "USING INTEGER PRIMARY KEY"),
+    ] {
+        let body = source.split(function).nth(1).unwrap();
+        let sql = body.split('"').nth(1).unwrap();
+        assert!(sql.starts_with("SELECT"), "{function}: {sql}");
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut stmt = store.connection.prepare(&explain).unwrap();
+        let params = vec![rusqlite::types::Value::Integer(1); stmt.parameter_count()];
+        let plan: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(params), |r| r.get(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            plan.iter().any(|p| p.contains(required)),
+            "{function}: expected {required}, got {plan:?}"
+        );
+    }
+}

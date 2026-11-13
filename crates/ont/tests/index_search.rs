@@ -205,7 +205,7 @@ fn change_refresh_and_stale_report() {
     assert_eq!(keys(&ans), ["alpha"]);
     assert_eq!(ans["result"]["objects"][0]["head"]["change"], "update");
     assert_eq!(ans["result"]["objects"][0]["head"]["revision"], "r1@1100");
-    // Beyond fresh_for_s: stale before the refresh, with the command named.
+    // Beyond fresh_for_s: stale before renewal, with the command named.
     let late = 1100 + 3600 + 1;
     let (code, ans) = search(&t, late, &json!({"object_type":"task"}));
     assert_eq!(code, 0, "{ans}");
@@ -218,11 +218,12 @@ fn change_refresh_and_stale_report() {
     );
     assert_eq!(ans["result"]["objects"][0]["head"]["stale"], true);
     let (_, ans) = index(&t, late, &["--source", "task_states"]);
-    assert_eq!(appended(first_source(&ans)), [0, 0, 2, 0]);
+    assert_eq!(appended(first_source(&ans)), [0, 0, 0, 0]);
+    assert_eq!(first_source(&ans)["renewed"], 2);
     let (_, ans) = search(&t, late, &json!({"object_type":"task"}));
     assert_eq!(ans["result"]["basis"]["stale"], 0);
     assert_eq!(ans["result"]["basis"]["qualified"], true);
-    assert_eq!(ans["result"]["objects"][0]["head"]["change"], "refresh");
+    assert_eq!(ans["result"]["objects"][0]["head"]["change"], "update");
 }
 
 #[test]
@@ -1740,5 +1741,235 @@ fn existing_example_fixture_keeps_its_pin() {
     assert_eq!(
         format!("{:x}", Sha256::digest(EXAMPLE)),
         "1f7c885dc163d8d6ffbaceb573f178bc239d890069effe93c8f1626ee0132ad0"
+    );
+}
+
+fn task_id(key: &str) -> ont_core::Id {
+    serde_json::from_value(json!({"object_type":"task","namespace":{"instance":"vps://palantirkc","account":"root"},"native_key":key})).unwrap()
+}
+fn command(t: &Temp, now: u64, name: &str, request: Value) -> Value {
+    let (code, ans) = run(
+        &["--store", &t.store(), "--now", &now.to_string(), name],
+        &serde_json::to_vec(&request).unwrap(),
+    );
+    assert_eq!(code, 0, "{name}: {ans}");
+    ans["result"].clone()
+}
+fn observation_count(t: &Temp) -> u64 {
+    rusqlite::Connection::open(t.store())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM observations", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn unchanged_file_renews_without_revision() {
+    let t = Temp::new();
+    t.task("a", "# a\nOwner: x\n");
+    install(&t, &schema(&t));
+    assert_eq!(index(&t, 10, &[]).0, 0);
+    let count = observation_count(&t);
+    let (code, ans) = index(&t, 5000, &[]);
+    assert_eq!(code, 0, "{ans}");
+    assert_eq!(first_source(&ans)["renewed"], 1);
+    assert_eq!(first_source(&ans)["appended"]["refresh"], 0);
+    assert_eq!(observation_count(&t), count, "renewal must not append");
+    let result = command(&t, 5000, "get", json!({"id":task_id("a")}));
+    let observations = result["objects"][0]["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0]["revision"], "r0@10");
+    assert_eq!(observations[0]["observed_at"], 5000);
+    assert_eq!(observations[0]["fresh_until"], 8600);
+    assert_eq!(observations[0]["stale"], false);
+}
+
+#[test]
+fn changed_bytes_coverage_or_pin_still_refresh() {
+    for cause in ["bytes", "coverage", "pin"] {
+        let t = Temp::new();
+        t.task("a", "# a\nOwner: x\n");
+        let mut s = schema(&t);
+        s["object_types"]["task"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("state_sha256");
+        install(&t, &s);
+        assert_eq!(index(&t, 10, &[]).0, 0);
+        let expected_revision = if cause == "coverage" {
+            "r2@30"
+        } else {
+            "r1@30"
+        };
+        match cause {
+            "bytes" => t.task("a", "# a\nOwner: x\nunmapped prose\n"),
+            "pin" => {
+                s["version"] = json!(2);
+                install(&t, &s);
+            }
+            _ => {
+                let mut store =
+                    ont_store::Store::open_schema_existing_writable(Path::new(&t.store())).unwrap();
+                let head = store.head(&task_id("a")).unwrap().unwrap();
+                let mut obs = head.head.observation;
+                obs.supersedes = Some(obs.revision.clone());
+                obs.revision = "r1@20".into();
+                obs.change = ont_core::Change::Refresh;
+                obs.coverage = ont_core::Coverage::Partial;
+                store
+                    .append_schema(
+                        &[ont_store::Append {
+                            id: head.id,
+                            scope: head.scope,
+                            observation: obs,
+                        }],
+                        20,
+                    )
+                    .unwrap();
+            }
+        }
+        // The head is still fresh: changes must refresh even before expiry.
+        let (code, ans) = index(&t, 30, &[]);
+        assert_eq!(code, 0, "{cause}: {ans}");
+        assert_eq!(
+            first_source(&ans)["appended"]["refresh"],
+            1,
+            "{cause}: {ans}"
+        );
+        assert_eq!(first_source(&ans)["renewed"], 0, "{cause}");
+        let mut store = ont_store::Store::open_schema_existing(Path::new(&t.store())).unwrap();
+        let head = store.head(&task_id("a")).unwrap().unwrap();
+        assert_eq!(head.head.observation.revision, expected_revision, "{cause}");
+        assert_eq!(head.head.observation.coverage, ont_core::Coverage::Complete);
+        assert_eq!(head.schema_pin, store.schema_pins().unwrap()["work"]);
+    }
+}
+
+#[test]
+fn stale_reads_follow_renewal() {
+    let t = Temp::new();
+    t.task("a", "# a\nOwner: x\n");
+    let mut s = schema(&t);
+    s["grants"][0]["derive"] = json!(["task"]);
+    install(&t, &s);
+    index(&t, 10, &[]);
+    // Search has no freshness predicate. Assert its explicit stale flag and
+    // qualification instead; the packet's stale-excluding filter is unavailable.
+    let request = json!({"object_type":"task","where":{"eq":["owner_line","x"]}});
+    let (code, before) = search(&t, 5000, &request);
+    assert_eq!(code, 0, "{before}");
+    assert_eq!(before["result"]["basis"]["stale"], 1);
+    assert_eq!(before["result"]["objects"][0]["head"]["stale"], true);
+    assert_eq!(index(&t, 5000, &[]).0, 0);
+    let (code, after) = search(&t, 5000, &request);
+    assert_eq!(code, 0, "{after}");
+    assert_eq!(keys(&after), ["a"]);
+    assert_eq!(after["result"]["basis"]["stale"], 0);
+    assert_eq!(after["result"]["objects"][0]["head"]["stale"], false);
+    let result = command(
+        &t,
+        5000,
+        "aggregate",
+        json!({"object_type":"task","metrics":["count"]}),
+    );
+    assert_eq!(result["basis"]["oldest_observed_at"], 5000);
+}
+
+#[test]
+fn renewal_equals_refresh_for_readers() {
+    let renewed = Temp::new();
+    let refreshed = Temp::new();
+    renewed.task("a", "# a\nOwner: x\nNext: a\n");
+    let mut s = schema(&renewed);
+    s["grants"][0]["derive"] = json!(["task"]);
+    s["object_types"]["task"]["properties"]["next"] =
+        json!({"type":{"ref":"task"},"required":false,"from":"/fields/Next"});
+    s["link_types"] = json!({"next_task":{"from":"task","via":"next","to":"task","cardinality":"many_to_one","names":{"forward":"next","reverse":"previous"}}});
+    // Both stores read the same source, so paths, mapped fields and pins match.
+    for t in [&renewed, &refreshed] {
+        install(t, &s);
+        assert_eq!(index(t, 10, &[]).0, 0);
+    }
+    assert_eq!(index(&renewed, 5000, &[]).0, 0);
+    // Direct append forces the old refresh path without a production switch.
+    let mut store =
+        ont_store::Store::open_schema_existing_writable(Path::new(&refreshed.store())).unwrap();
+    let head = store.head(&task_id("a")).unwrap().unwrap();
+    let mut obs = head.head.observation;
+    obs.supersedes = Some(obs.revision.clone());
+    obs.revision = "r1@5000".into();
+    obs.change = ont_core::Change::Refresh;
+    obs.observed_at = 5000;
+    obs.fresh_until = 8600;
+    store
+        .append_schema(
+            &[ont_store::Append {
+                id: head.id,
+                scope: head.scope,
+                observation: obs,
+            }],
+            5000,
+        )
+        .unwrap();
+    drop(store);
+    fn normalize(v: &mut Value) {
+        match v {
+            Value::Object(map) => {
+                for key in ["revision", "change", "supersedes"] {
+                    map.remove(key);
+                }
+                for v in map.values_mut() {
+                    normalize(v);
+                }
+            }
+            Value::Array(a) => {
+                for v in a {
+                    normalize(v);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (name, request) in [
+        ("search", json!({"object_type":"task"})),
+        (
+            "around",
+            json!({"from":{"object_type":"task"},"path":["next"]}),
+        ),
+        (
+            "aggregate",
+            json!({"object_type":"task","metrics":["count"]}),
+        ),
+    ] {
+        let mut a = command(&renewed, 5000, name, request.clone());
+        let mut b = command(&refreshed, 5000, name, request);
+        if name != "aggregate" {
+            assert_eq!(
+                a["objects"].as_array().unwrap().len(),
+                1,
+                "{name}: nonempty reader control"
+            );
+        }
+        normalize(&mut a);
+        normalize(&mut b);
+        assert_eq!(a, b, "{name} differs beyond revision/change/supersedes");
+    }
+}
+
+#[test]
+#[ignore = "manual baseline/head measurement on 300 synthetic files"]
+fn renewal_measurement_300_files_five_runs() {
+    let t = Temp::new();
+    for n in 0..300 {
+        t.task(&format!("t{n:03}"), "# synthetic\nOwner: measurement\n");
+    }
+    install(&t, &schema(&t));
+    for n in 0..5 {
+        let (code, ans) = index(&t, 10 + n * 4000, &[]);
+        assert_eq!(code, 0, "{ans}");
+    }
+    println!(
+        "MEASUREMENT files=300 runs=5 observation_rows={} bytes={}",
+        observation_count(&t),
+        std::fs::metadata(t.store()).unwrap().len()
     );
 }

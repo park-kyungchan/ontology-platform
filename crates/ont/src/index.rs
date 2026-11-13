@@ -5,11 +5,12 @@
 //! every type that names the source as `owner`, then in one
 //! `Store::write` decide per object from the head read inside that
 //! transaction: no head or a retracted head is `initial`; different values
-//! are `update`; equal values with a stale head are `refresh`; equal values
+//! are `update`; equal values with changed bytes, coverage or schema pin are `refresh`;
+//! unchanged stale heads are renewed in place; equal values
 //! with a fresh head append nothing. With `complete_listing` a non-retracted
 //! head whose key is absent from the listing gets a `retraction`.
 //!
-//! Revision form: `r<N>@<observed_at>`, where `N` is 0 for the first
+//! Revision form: `r<N>@<written_at>`, where `N` is 0 for the first
 //! observation of an object and the head's `N` plus one afterwards, so a
 //! revision is unique per object even when `--now` repeats.
 //!
@@ -62,6 +63,7 @@ struct Counts {
     initial: u64,
     update: u64,
     refresh: u64,
+    renewed: u64,
     retraction: u64,
     unchanged: u64,
 }
@@ -160,6 +162,7 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
                     "refresh":counts.refresh,
                     "retraction":counts.retraction
                 });
+                entry["renewed"] = json!(counts.renewed);
                 entry["unchanged"] = json!(counts.unchanged);
                 entry["status"] = json!("ok");
             }
@@ -168,6 +171,7 @@ pub fn index(ctx: &Context, req: &IndexRequest) -> Result<Answer, Failure> {
                 entry["records"] = json!(f.records);
                 entry["skipped_symlinks"] = json!(f.skipped_symlinks);
                 entry["appended"] = json!({"initial":0,"update":0,"refresh":0,"retraction":0});
+                entry["renewed"] = json!(0);
                 entry["unchanged"] = json!(0);
                 entry["status"] = json!("source_failed");
                 entry["cause"] = json!(format!("{}@{}", f.code, f.at));
@@ -331,6 +335,7 @@ fn run_source(
     };
     let mut aborted: Option<(String, String)> = None;
     let result = store.write(now, |tx| {
+        let store_pin = tx.schema_set().pin(&schema.domain).cloned();
         let mut counts = Counts::default();
         let mut keys: BTreeSet<&Id> = BTreeSet::new();
         for m in &mapped {
@@ -349,10 +354,15 @@ fn run_source(
                         (Change::Initial, None, n)
                     } else if obs.fields != m.fields {
                         (Change::Update, Some(obs.revision.clone()), n)
-                    } else if now > obs.fresh_until || obs.lineage.artifact_sha256 != m.sha256 {
-                        // Same values: a stale head, or bytes that differ
-                        // from the ones the head's lineage names.
+                    } else if obs.lineage.artifact_sha256 != m.sha256
+                        || obs.coverage != m.coverage
+                        || Some(&h.schema_pin) != store_pin.as_ref()
+                    {
                         (Change::Refresh, Some(obs.revision.clone()), n)
+                    } else if now > obs.fresh_until {
+                        tx.renew(&m.id, now, fresh_until)?;
+                        counts.renewed += 1;
+                        continue;
                     } else {
                         counts.unchanged += 1;
                         continue;
@@ -445,7 +455,7 @@ fn run_source(
     }
 }
 
-/// `N` of a revision `r<N>@<observed_at>`.
+/// `N` of a revision `r<N>@<written_at>`.
 fn revision_number(revision: &str) -> Option<u64> {
     revision
         .strip_prefix('r')?
