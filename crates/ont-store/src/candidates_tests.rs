@@ -484,7 +484,7 @@ fn postings_tell_no_value_from_unposted_value() {
         .map(Result::unwrap)
         .collect();
     assert!(!postings.is_empty());
-    assert!(postings.iter().all(|v| v == "-"));
+    assert!(postings.iter().all(|v| v == "?"));
 }
 
 #[test]

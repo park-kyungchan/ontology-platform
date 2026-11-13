@@ -3,7 +3,8 @@ use super::*;
 
 /// One necessary equality condition, plus properties whose unresolved states
 /// must remain visible in the basis. `v<value>` posts a complete current-pin
-/// value, `?` a stored value that cannot be posted, and `-` no value.
+/// value, `?` an unposted value or an unreadable legacy observation at rebuild,
+/// and `-` no value in a present observation.
 /// Search readers set `absent` to retain no-value basis effects; reverse linked
 /// readers leave it false. Construct only after filter validation.
 pub struct CandidateCondition {
@@ -171,19 +172,18 @@ fn project_access(
     let mut postings = vec![(String::new(), String::new())];
     if let Some(props) = set.properties(&id.object_type) {
         for p in props.keys() {
-            let value = match observation
-                .and_then(|(obs, pin)| obs.fields.get(p).map(|field| (obs, pin, field)))
-            {
-                Some((obs, pin, Knowledge::Value(v))) => {
-                    if obs.coverage == ont_core::Coverage::Complete
-                        && set.pin(&pin.domain) == Some(pin)
+            let value = match observation {
+                Some((obs, pin)) => match obs.fields.get(p) {
+                    Some(Knowledge::Value(v))
+                        if obs.coverage == ont_core::Coverage::Complete
+                            && set.pin(&pin.domain) == Some(pin) =>
                     {
                         format!("v{v}")
-                    } else {
-                        "?".into()
                     }
-                }
-                _ => "-".into(),
+                    Some(Knowledge::Value(_)) => "?".into(),
+                    _ => "-".into(),
+                },
+                None => "?".into(),
             };
             postings.push((p.clone(), value));
         }

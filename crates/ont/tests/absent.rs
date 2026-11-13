@@ -346,3 +346,61 @@ fn older_pin_value_still_fences() {
         "{error:?}"
     );
 }
+
+#[test]
+fn oversized_head_stays_uncertain() {
+    let t = Fixture::new(false);
+    let note = t.create("oversized-open", "me", "a");
+    assert_eq!(t.validate("a")["valid"], false);
+    let note_id: Id = serde_json::from_value(note).unwrap();
+    let mut store = Store::open_schema_existing(&t.path()).unwrap();
+    let head = store.head(&note_id).unwrap().unwrap();
+    assert_eq!(
+        head.schema_pin,
+        *store.schema_set().unwrap().pin("work").unwrap()
+    );
+    let mut observation = head.head.observation;
+    assert_eq!(observation.coverage, Coverage::Complete);
+    assert_eq!(
+        observation.fields["task"],
+        Knowledge::Value(json!(id("task", "me")))
+    );
+    observation.fields.insert(
+        "label".into(),
+        Knowledge::Value(json!("x".repeat(ont_core::MAX_OBSERVATION_BYTES))),
+    );
+    let payload = serde_json::to_string(&observation).unwrap();
+    assert!(payload.len() > ont_core::MAX_OBSERVATION_BYTES);
+    drop(store);
+    let sql = rusqlite::Connection::open(t.path()).unwrap();
+    // Model a legacy writer; current append_schema rejects oversized observations.
+    assert_eq!(
+        sql.execute(
+            "UPDATE observations SET payload=?1 WHERE object_type='note' AND native_key=?2",
+            rusqlite::params![payload, note_id.native_key],
+        )
+        .unwrap(),
+        1
+    );
+    t.install(&schema(1, false));
+    let posting: String = sql.query_row(
+        "SELECT value FROM head_candidates WHERE object_type='note' AND native_key=?1 AND property='task'",
+        [&note_id.native_key], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(posting, "?");
+    assert_eq!(t.candidates(), 1);
+    let validate =
+        ont::action::validate_action(&t.context(), &serde_json::from_value(request("a")).unwrap())
+            .unwrap_err();
+    assert!(
+        matches!(validate, ont::Failure::Refused(ref r) if r.code == "observation_too_large"),
+        "{validate:?}"
+    );
+    let apply =
+        ont::action::apply_action(&t.context(), &serde_json::from_value(request("a")).unwrap())
+            .unwrap_err();
+    assert!(
+        matches!(apply, ont::Failure::Refused(ref r) if r.code == "observation_too_large"),
+        "{apply:?}"
+    );
+}
