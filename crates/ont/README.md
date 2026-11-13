@@ -1,6 +1,6 @@
 # ont
 
-The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 upgrades only on a writable open; a read refuses with `store_upgrade_required`).
+The `ont` command: `schema check|install`, `describe`, `get`, `backup`, `compact`, `index`, `search`, `around`, `aggregate`, `action list|validate|apply` over a format 4 store (format 3 upgrades only on a writable open; a read refuses with `store_upgrade_required`).
 
 `describe` lists readable views with their `name`, `args` and `object_type`,
 including through `ont_describe`. Empty or whitespace-only stdin defaults to `{}`
@@ -33,6 +33,19 @@ Ordinary ports and local paths remain intact.
 - `edits.jsonl` beside the store (0600, opened without following a symlink): one canonical JSON line per applied action after the commit, with `fsync`. After the commit the action stands whatever happens to the file: the answer is `"outcome":"applied"` with `"edits_log"` = `written`, `pending` (the append failed; the next write repairs it) or `rebuilt`. Every write takes an exclusive `flock` on `edits.jsonl.lock` beside the store, compares the file's last complete line with its row and appends the rows after it, writes each line with its newline in one write, and truncates an incomplete trailing line before appending. A file that is absent, empty, or whose last complete line does not equal its row (an extra, changed or unparseable last line, invalid UTF-8 in it, or a missing row) is compared in full, renamed to `edits.jsonl.diverged-<UTC yyyymmddThhmmssZ>-<n>` when it diverged (`n` counting up from 0 until the name is free, never replacing an existing aside), and rewritten from the table (the database wins, nothing is lost). A changed line before the last one is found by `ont::action::verify_edits_file`, which runs the full comparison on demand, not by a write. `ont backup` runs this full comparison and reports `edits_log` in its answer. The table is read only after the `flock` is held, so no caller passes a reading taken before the lock. An existing file that is not 0600 owned by the caller is not appended to (`edits_log: pending`, one warning on stderr).
 - `ont backup` opens the store read-only and returns `path`, `sha256`, `retention_failure` and `edits_log` (`written`, `rebuilt` or `pending`) in `result`. A `pending` export status does not fail the backup; the store copy is still taken and reported.
 - Creating an object over a retracted key is allowed: it starts a new history for that key with an `initial` observation, and the retracted history stays in the object's history.
+### Page size and `compact`
+
+New stores have 16,384-byte SQLite pages. `ont compact` opens an existing store
+read-write without creating one. When its page size is already 16,384 it returns
+`compacted: false` without a backup or rebuild. Otherwise it takes a verified
+backup, rebuilds the candidate projection to remove dead expiry postings, and
+runs `VACUUM` with 16,384-byte pages. It changes no authoritative row or format:
+a typed canonical SHA-256 stream verifies all tables except the derived
+`head_candidates` and `candidate_generation` tables before and after the rewrite.
+A checksum mismatch is `compact_rows_changed`; the backup remains available.
+The command needs free disk of about the store's size and no concurrent writer.
+Its backup follows the normal rotation (newest three kept).
+
 A reverse `linked` condition loads heads whose reference property names the target through the same candidates as `search` (including unresolved property values and stale heads), and the snapshot bound counts those heads; list-valued reference properties retain the type scan.
 
 - Snapshot: apply and validate load parameter objects (except parameters used only by bare `present` and not needed for rule planning), expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.

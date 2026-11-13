@@ -925,9 +925,81 @@ impl Store {
         )
     }
 
-    /// Rewrite the existing store with 16-KB pages, outside a transaction.
+    /// Feed a framed, typed stream of table names and rows from one snapshot.
+    /// Tables and primary-key columns are sorted by name and key ordinal respectively.
+    pub fn for_each_row_canonical(
+        &mut self,
+        skip: &[&str],
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), StoreRefusal> {
+        self.require_schema()?;
+        let tx = self.read_tx()?;
+        let mut tables = map_db(tx.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND substr(name,1,7)!='sqlite_' ORDER BY name",
+        ))?;
+        let names = map_db(tables.query_map([], |r| r.get::<_, String>(0)))?
+            .collect::<rusqlite::Result<Vec<_>>>();
+        let names = map_db(names)?;
+        let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+        let frame = |sink: &mut dyn FnMut(&[u8]), tag: u8, bytes: &[u8]| {
+            sink(&[tag]);
+            sink(&(bytes.len() as u64).to_be_bytes());
+            sink(bytes);
+        };
+        for name in names {
+            if skip.contains(&name.as_str()) {
+                continue;
+            }
+            frame(sink, b't', name.as_bytes());
+            let mut info =
+                map_db(tx.prepare("SELECT name,pk FROM pragma_table_info(?1) ORDER BY cid"))?;
+            let columns = map_db(info.query_map([&name], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+            }))?
+            .collect::<rusqlite::Result<Vec<_>>>();
+            let columns = map_db(columns)?;
+            let mut key: Vec<_> = columns.iter().filter(|(_, pk)| *pk != 0).collect();
+            key.sort_by_key(|(_, pk)| *pk);
+            let order = if key.is_empty() {
+                columns.iter().collect()
+            } else {
+                key
+            };
+            let order = order
+                .iter()
+                .map(|(column, _)| quote(column))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut stmt =
+                map_db(tx.prepare(&format!("SELECT * FROM {} ORDER BY {order}", quote(&name))))?;
+            let mut rows = map_db(stmt.query([]))?;
+            while let Some(row) = map_db(rows.next())? {
+                sink(b"r");
+                sink(&(columns.len() as u64).to_be_bytes());
+                for i in 0..columns.len() {
+                    use rusqlite::types::ValueRef;
+                    match map_db(row.get_ref(i))? {
+                        ValueRef::Null => frame(sink, b'n', &[]),
+                        ValueRef::Integer(v) => frame(sink, b'i', &v.to_be_bytes()),
+                        ValueRef::Real(v) => frame(sink, b'f', &v.to_bits().to_be_bytes()),
+                        ValueRef::Text(v) => frame(sink, b's', v),
+                        ValueRef::Blob(v) => frame(sink, b'b', v),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rebuild candidates transactionally, then rewrite 16-KB pages with VACUUM outside a transaction.
     pub fn compact(&mut self) -> Result<(), StoreRefusal> {
         self.require_schema()?;
+        let cached = self.schemas.clone();
+        let tx = self.write_tx()?;
+        let set = refreshed_set(&cached, &tx)?;
+        candidates::rebuild(&tx, &set)?;
+        map_db(tx.commit())?;
+        self.schemas = set;
         map_db(self.connection.pragma_update(None, "page_size", 16384))?;
         map_db(self.connection.execute_batch("VACUUM"))
     }

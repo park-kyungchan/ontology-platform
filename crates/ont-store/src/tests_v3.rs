@@ -1718,3 +1718,60 @@ fn new_store_has_16k_pages() {
         }
     }
 }
+
+#[test]
+fn canonical_stream_orders_keys_frames_types_and_skips_tables() {
+    let mut store = Store::memory_schema().unwrap();
+    store.connection.execute_batch("CREATE TABLE \"stream\"\"pk\" (a TEXT,b INTEGER,payload BLOB,PRIMARY KEY(b,a)) WITHOUT ROWID;
+        CREATE TABLE stream_no_pk (v);
+        INSERT INTO \"stream\"\"pk\" VALUES ('second',2,x'00ff'),('first',1,NULL);
+        INSERT INTO stream_no_pk VALUES ('text'),(x''),(1.5),(1),(NULL),('');").unwrap();
+    let skip: Vec<String> = store
+        .connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'stream%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let skip: Vec<_> = skip.iter().map(String::as_str).collect();
+    let mut actual = Vec::new();
+    store
+        .for_each_row_canonical(&skip, &mut |b| actual.extend_from_slice(b))
+        .unwrap();
+    let mut expected = Vec::new();
+    fn frame(out: &mut Vec<u8>, tag: u8, bytes: &[u8]) {
+        out.push(tag);
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+    frame(&mut expected, b't', b"stream\"pk");
+    for (a, b, blob) in [("first", 1_i64, None), ("second", 2, Some(&[0, 255][..]))] {
+        expected.push(b'r');
+        expected.extend_from_slice(&3_u64.to_be_bytes());
+        frame(&mut expected, b's', a.as_bytes());
+        frame(&mut expected, b'i', &b.to_be_bytes());
+        frame(
+            &mut expected,
+            if blob.is_some() { b'b' } else { b'n' },
+            blob.unwrap_or_default(),
+        );
+    }
+    frame(&mut expected, b't', b"stream_no_pk");
+    for (tag, bytes) in [
+        (b'n', vec![]),
+        (b'i', 1_i64.to_be_bytes().to_vec()),
+        (b'f', 1.5_f64.to_bits().to_be_bytes().to_vec()),
+        (b's', vec![]),
+        (b's', b"text".to_vec()),
+        (b'b', vec![]),
+    ] {
+        expected.push(b'r');
+        expected.extend_from_slice(&1_u64.to_be_bytes());
+        frame(&mut expected, tag, &bytes);
+    }
+    assert_eq!(
+        actual, expected,
+        "PK ordinal, all-column fallback, types, lengths, and quoted identifiers"
+    );
+}
