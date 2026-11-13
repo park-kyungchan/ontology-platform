@@ -942,7 +942,7 @@ fn empty_stdin_defaults_optional_requests_and_names_required_fields() {
     for bytes in [&b""[..], &b" \t\r\n"[..]] {
         for command in [&["describe"][..], &["action", "list"][..]] {
             let store = t.store();
-            let mut args = vec!["--store", &store];
+            let mut args = vec!["--store", &store, "--now", "1000"];
             args.extend_from_slice(command);
             assert_eq!(run(&args, bytes), run(&args, b"{}"));
             assert_eq!(run(&args, bytes).0, 0);
@@ -955,7 +955,7 @@ fn empty_stdin_defaults_optional_requests_and_names_required_fields() {
             (&["action", "apply"][..], "/action_type"),
         ] {
             let store = t.store();
-            let mut args = vec!["--store", &store];
+            let mut args = vec!["--store", &store, "--now", "1000"];
             args.extend_from_slice(command);
             let (code, answer) = run(&args, bytes);
             assert_eq!(code, 2, "{answer}");

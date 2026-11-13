@@ -340,6 +340,36 @@ impl SchemaWrite<'_> {
     pub fn append(&mut self, item: &Append) -> Result<(), StoreRefusal> {
         append_schema_in(self.tx, &self.schemas, item, self.now)
     }
+    /// Renew only the two freshness timestamps of an existing live head.
+    /// Identity, revision, provenance and every other payload member stay intact.
+    pub fn renew(
+        &mut self,
+        id: &Id,
+        observed_at: u64,
+        fresh_until: u64,
+    ) -> Result<(), StoreRefusal> {
+        let mut head = self.head(id)?.ok_or_else(StoreRefusal::revision_conflict)?;
+        if head.retracted {
+            return Err(StoreRefusal::revision_conflict());
+        }
+        if observed_at < head.head.observation.observed_at {
+            return Err(StoreRefusal::new("renewal_goes_back"));
+        }
+        head.head.observation.observed_at = observed_at;
+        head.head.observation.fresh_until = fresh_until;
+        head.head
+            .observation
+            .validate()
+            .map_err(StoreRefusal::from)?;
+        let payload =
+            ont_core::observation_payload(&head.head.observation).map_err(StoreRefusal::from)?;
+        map_db(self.tx.execute(
+            "UPDATE observations SET payload=?6 WHERE object_type=?1 AND instance=?2 AND account=?3 AND native_key=?4 AND revision=?5",
+            params![id.object_type, id.namespace.instance, id.namespace.account, id.native_key, head.head.observation.revision, payload],
+        ))?;
+        candidates::project(self.tx, &self.schemas, &head)?;
+        Ok(())
+    }
     pub fn log_action(&mut self, entry: &ActionLogEntry) -> Result<i64, StoreRefusal> {
         append_action_log_in(self.tx, &self.schemas, entry)
     }

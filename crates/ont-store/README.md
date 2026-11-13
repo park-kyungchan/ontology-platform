@@ -73,7 +73,7 @@ cache is replaced only after a successful commit. `schema_set()` and
 
 One public write transaction covers observations and the action log:
 `Store::write(now, |tx| ...)` runs the closure in one IMMEDIATE transaction
-with a `SchemaWrite` handle (`append`, `log_action`, `head`, `schema_set`),
+with a `SchemaWrite` handle (`append`, `renew`, `log_action`, `head`, `schema_set`),
 commits when the closure returns `Ok` and rolls back otherwise.
 `append_schema(items, ingested_at)` and `append_action_log(entry)` are thin
 callers of it. Ingest rules (per item, inside the transaction): the object
