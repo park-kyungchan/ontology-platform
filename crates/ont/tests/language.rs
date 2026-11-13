@@ -2475,10 +2475,11 @@ fn present_predecessor_self_reference_validate_apply_cli_and_mcp() {
                 "submission_criteria":[{"code":"self_predecessor","message":"Choose another predecessor.","none":[{"all":[{"present":"$supersedes"},{"eq":["$record","$supersedes"]}]}]}],
                 "rules":[{"create_or_modify_object":"note","set":{"title":"recorded"}}]
             });
-            s["grants"][0]["actions"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!("record_memory"));
+            // This scenario exercises only record_memory; other fixture actions
+            // create notes with action-id keys and do not declare a pointer source.
+            let action = s["action_types"]["record_memory"].clone();
+            s["action_types"] = json!({"record_memory":action});
+            s["grants"][0]["actions"] = json!(["record_memory"]);
             t.install(s);
             let record =
                 json!({"object_type":"note","namespace":task()["namespace"],"native_key":"record"});
@@ -2793,5 +2794,85 @@ fn present_keeps_unrelated_rule_free_of_parameter_reads_and_checks_stale_value_s
             let applied = ont::__with_snapshot_bounds(1, bound, || t.call(mcp, "apply", req, NOW));
             assert_eq!(applied["result"]["outcome"], "applied", "{applied}");
         }
+    }
+}
+
+fn pointer_key_schema() -> Value {
+    let mut s = schema();
+    // Keep other action contracts intact: this new type has only this action.
+    s["object_types"]["record"] = json!({"owner":"ontology","primary_key":{"from":"/native_key"},"properties":{"title":{"type":"string","required":true}}});
+    s["action_types"]["write_record"] = json!({
+        "parameters":{"z_record":{"type":{"ref":"record"},"required":true},"a_other":{"type":{"ref":"record"}}},
+        "rules":[{"create_or_modify_object":"record","set":{"title":"written"}}]
+    });
+    for field in ["read", "derive"] {
+        s["grants"][0][field]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("record"));
+    }
+    s["grants"][0]["actions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("write_record"));
+    s
+}
+
+#[test]
+fn pointer_create_key_ignores_other_parameter_name() {
+    for kind in ["create_object", "create_or_modify_object"] {
+        for other_name in ["a_other", "zz_other"] {
+            let t = Temp::new();
+            let mut s = pointer_key_schema();
+            let other = s["action_types"]["write_record"]["parameters"]
+                .as_object_mut()
+                .unwrap()
+                .remove("a_other")
+                .unwrap();
+            s["action_types"]["write_record"]["parameters"][other_name] = other;
+            s["action_types"]["write_record"]["rules"] =
+                json!([{kind:"record","set":{"title":"written"}}]);
+            t.install(s);
+            let target = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"target"});
+            let other = json!({"object_type":"record","namespace":task()["namespace"],"native_key":"other"});
+            put(
+                &t,
+                other.clone(),
+                &[],
+                json!({"title":"untouched"}),
+                NOW + 10,
+                false,
+            );
+            let before = t.cli(&["get"], json!({"id":other}), NOW);
+            let result = t.call(false, "apply", json!({"action_type":"write_record","parameters":{"z_record":target,other_name:other}}), NOW);
+            assert_eq!(result["status"], "ok", "{result}");
+            assert_eq!(result["result"]["edits"][0]["id"], target, "{result}");
+            assert_eq!(t.fields(&target)["title"]["value"], "written");
+            assert_eq!(t.cli(&["get"], json!({"id":other}), NOW), before);
+        }
+    }
+}
+
+#[test]
+fn pointer_create_key_schema_refuses_undetermined_parameter() {
+    for mode in ["two", "none", "optional_only"] {
+        let t = Temp::new();
+        let mut s = pointer_key_schema();
+        let params = &mut s["action_types"]["write_record"]["parameters"];
+        match mode {
+            "two" => params["a_other"]["required"] = json!(true),
+            "none" => *params = json!({}),
+            _ => params["z_record"]["required"] = json!(false),
+        }
+        let p = t.0.join("ambiguous.json");
+        std::fs::write(&p, s.to_string()).unwrap();
+        let answer = t.cli(&["schema", "check", p.to_str().unwrap()], json!({}), NOW);
+        assert_eq!(answer["status"], "refused", "{mode}: {answer}");
+        assert!(
+            answer["violations"].as_array().unwrap().contains(
+                &json!({"code":"ambiguous_create_key","pointer":"/action_types/write_record"})
+            ),
+            "{answer}"
+        );
     }
 }

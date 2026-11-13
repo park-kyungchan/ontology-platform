@@ -38,6 +38,22 @@ Ordinary ports and local paths remain intact.
 
 - Snapshot: apply and validate load parameter objects (except parameters used only by bare `present` and not needed for rule planning), expected-revision objects, one reference hop from the initially loaded heads, the objects a rule edits, and paged reverse `linked` scans. Admission reads only identity, scope and liveness before loading observation payloads; only admitted live heads are traversed or start reverse scans. Heads a scan filters out are never loaded or counted against the hard snapshot bound; every admitted loaded head counts, and exceeding it refuses with `snapshot_too_large` and writes nothing. Snapshot loading includes reverse-link scans from admitted sources in every written criterion operand, including an operand that ordered `all` later skips; the bound limits loading, not just evaluation.
 
+For `create_object` and `create_or_modify_object` on an Ontology-owned type
+whose `primary_key.from` starts with `/`, the action must declare exactly one
+eligible **required** parameter: a reference to the created object type, or a
+struct that declares the pointer path (JSON Pointer escapes are decoded).
+The key is the string at that pointer in that parameter's submitted value.
+Optional parameters, references to other types, and parameter name order never
+select the key. For example, with `/native_key`, required `z_record: ref(record)`
+and optional `a_predecessor: ref(record)`, `z_record.native_key` supplies the key.
+Zero or multiple eligible parameters refuse `schema check` with
+`ambiguous_create_key` at `/action_types/<action>`; schemas previously relying
+on optional-only or ambiguous key sources must disambiguate their declarations.
+The designated value missing the pointer or holding a non-string refuses
+`invalid_parameter` at runtime, without trying another parameter. `$action_id`
+keys retain their existing behavior. This rule changes no stored schema bytes
+or store format; installed `work` version 7 already has one eligible parameter.
+
 ## Action values and parameter descriptions
 
 A rule's `set` value or `set_reference.value` may use `$parameter.property`

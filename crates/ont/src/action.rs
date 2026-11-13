@@ -1156,50 +1156,33 @@ impl<'a> Planner<'a> {
             .object_types
             .get(object_type)
             .ok_or_else(|| Failure::from(Refusal::new("unknown_type")))?;
-        let _ = (at, set_map);
+        let _ = set_map;
         if ty.primary_key.from.as_deref() == Some("$action_id") {
             return Ok(self.action_id.clone());
         }
         if let Some(from) = &ty.primary_key.from
             && from.starts_with('/')
         {
-            // The one pointer form `schema check` accepts for an
-            // Ontology-owned key: a pointer into a parameter value.
-            if let Some(v) = self.params.values().find_map(|pv| {
-                pv.pointer(from)
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string)
-            }) {
-                return Ok(v);
+            let name = at.create_key_parameter(object_type, from).ok_or_else(|| {
+                invalid_parameter(
+                    "/parameters",
+                    "schema does not determine the primary-key parameter",
+                )
+            })?;
+            let value = self.params.get(name);
+            let pointed = value.and_then(|v| v.pointer(from));
+            if let Some(key) = pointed.and_then(Value::as_str) {
+                return Ok(key.to_string());
             }
-            let present: Vec<_> = self
-                .params
-                .iter()
-                .filter(|(_, value)| value.pointer(from).is_some())
-                .collect();
-            let containers: Vec<_> = self
-                .params
-                .iter()
-                .filter(|(_, value)| value.is_object() || value.is_array())
-                .collect();
-            let candidates = if present.is_empty() {
-                &containers
+            let parent = parameter_field(name);
+            let field = if pointed.is_some() {
+                format!("{parent}{from}")
             } else {
-                &present
-            };
-            let field = if candidates.len() == 1 {
-                let parent = parameter_field(candidates[0].0);
-                if present.is_empty() {
-                    parent
-                } else {
-                    format!("{parent}{from}")
-                }
-            } else {
-                "/parameters".to_string()
+                parent
             };
             return Err(invalid_parameter(
                 &field,
-                "schema rule requires a string at the primary-key pointer in a parameter",
+                "schema rule requires a string at the primary-key pointer in its designated parameter",
             ));
         }
         Ok(self.action_id.clone())
@@ -1315,18 +1298,29 @@ impl<'a> Planner<'a> {
             if let Some(t) = &rule.create_object {
                 edits.push(self.do_create(at, t, &set_map, false)?);
             } else if let Some(t) = &rule.create_or_modify_object {
-                // If a live target exists, modify; else create.
-                if let Some(id) = self.ref_target_typed(at, t)
-                    && self.snap.unreadable_occupied.contains(&Snapshot::key(&id))
+                // Pointer keys designate the upsert target as well as new keys.
+                if self
+                    .schema
+                    .object_types
+                    .get(t)
+                    .and_then(|ty| ty.primary_key.from.as_deref())
+                    .is_some_and(|p| p.starts_with('/'))
                 {
-                    return Err(Refusal::new("rule_reference_unavailable").into());
-                }
-                if let Some(id) = self.ref_target_typed(at, t)
-                    && self.state(&id).is_some_and(|(_, _, r, _)| !r)
-                {
-                    edits.push(self.do_modify(at, t, &set_map, Some(id))?);
-                } else {
                     edits.push(self.do_create(at, t, &set_map, true)?);
+                } else {
+                    // Action-id keyed types retain their reference-target behavior.
+                    if let Some(id) = self.ref_target_typed(at, t)
+                        && self.snap.unreadable_occupied.contains(&Snapshot::key(&id))
+                    {
+                        return Err(Refusal::new("rule_reference_unavailable").into());
+                    }
+                    if let Some(id) = self.ref_target_typed(at, t)
+                        && self.state(&id).is_some_and(|(_, _, r, _)| !r)
+                    {
+                        edits.push(self.do_modify(at, t, &set_map, Some(id))?);
+                    } else {
+                        edits.push(self.do_create(at, t, &set_map, true)?);
+                    }
                 }
             } else if let Some(t) = &rule.modify_object {
                 edits.push(self.do_modify(at, t, &set_map, None)?);
@@ -3180,7 +3174,7 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &feedback_action(json!({"create_object":"item"})),
+                        &serde_json::from_value(json!({"parameters":{"spec":{"type":{"struct":{"key":"string"}},"required":true}},"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
                         &BTreeMap::new(),
                     )
@@ -3374,7 +3368,7 @@ mod tests {
                 };
                 let err = key_planner
                     .create_key(
-                        &feedback_action(json!({"create_object":"item"})),
+                        &serde_json::from_value(json!({"parameters": if expected == "/parameters" { json!({"spec":{"type":{"struct":{"key":"string"}},"required":true},"other":{"type":{"struct":{"key":"string"}},"required":true}}) } else { json!({"spec":{"type":{"struct":{"key":"string"}},"required":true}}) },"rules":[{"create_object":"item"}]})).unwrap(),
                         "item",
                         &BTreeMap::new(),
                     )

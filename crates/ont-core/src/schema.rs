@@ -34,6 +34,7 @@ pub mod codes {
     pub const UNKNOWN_SCOPE_KEY: &str = "unknown_scope_key";
     pub const INVALID_PRINCIPAL: &str = "invalid_principal";
     pub const INVALID_GRANT_SCOPE: &str = "invalid_grant_scope";
+    pub const AMBIGUOUS_CREATE_KEY: &str = "ambiguous_create_key";
     pub const INVALID_PRIMARY_KEY: &str = "invalid_primary_key";
     pub const INVALID_FROM_POINTER: &str = "invalid_from_pointer";
     pub const ONTOLOGY_PROPERTY_FROM: &str = "ontology_property_from";
@@ -94,6 +95,7 @@ pub mod codes {
         INVALID_PRINCIPAL,
         INVALID_GRANT_SCOPE,
         INVALID_PRIMARY_KEY,
+        AMBIGUOUS_CREATE_KEY,
         INVALID_FROM_POINTER,
         ONTOLOGY_PROPERTY_FROM,
         REQUIRED_PROPERTY_WITHOUT_FROM,
@@ -977,6 +979,42 @@ pub struct ActionType {
     pub submission_criteria: Vec<Criterion>,
     #[serde(default)]
     pub rules: Vec<ActionRule>,
+}
+
+impl ActionType {
+    /// Resolve a pointer-key source from declarations, never runtime value order.
+    /// Exactly one required parameter must be a reference to the created type
+    /// or a struct declaring the pointer path. Optional parameters cannot own keys.
+    pub fn create_key_parameter(&self, object_type: &str, pointer: &str) -> Option<&str> {
+        fn declares_path(ty: &PropertyType, pointer: &str) -> bool {
+            let mut ty = ty;
+            for token in pointer
+                .strip_prefix('/')
+                .into_iter()
+                .flat_map(|p| p.split('/'))
+            {
+                let PropertyType::Struct(fields) = ty else {
+                    return false;
+                };
+                let token = token.replace("~1", "/").replace("~0", "~");
+                let Some(next) = fields.struct_.get(&token) else {
+                    return false;
+                };
+                ty = next;
+            }
+            pointer.starts_with('/')
+        }
+        let mut candidates = self.parameters.iter().filter(|(_, p)| {
+            p.required
+                && match &p.ty {
+                    PropertyType::Ref(r) => r.target == object_type,
+                    PropertyType::Struct(_) => declares_path(&p.ty, pointer),
+                    _ => false,
+                }
+        });
+        let (name, _) = candidates.next()?;
+        candidates.next().is_none().then_some(name.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2009,6 +2047,18 @@ pub fn check(schema: &Schema, other_domains_types: &BTreeSet<String>) -> Vec<Vio
                     Some(ty) => {
                         if matches!(ty.owner, Owner::Source(_)) {
                             v(codes::ACTION_EDITS_SOURCE_OWNED, tp, &mut out);
+                        }
+                        if matches!(ty.owner, Owner::Ontology)
+                            && (rule.create_object.is_some()
+                                || rule.create_or_modify_object.is_some())
+                            && let Some(pointer) = ty
+                                .primary_key
+                                .from
+                                .as_deref()
+                                .filter(|p| p.starts_with('/'))
+                            && at.create_key_parameter(target, pointer).is_none()
+                        {
+                            v(codes::AMBIGUOUS_CREATE_KEY, base.clone(), &mut out);
                         }
                         for key in rule.set.keys() {
                             if !ty.properties.contains_key(key) {
