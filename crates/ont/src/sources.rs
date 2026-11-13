@@ -1,12 +1,12 @@
-//! Readers of the two compiled file sources: `markdown_fields` and
-//! `file_digest`. Pure file reading: nothing here touches a store.
+//! Readers of the compiled file sources: `markdown_fields`, `file_digest`
+//! and `records`. Pure file reading: nothing here touches a store.
 //!
 //! A symlink is never followed: a symlinked file or directory that a glob
 //! reaches is skipped and counted. Only regular files are read. A file is
 //! read in chunks with a bound of 16 MiB (a larger file fails the source);
 //! `sha256` and `size` cover everything read, while at most 65,536 bytes
 //! (and at most `head_lines` lines) are parsed for `markdown_fields`.
-use ont_core::schema::{FileSourceKind, FileSourceSpec, Glob, GlobSegment};
+use ont_core::schema::{FileSourceKind, FileSourceSpec, Glob, GlobSegment, RecordsOptions};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,12 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_HEAD_BYTES: usize = 65_536;
 /// Most records one source may list.
 pub const MAX_RECORDS: usize = 10_000;
+/// Most files a `records` source may list.
+pub const MAX_RECORD_FILES: usize = 200;
+/// Most records (lines) one `records` source run may read.
+pub const MAX_RECORD_LINES: usize = 50_000;
+/// Longest line of a `records` file, in bytes without the newline.
+pub const MAX_LINE_BYTES: usize = 65_536;
 /// Most directory entries one listing may look at.
 const MAX_VISITED: usize = 200_000;
 /// Deepest directory nesting a listing follows.
@@ -41,12 +47,28 @@ impl SourceError {
 }
 
 /// One record: the file path, the sha256 of every byte read, and the record
-/// object that mappings point into.
+/// object that mappings point into. For a `records` source the record is one
+/// line: `line` is its 1-based number, `time` the value of the time member,
+/// and `sha256` the digest of the value without that member. For the other
+/// kinds `line` is 0 and `time` is `None`.
 #[derive(Debug, Clone)]
 pub struct Record {
     pub path: String,
     pub sha256: String,
     pub value: Value,
+    pub line: usize,
+    pub time: Option<u64>,
+}
+impl Record {
+    /// Where the record is, for a failure cause: the path, with `:line`
+    /// when the record is a line.
+    pub fn place(&self) -> String {
+        if self.line == 0 {
+            self.path.clone()
+        } else {
+            format!("{}:{}", self.path, self.line)
+        }
+    }
 }
 
 /// The records of one read of a source.
@@ -68,6 +90,10 @@ pub struct Bounds {
     pub max_total_bytes: u64,
     /// Retained parsed text (record JSON) of one run.
     pub max_text_bytes: usize,
+    /// `records` sources: files, lines and bytes per line of one run.
+    pub max_record_files: usize,
+    pub max_record_lines: usize,
+    pub max_line_bytes: usize,
 }
 impl Default for Bounds {
     fn default() -> Self {
@@ -76,6 +102,9 @@ impl Default for Bounds {
             max_records: MAX_RECORDS,
             max_total_bytes: 1024 * 1024 * 1024,
             max_text_bytes: 64 * 1024 * 1024,
+            max_record_files: MAX_RECORD_FILES,
+            max_record_lines: MAX_RECORD_LINES,
+            max_line_bytes: MAX_LINE_BYTES,
         }
     }
 }
@@ -85,7 +114,12 @@ pub fn read_files(spec: &FileSourceSpec) -> Result<Listing, SourceError> {
     read_files_with(spec, &Bounds::default())
 }
 
-pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing, SourceError> {
+/// Walk the globs of a source: the regular files they reach and the count of
+/// skipped symlinks.
+fn list_files(
+    spec: &FileSourceSpec,
+    bounds: &Bounds,
+) -> Result<(BTreeSet<PathBuf>, usize), SourceError> {
     let mut found: BTreeSet<PathBuf> = BTreeSet::new();
     let mut symlinks: BTreeSet<PathBuf> = BTreeSet::new();
     // The listing bound is per source run, not per glob: `visited` is
@@ -107,6 +141,12 @@ pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing
         visited = walker.visited;
         result?;
     }
+    let skipped = symlinks.len();
+    Ok((found, skipped))
+}
+
+pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing, SourceError> {
+    let (found, skipped_symlinks) = list_files(spec, bounds)?;
     if found.len() > bounds.max_records {
         return Err(SourceError::new("too_many_records", spec.globs[0].as_str()));
     }
@@ -134,8 +174,242 @@ pub fn read_files_with(spec: &FileSourceSpec, bounds: &Bounds) -> Result<Listing
     }
     Ok(Listing {
         records,
-        skipped_symlinks: symlinks.len(),
+        skipped_symlinks,
     })
+}
+
+/// Read every line of every file of a `records` source as one record of
+/// `owner_type`. Any failure fails the whole read, with `path:line` as the
+/// place; nothing is truncated or skipped (a listed file that cannot be
+/// opened, a vanished one included, is a failure).
+pub fn read_records(
+    spec: &FileSourceSpec,
+    opts: &RecordsOptions,
+    owner_type: &str,
+    bounds: &Bounds,
+) -> Result<Listing, SourceError> {
+    let (found, skipped_symlinks) = list_files(spec, bounds)?;
+    if found.len() > bounds.max_record_files {
+        return Err(SourceError::new("too_many_files", spec.globs[0].as_str()));
+    }
+    let mut records: Vec<Record> = Vec::new();
+    let (mut bytes, mut text) = (0u64, 0usize);
+    for path in &found {
+        let shown = path.display().to_string();
+        let Some((file, meta)) = open_checked(path)? else {
+            return Err(SourceError::new("file_vanished", shown));
+        };
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| SourceError::new("path_not_utf8", shown.clone()))?
+            .to_string();
+        let mut data = Vec::with_capacity(meta.len().min(MAX_FILE_BYTES) as usize);
+        file.take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut data)
+            .map_err(|_| SourceError::new("file_unreadable", shown.clone()))?;
+        if data.len() as u64 > MAX_FILE_BYTES {
+            return Err(SourceError::new("file_too_large", shown));
+        }
+        bytes += data.len() as u64;
+        if bytes > bounds.max_total_bytes {
+            return Err(SourceError::new("source_bytes_too_large", shown));
+        }
+        let mut rest: &[u8] = &data;
+        let mut line_no = 0usize;
+        while !rest.is_empty() {
+            line_no += 1;
+            let (line, next) = match rest.iter().position(|b| *b == b'\n') {
+                Some(i) => (&rest[..i], &rest[i + 1..]),
+                None => (rest, &rest[rest.len()..]),
+            };
+            rest = next;
+            let at = || format!("{path_text}:{line_no}");
+            if records.len() >= bounds.max_record_lines {
+                return Err(SourceError::new("too_many_records", at()));
+            }
+            if line.len() > bounds.max_line_bytes {
+                return Err(SourceError::new("record_line_too_long", at()));
+            }
+            let (value, time, digest) =
+                parse_record_line(line, opts, owner_type).map_err(|c| SourceError::new(c, at()))?;
+            text += value.to_string().len();
+            if text > bounds.max_text_bytes {
+                return Err(SourceError::new("source_text_too_large", at()));
+            }
+            records.push(Record {
+                path: path_text.clone(),
+                sha256: digest,
+                value,
+                line: line_no,
+                time: Some(time),
+            });
+        }
+    }
+    Ok(Listing {
+        records,
+        skipped_symlinks,
+    })
+}
+
+/// One line of a `records` file: the object, its time and its digest.
+fn parse_record_line(
+    line: &[u8],
+    opts: &RecordsOptions,
+    owner_type: &str,
+) -> Result<(Value, u64, String), &'static str> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Err("record_line_blank");
+    }
+    let value: Value = serde_json::from_slice(line).map_err(|_| "record_not_json_object")?;
+    let Value::Object(mut members) = value else {
+        return Err("record_not_json_object");
+    };
+    // `serde_json` merges repeated members and turns an integer beyond 64
+    // bits into a float; the raw text is checked for both.
+    let mut at = 0usize;
+    scan_value(line, &mut at)?;
+    let time = match members.get(&opts.time_member) {
+        None => return Err("record_time_missing"),
+        Some(v) => v.as_u64().ok_or("record_time_invalid")?,
+    };
+    if let Some(member) = &opts.type_member
+        && members.get(member).and_then(Value::as_str) != Some(owner_type)
+    {
+        return Err("record_type_mismatch");
+    }
+    // The digest does not cover the time member.
+    let kept = members.remove(&opts.time_member);
+    let mut canonical = String::new();
+    write_canonical(&Value::Object(members.clone()), &mut canonical);
+    if let Some(time_value) = kept {
+        members.insert(opts.time_member.clone(), time_value);
+    }
+    let digest = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    Ok((Value::Object(members), time, digest))
+}
+
+/// The value with members in name order at every level.
+fn write_canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut names: Vec<&String> = map.keys().collect();
+            names.sort();
+            out.push('{');
+            for (i, name) in names.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(name.clone()).to_string());
+                out.push(':');
+                write_canonical(&map[name], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+fn skip_ws(b: &[u8], i: &mut usize) {
+    while b.get(*i).is_some_and(u8::is_ascii_whitespace) {
+        *i += 1;
+    }
+}
+
+/// The decoded text of the string literal at `*i` (valid JSON is assumed).
+fn scan_string(b: &[u8], i: &mut usize) -> Result<String, &'static str> {
+    let start = *i;
+    *i += 1;
+    while let Some(c) = b.get(*i) {
+        match c {
+            b'\\' => *i += 2,
+            b'"' => {
+                *i += 1;
+                return serde_json::from_slice(&b[start..*i]).map_err(|_| "record_not_json_object");
+            }
+            _ => *i += 1,
+        }
+    }
+    Err("record_not_json_object")
+}
+
+/// Walk a line that `serde_json` already accepted: a member name twice in
+/// one object (compared after unescaping) is `record_duplicate_member`; an
+/// integer literal that is not an `i64` or `u64` is `record_number_range`.
+fn scan_value(b: &[u8], i: &mut usize) -> Result<(), &'static str> {
+    skip_ws(b, i);
+    match b.get(*i) {
+        Some(b'{') => {
+            *i += 1;
+            skip_ws(b, i);
+            if b.get(*i) == Some(&b'}') {
+                *i += 1;
+                return Ok(());
+            }
+            let mut names = BTreeSet::new();
+            loop {
+                skip_ws(b, i);
+                if !names.insert(scan_string(b, i)?) {
+                    return Err("record_duplicate_member");
+                }
+                skip_ws(b, i);
+                *i += 1; // ':'
+                scan_value(b, i)?;
+                skip_ws(b, i);
+                let sep = b.get(*i).copied();
+                *i += 1;
+                if sep != Some(b',') {
+                    return Ok(());
+                }
+            }
+        }
+        Some(b'[') => {
+            *i += 1;
+            skip_ws(b, i);
+            if b.get(*i) == Some(&b']') {
+                *i += 1;
+                return Ok(());
+            }
+            loop {
+                scan_value(b, i)?;
+                skip_ws(b, i);
+                let sep = b.get(*i).copied();
+                *i += 1;
+                if sep != Some(b',') {
+                    return Ok(());
+                }
+            }
+        }
+        Some(b'"') => scan_string(b, i).map(|_| ()),
+        _ => {
+            let start = *i;
+            while b
+                .get(*i)
+                .is_some_and(|c| !matches!(c, b',' | b'}' | b']') && !c.is_ascii_whitespace())
+            {
+                *i += 1;
+            }
+            let token = std::str::from_utf8(&b[start..*i]).map_err(|_| "record_not_json_object")?;
+            let digits = token.strip_prefix('-').unwrap_or(token);
+            if !digits.is_empty()
+                && digits.bytes().all(|c| c.is_ascii_digit())
+                && token.parse::<i64>().is_err()
+                && token.parse::<u64>().is_err()
+            {
+                return Err("record_number_range");
+            }
+            Ok(())
+        }
+    }
 }
 
 type Entries = Vec<(String, PathBuf)>;
@@ -317,14 +591,10 @@ fn lstat(path: &Path) -> Result<Option<std::fs::Metadata>, SourceError> {
     }
 }
 
-/// Read, hash and map one file; the byte count read comes with the record.
-/// `None` when it vanished after the listing. The file is read only through
-/// one descriptor that proves what was opened: opened with `O_NOFOLLOW |
-/// O_NONBLOCK`, a regular file by the descriptor's own metadata, and its
-/// real path (`/proc/self/fd/<n>`) byte-equal to the candidate path, so a
-/// symlink anywhere in the path (a swapped parent directory included) is
-/// refused (`path_not_canonical`, also when `/proc` cannot be read).
-fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>, SourceError> {
+/// Open `path` and prove what was opened: `None` when it does not exist
+/// (any more); a failure for a symlink anywhere in the path, a non-regular
+/// file, a file over `MAX_FILE_BYTES` or one that cannot be opened.
+fn open_checked(path: &Path) -> Result<Option<(std::fs::File, std::fs::Metadata)>, SourceError> {
     use rustix::fs::OFlags;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -356,6 +626,21 @@ fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>,
     if meta.len() > MAX_FILE_BYTES {
         return Err(SourceError::new("file_too_large", shown));
     }
+    Ok(Some((file, meta)))
+}
+
+/// Read, hash and map one file; the byte count read comes with the record.
+/// `None` when it vanished after the listing. The file is read only through
+/// one descriptor that proves what was opened: opened with `O_NOFOLLOW |
+/// O_NONBLOCK`, a regular file by the descriptor's own metadata, and its
+/// real path (`/proc/self/fd/<n>`) byte-equal to the candidate path, so a
+/// symlink anywhere in the path (a swapped parent directory included) is
+/// refused (`path_not_canonical`, also when `/proc` cannot be read).
+fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>, SourceError> {
+    let shown = path.display().to_string();
+    let Some((file, meta)) = open_checked(path)? else {
+        return Ok(None);
+    };
     let mut hasher = Sha256::new();
     let mut head: Vec<u8> = Vec::new();
     let mut total: u64 = 0;
@@ -396,6 +681,9 @@ fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>,
             "mtime": mtime,
             "mode": meta.mode() & 0o7777,
         }),
+        FileSourceKind::Records => {
+            return Err(SourceError::new("source_kind_unsupported", shown));
+        }
         FileSourceKind::MarkdownFields => {
             let truncated = total > head.len() as u64;
             let (line1, fields) = parse_head(&head, truncated, spec.head_lines);
@@ -437,6 +725,8 @@ fn read_one(path: &Path, spec: &FileSourceSpec) -> Result<Option<(Record, u64)>,
             path: path_text,
             sha256,
             value,
+            line: 0,
+            time: None,
         },
         total,
     )))

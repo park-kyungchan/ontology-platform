@@ -1581,7 +1581,7 @@ impl EditsLogStatus {
         }
     }
 }
-fn application_time(secs: u64) -> Result<String, Failure> {
+pub(crate) fn application_time(secs: u64) -> Result<String, Failure> {
     if secs > FRESH_UNTIL_MAX {
         return Err(Refusal::new("application_time_out_of_range").into());
     }

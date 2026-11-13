@@ -175,6 +175,13 @@ fn cell(object: &Value, property: &str, schema: &Schema, view: &ViewDef) -> Stri
     if property == "$key" {
         return escape(object["id"]["native_key"].as_str().unwrap_or_default());
     }
+    if property == "$observed_at" {
+        // The head's observation time as `YYYY-MM-DDTHH:MM:SSZ`.
+        return object["head"]["observed_at"]
+            .as_u64()
+            .and_then(|t| crate::action::application_time(t).ok())
+            .unwrap_or_default();
+    }
     let k = &object["head"]["fields"][property];
     let raw = if k["kind"] == "value" {
         let ty = schema
