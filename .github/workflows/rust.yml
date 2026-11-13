@@ -48,21 +48,6 @@ jobs:
         if: steps.scope.outputs.run_rust == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Format
+      - name: Check
         if: steps.scope.outputs.run_rust == 'true'
-        run: cargo fmt --all -- --check
-      - name: Lint
-        if: steps.scope.outputs.run_rust == 'true'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Test
-        if: steps.scope.outputs.run_rust == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --workspace --locked
-      - name: Install script test
-        if: steps.scope.outputs.run_rust == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sh scripts/test-install-ont.sh
+        run: ./check

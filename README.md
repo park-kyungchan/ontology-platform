@@ -1,45 +1,32 @@
-# Ontology platform — S06 baseline and bounded S07 local fake candidate
+# ontology-platform
 
-Three packages implement a source-qualified restricted read vertical:
+The Ontology engine of this host: one generic engine, no domain knowledge. A domain describes its world in a schema file kept in the domain's own repository (object types with typed properties, link types, action types with submission criteria, views); the engine stores observations of those objects, answers reads over them and applies actions.
 
-- `ont-core`: identity, evidence, local principal/grants, authorization and deterministic decisions.
-- `ont-store`: small isolated SQLite store with atomic append/head updates and snapshot reads.
-- `ontd`: linked composition, narrow recorded S05 adapter and explicit synthetic stdin CLI.
+## Crates
 
-This new repository has no production source or remote. Contract and independent
-literal expectations were frozen at `1933f9b48f6efc01a7011d9559c9b66169d2fe69`
-before Rust implementation. See [contract](docs/S06-CONTRACT.md),
-[snapshot clarification](docs/S06-SNAPSHOT-CLARIFICATION.md),
-[lineage hardening](docs/S06-LINEAGE-CLARIFICATION.md) and
-[validation/effect limits](docs/S06-VALIDATION.md). Source-only delivery is not an
-operational/compiler result. S06 baseline `224864887d19f2c52e5026568f5e9b169314d3be`
-was accepted with Lead-owned native evidence; original author-time S06 records
-remain historical. Lead owns the serialized build slot and independent review.
+| Crate | What it is |
+| --- | --- |
+| `ont-core` | The schema language and the data model: identity, observations with their knowledge state, coverage, freshness and lineage, scopes, grants |
+| `ont-store` | The store: one SQLite file per store, atomic appends, snapshot reads |
+| `ont` | The command `ont` and its library: `schema check`, `schema install`, `describe`, `get`, `search`, `around`, `aggregate`, `render`, `index`, `action list`, `action validate`, `action apply`, `backup`, `compact`, and `mcp` (the same reads and actions as an MCP server over standard input and output) |
 
-S07 adds the named, authorized `copy_recommendation` function/action against a
-persistent local fake target. It commits a physical-field fence before possible
-dispatch, requires authoritative target-supported reconciliation after ambiguity,
-and never automatically replays. See [S07 contract](docs/s07/CONTRACT-v1.md),
-[implementation and compatibility](docs/s07/IMPLEMENTATION.md) and
-[source handoff / Lead commands](docs/s07/HANDOFF.md). S07 compilation, native
-fault/restart execution and independent review remain Lead-owned and pending.
-No production authentication, network listener, live source connection, Academy
-write or S12/P8 user verdict is implemented or claimed.
+Every command reads one JSON request on standard input and prints one JSON answer; `ont --help` lists the request fields. The contract of each command is in [crates/ont/README.md](crates/ont/README.md).
 
-The synthetic principal is fixed in `ontd::synthetic`; stdin cannot select a
-principal or policy. A real embedding application must authenticate independently
-before calling `Authority::bind_trusted`, supply a trusted clock and use `Service`.
-The direct Store interface is a trusted internal API, not a permission facade.
+## Who uses it
 
-After the Lead grants a build slot, use the commands in S06-VALIDATION.md. Example
-stdin (against the resulting binary with `--synthetic`):
+- Agents of every CLI on this host, through the installed command `ont` and its MCP server.
+- `agent-platform`: its schema `ontology/work.schema.json` and the command `ap`, which calls the installed `ont`.
+- Domain crates in other repositories, which pin this repository by Git revision and link `ont`, `ont-core` and `ont-store` as libraries.
 
-```json
-{"op":"decide","root":{"object_type":"student","namespace":{"instance":"synthetic://same-host","account":"A"},"native_key":"001"},"relation":"learning"}
-```
+A change of an answer's shape or of the schema language is a change of a contract those users rely on.
 
-It should produce a review-required decision with permitted linked evidence,
-revision history, explicit partial coverage and per-observation freshness. The
-recorded fixture account has instance `recording://s05-synthetic`, account
-`fixture-A`, student `synthetic-student-1`, relations `section` and `attempt`.
-These are synthetic recording identities, not native account assertions.
+## Check, install
+
+- `./check` is the one check: format, lints as errors, all tests, the test of the install script. The CI job `rust` runs the same file and is the required check of `main`.
+- `scripts/install-ont.sh install <commit>` builds and installs the command from a clean checkout of a commit on `main`; `check` compares the installed binary with it; `rollback` restores the previous one. It installs no schema and runs no index.
+
+## What else is in the tree
+
+- `docs/effects/`: the contract for effects on external systems (vocabulary and vectors).
+- `conformance/`, `docs/S06-*.md`, `docs/s07/`: the record of the first two verticals. Tests of `ont-core` and `ont-store` still read fixtures from `conformance/`. The crate those verticals composed, `ont-daemon`, was removed when nothing consumed it; its source is in the Git history.
+- `AGENTS.md`: how an agent works in this repository. `REVIEW.md`: what blocks a pull request.
